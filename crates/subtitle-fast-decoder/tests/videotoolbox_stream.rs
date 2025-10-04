@@ -1,28 +1,29 @@
-#![cfg(feature = "backend-ffmpeg")]
+#![cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
 
 use std::env;
 use std::path::PathBuf;
 
-use subtitle_fast::{Backend, Configuration, YPlaneStreamProvider};
+use subtitle_fast_decoder::{Backend, Configuration, YPlaneStreamProvider};
 use tokio_stream::StreamExt;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ffmpeg_backend_requires_asset() {
+async fn videotoolbox_backend_streams_frames() {
     let asset = match env::var("SUBFAST_TEST_ASSET") {
         Ok(value) => PathBuf::from(value),
         Err(_) => {
-            eprintln!("skipping ffmpeg backend test - SUBFAST_TEST_ASSET not set");
+            eprintln!("skipping videotoolbox backend test - SUBFAST_TEST_ASSET not set");
             return;
         }
     };
 
     let mut config = Configuration::default();
-    config.backend = Backend::Ffmpeg;
+    config.backend = Backend::VideoToolbox;
     config.input = Some(asset);
+
     let provider = match config.create_provider() {
         Ok(provider) => provider,
         Err(err) => {
-            panic!("failed to initialize ffmpeg backend: {err:?}");
+            panic!("failed to initialize VideoToolbox backend: {err:?}");
         }
     };
 
@@ -30,7 +31,7 @@ async fn ffmpeg_backend_requires_asset() {
     let frame = stream
         .next()
         .await
-        .expect("ffmpeg backend should produce at least one frame");
+        .expect("videotoolbox backend should produce at least one frame");
     let frame = frame.expect("frame decoding should succeed");
     assert!(frame.width() > 0);
     assert!(frame.height() > 0);

@@ -1,34 +1,6 @@
-[package]
-name = "subtitle-fast"
-version = "0.1.0"
-edition = "2024"
-
-[features]
-default = ["backend-mock"]
-backend-mock = []
-backend-ffmpeg = ["dep:ffmpeg-next"]
-backend-videotoolbox = [
-    "dep:core-foundation",
-    "dep:core-foundation-sys",
-    "dep:objc",
-    "dep:rayon",
+[workspace]
+members = [
+    "crates/subtitle-fast",
+    "crates/subtitle-fast-decoder",
 ]
-backend-openh264 = ["dep:openh264"]
-backend-gstreamer = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
-
-[dependencies]
-futures-core = "0.3"
-thiserror = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
-tokio-stream = "0.1"
-indicatif = "0.17"
-
-ffmpeg-next = { version = "6", optional = true }
-openh264 = { version = "0.9", optional = true }
-gstreamer = { version = "0.21", optional = true }
-gstreamer-app = { version = "0.21", optional = true }
-gstreamer-video = { version = "0.21", optional = true }
-core-foundation = { version = "0.9", optional = true }
-core-foundation-sys = { version = "0.8", optional = true }
-objc = { version = "0.2", optional = true }
-rayon = { version = "1.10", optional = true }
+resolver = "2"

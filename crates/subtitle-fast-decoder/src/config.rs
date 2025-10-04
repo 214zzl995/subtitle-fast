@@ -6,7 +6,6 @@ use crate::core::{DynYPlaneProvider, YPlaneError, YPlaneResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Backend {
-    Mock,
     Ffmpeg,
     VideoToolbox,
     OpenH264,
@@ -18,7 +17,6 @@ impl FromStr for Backend {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
-            "mock" => Ok(Backend::Mock),
             "ffmpeg" => Ok(Backend::Ffmpeg),
             "videotoolbox" => Ok(Backend::VideoToolbox),
             "openh264" => Ok(Backend::OpenH264),
@@ -59,16 +57,6 @@ impl Configuration {
 
     pub fn create_provider(&self) -> YPlaneResult<DynYPlaneProvider> {
         match self.backend {
-            Backend::Mock => {
-                #[cfg(feature = "backend-mock")]
-                {
-                    return Ok(crate::backends::mock::boxed_mock());
-                }
-                #[cfg(not(feature = "backend-mock"))]
-                {
-                    return Err(YPlaneError::unsupported("mock"));
-                }
-            }
             Backend::Ffmpeg => {
                 #[cfg(feature = "backend-ffmpeg")]
                 {
@@ -132,9 +120,7 @@ impl Configuration {
 }
 
 fn default_backend() -> Backend {
-    if cfg!(feature = "backend-mock") {
-        Backend::Mock
-    } else if cfg!(feature = "backend-ffmpeg") {
+    if cfg!(feature = "backend-ffmpeg") {
         Backend::Ffmpeg
     } else if cfg!(feature = "backend-videotoolbox") {
         Backend::VideoToolbox
@@ -143,6 +129,6 @@ fn default_backend() -> Backend {
     } else if cfg!(feature = "backend-gstreamer") {
         Backend::GStreamer
     } else {
-        Backend::Mock
+        Backend::Ffmpeg
     }
 }
