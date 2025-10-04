@@ -8,7 +8,6 @@ use gstreamer::ClockTime;
 use gstreamer::MessageView;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
-use gstreamer_app::prelude::*;
 use gstreamer_video as gst_video;
 use tokio::sync::mpsc;
 
@@ -41,16 +40,20 @@ impl GStreamerProvider {
 
     fn run(&self, tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
         gst::init().map_err(|err| backend_error(err.to_string()))?;
-        let pipeline = gst::Pipeline::new(None);
-        let src = gst::ElementFactory::make("filesrc", None)
-            .ok_or_else(|| backend_error("missing filesrc element"))?;
-        src.set_property("location", &self.input.to_string_lossy().to_string())
-            .map_err(|err| backend_error(err.to_string()))?;
+        let pipeline = gst::Pipeline::new();
+        let src = gst::ElementFactory::make("filesrc")
+            .build()
+            .map_err(|err| backend_error(format!("failed to create filesrc element: {err}")))?;
+        src.set_property("location", self.input.to_string_lossy().as_ref());
 
-        let decodebin = gst::ElementFactory::make("decodebin", None)
-            .ok_or_else(|| backend_error("missing decodebin element"))?;
-        let convert = gst::ElementFactory::make("videoconvert", None)
-            .ok_or_else(|| backend_error("missing videoconvert element"))?;
+        let decodebin = gst::ElementFactory::make("decodebin")
+            .build()
+            .map_err(|err| backend_error(format!("failed to create decodebin element: {err}")))?;
+        let convert = gst::ElementFactory::make("videoconvert")
+            .build()
+            .map_err(|err| {
+                backend_error(format!("failed to create videoconvert element: {err}"))
+            })?;
         let caps = gst::Caps::builder("video/x-raw")
             .field("format", &"I420")
             .build();
@@ -58,18 +61,21 @@ impl GStreamerProvider {
             .caps(&caps)
             .drop(true)
             .max_buffers(8)
+            .sync(false)
             .build();
-        appsink
-            .set_property("sync", &false)
-            .map_err(|err| backend_error(err.to_string()))?;
 
         pipeline
-            .add_many([&src, &decodebin, &convert, appsink.upcast_ref()])
+            .add_many([
+                &src,
+                &decodebin,
+                &convert,
+                appsink.upcast_ref::<gst::Element>(),
+            ])
             .map_err(|err| backend_error(err.to_string()))?;
         gst::Element::link_many([&src, &decodebin])
             .map_err(|err| backend_error(err.to_string()))?;
         convert
-            .link(appsink.upcast_ref())
+            .link(appsink.upcast_ref::<gst::Element>())
             .map_err(|err| backend_error(err.to_string()))?;
 
         let convert_clone = convert.clone();
@@ -86,9 +92,7 @@ impl GStreamerProvider {
         let result = (|| {
             pipeline
                 .set_state(gst::State::Playing)
-                .map_err(|(_, state)| {
-                    backend_error(format!("failed to set pipeline state: {state:?}"))
-                })?;
+                .map_err(|err| backend_error(format!("failed to set pipeline state: {err:?}")))?;
 
             let bus = pipeline
                 .bus()
@@ -102,8 +106,11 @@ impl GStreamerProvider {
                             break;
                         }
                     }
-                    Err(gst::FlowError::Eos) => break,
                     Err(err) => {
+                        drain_bus_errors(&bus)?;
+                        if appsink.is_eos() {
+                            break;
+                        }
                         return Err(backend_error(err.to_string()));
                     }
                 }
@@ -113,7 +120,7 @@ impl GStreamerProvider {
 
         pipeline
             .set_state(gst::State::Null)
-            .map_err(|(_, state)| backend_error(format!("failed to stop pipeline: {state:?}")))?;
+            .map_err(|err| backend_error(format!("failed to stop pipeline: {err:?}")))?;
         result
     }
 }
@@ -165,13 +172,10 @@ fn frame_from_sample(sample: &gst::Sample) -> YPlaneResult<YPlaneFrame> {
             plane_size
         )));
     }
-    let mut buffer = Vec::with_capacity(plane_size);
-    buffer.extend_from_slice(&data[..plane_size]);
-    let timestamp = sample
-        .pts()
-        .and_then(|ts| ts.nseconds())
-        .map(Duration::from_nanos);
-    YPlaneFrame::from_owned(width, info.height() as u32, stride, timestamp, buffer)
+    let mut plane = Vec::with_capacity(plane_size);
+    plane.extend_from_slice(&data[..plane_size]);
+    let timestamp = buffer.pts().map(|ts| Duration::from_nanos(ts.nseconds()));
+    YPlaneFrame::from_owned(width, info.height() as u32, stride, timestamp, plane)
 }
 
 fn backend_error(message: impl Into<String>) -> YPlaneError {

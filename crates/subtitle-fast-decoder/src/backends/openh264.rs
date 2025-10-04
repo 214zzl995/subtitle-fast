@@ -1,11 +1,11 @@
 #![cfg(feature = "backend-openh264")]
 
-use std::collections::VecDeque;
 use std::fs;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::thread;
 use std::time::Duration;
 
+use mp4::{MediaType, Mp4Reader, Mp4Track, TrackType};
 use openh264::Error as OpenH264Error;
 use openh264::decoder::Decoder;
 use openh264::formats::YUVSource;
@@ -21,8 +21,6 @@ const BACKEND_NAME: &str = "openh264";
 
 pub struct OpenH264Provider {
     input: PathBuf,
-    worker_count: usize,
-    channel_capacity: usize,
 }
 
 impl OpenH264Provider {
@@ -34,107 +32,35 @@ impl OpenH264Provider {
                 format!("input file {} does not exist", path.display()),
             )));
         }
-        let worker_count = thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-            .max(1);
         Ok(Self {
             input: path.to_path_buf(),
-            worker_count,
-            channel_capacity: worker_count * 4,
         })
     }
 
     fn decode_loop(&self, tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
         let data = fs::read(&self.input)?;
-        let gops = chunk_annexb_by_idr(&data);
-        if gops.is_empty() {
-            return Err(YPlaneError::backend_failure(
-                BACKEND_NAME,
-                "input stream did not contain decodable GOPs",
-            ));
-        }
-
-        let total = gops.len();
-        let mut results: Vec<Option<YPlaneResult<Vec<YPlaneFrame>>>> = vec![None; total];
-        let mut handles: VecDeque<thread::JoinHandle<(usize, YPlaneResult<Vec<YPlaneFrame>>)>> =
-            VecDeque::new();
-        let mut tasks = gops.into_iter().enumerate();
-        let limit = self.worker_count.max(1);
-
-        loop {
-            while handles.len() < limit {
-                if let Some((index, chunk)) = tasks.next() {
-                    handles.push_back(thread::spawn(move || (index, decode_chunk(chunk))));
+        match decode_mp4_stream(data.as_slice(), tx.clone()) {
+            Ok(()) => Ok(()),
+            Err(mp4_err) => {
+                if looks_like_annexb(&data) {
+                    decode_annexb_stream(data.as_slice(), tx)
                 } else {
-                    break;
-                }
-            }
-
-            if handles.is_empty() {
-                break;
-            }
-
-            let handle = handles
-                .pop_front()
-                .expect("handles must not be empty when scheduling results");
-            let (index, result) = handle.join().map_err(|_| {
-                YPlaneError::backend_failure(BACKEND_NAME, "OpenH264 worker panicked")
-            })?;
-            results[index] = Some(result);
-        }
-
-        for entry in results.into_iter() {
-            let outcome = entry.expect("all GOP results must be populated");
-            match outcome {
-                Ok(frames) => {
-                    for frame in frames {
-                        if tx.blocking_send(Ok(frame)).is_err() {
-                            return Ok(());
-                        }
-                    }
-                }
-                Err(err) => {
-                    let _ = tx.blocking_send(Err(err));
-                    return Ok(());
+                    Err(mp4_err)
                 }
             }
         }
-
-        Ok(())
     }
 }
 
 impl YPlaneStreamProvider for OpenH264Provider {
     fn into_stream(self: Box<Self>) -> YPlaneStream {
         let provider = *self;
-        let capacity = provider.channel_capacity;
-        spawn_stream_from_channel(capacity, move |tx| {
+        spawn_stream_from_channel(32, move |tx| {
             if let Err(err) = provider.decode_loop(tx.clone()) {
                 let _ = tx.blocking_send(Err(err));
             }
         })
     }
-}
-
-fn decode_chunk(chunk: Vec<u8>) -> YPlaneResult<Vec<YPlaneFrame>> {
-    let mut decoder = Decoder::new().map_err(map_openh264_error)?;
-    let mut frames = Vec::new();
-    for packet in nal_units(chunk.as_slice()) {
-        match decoder.decode(packet) {
-            Ok(Some(image)) => {
-                frames.push(convert_frame(&image)?);
-            }
-            Ok(None) => {}
-            Err(err) => {
-                return Err(map_openh264_error(err));
-            }
-        }
-    }
-    for image in decoder.flush_remaining().map_err(map_openh264_error)? {
-        frames.push(convert_frame(&image)?);
-    }
-    Ok(frames)
 }
 
 fn convert_frame(image: &openh264::decoder::DecodedYUV<'_>) -> YPlaneResult<YPlaneFrame> {
@@ -167,40 +93,219 @@ fn map_openh264_error(err: OpenH264Error) -> YPlaneError {
     YPlaneError::backend_failure(BACKEND_NAME, err.to_string())
 }
 
-fn chunk_annexb_by_idr(data: &[u8]) -> Vec<Vec<u8>> {
-    let mut groups = Vec::new();
-    let mut current = Vec::new();
-    for unit in nal_units(data) {
-        if is_idr_nal(unit) && !current.is_empty() {
-            groups.push(std::mem::take(&mut current));
-        }
-        current.extend_from_slice(unit);
-    }
-    if !current.is_empty() {
-        groups.push(current);
-    }
-    groups
+fn looks_like_annexb(data: &[u8]) -> bool {
+    data.windows(4).any(|w| matches!(w, [0, 0, 0, 1]))
+        || data.windows(3).any(|w| matches!(w, [0, 0, 1]))
 }
 
-fn is_idr_nal(unit: &[u8]) -> bool {
-    nal_unit_type(unit).map(|ty| ty == 5).unwrap_or(false)
-}
-
-fn nal_unit_type(unit: &[u8]) -> Option<u8> {
-    if unit.len() < 4 {
-        return None;
-    }
-    for idx in 0..unit.len().saturating_sub(3) {
-        if unit[idx] == 0 && unit[idx + 1] == 0 {
-            if unit[idx + 2] == 1 {
-                return unit.get(idx + 3).map(|value| value & 0x1F);
+fn decode_annexb_stream(
+    data: &[u8],
+    tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>,
+) -> YPlaneResult<()> {
+    let mut decoder = Decoder::new().map_err(map_openh264_error)?;
+    for packet in nal_units(data) {
+        match decoder.decode(packet) {
+            Ok(Some(image)) => {
+                let frame = convert_frame(&image)?;
+                if tx.blocking_send(Ok(frame)).is_err() {
+                    return Ok(());
+                }
             }
-            if idx + 4 < unit.len() && unit[idx + 2] == 0 && unit[idx + 3] == 1 {
-                return unit.get(idx + 4).map(|value| value & 0x1F);
+            Ok(None) => {}
+            Err(err) => {
+                return Err(map_openh264_error(err));
             }
         }
     }
-    None
+
+    for image in decoder.flush_remaining().map_err(map_openh264_error)? {
+        let frame = convert_frame(&image)?;
+        if tx.blocking_send(Ok(frame)).is_err() {
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
+fn decode_mp4_stream(data: &[u8], tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
+    let size = u64::try_from(data.len()).map_err(|err| {
+        YPlaneError::backend_failure(
+            BACKEND_NAME,
+            format!("MP4 input too large to decode ({err})"),
+        )
+    })?;
+    let cursor = Cursor::new(data);
+    let mut reader = Mp4Reader::read_header(cursor, size).map_err(|err| {
+        YPlaneError::backend_failure(BACKEND_NAME, format!("failed to parse MP4 header: {err}"))
+    })?;
+
+    let track_id = reader
+        .tracks()
+        .iter()
+        .find_map(
+            |(id, track)| match (track.track_type(), track.media_type()) {
+                (Ok(TrackType::Video), Ok(MediaType::H264)) => Some(*id),
+                _ => None,
+            },
+        )
+        .ok_or_else(|| {
+            YPlaneError::backend_failure(
+                BACKEND_NAME,
+                "MP4 file does not contain an H.264 video track",
+            )
+        })?;
+
+    let track = reader.tracks().get(&track_id).ok_or_else(|| {
+        YPlaneError::backend_failure(BACKEND_NAME, "failed to fetch selected MP4 track")
+    })?;
+
+    let mut converter = Mp4BitstreamConverter::from_track(track)?;
+    let mut decoder = Decoder::new().map_err(map_openh264_error)?;
+    let sample_count = reader.sample_count(track_id).map_err(|err| {
+        YPlaneError::backend_failure(
+            BACKEND_NAME,
+            format!("failed to query MP4 sample count: {err}"),
+        )
+    })?;
+
+    let mut converted = Vec::new();
+    for sample_id in 1..=sample_count {
+        let Some(sample) = reader.read_sample(track_id, sample_id).map_err(|err| {
+            YPlaneError::backend_failure(
+                BACKEND_NAME,
+                format!("failed to read MP4 sample {sample_id}: {err}"),
+            )
+        })?
+        else {
+            continue;
+        };
+
+        converter.convert_sample(sample.bytes.as_ref(), &mut converted)?;
+
+        match decoder.decode(&converted) {
+            Ok(Some(image)) => {
+                let frame = convert_frame(&image)?;
+                if tx.blocking_send(Ok(frame)).is_err() {
+                    return Ok(());
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                return Err(map_openh264_error(err));
+            }
+        }
+    }
+
+    for image in decoder.flush_remaining().map_err(map_openh264_error)? {
+        let frame = convert_frame(&image)?;
+        if tx.blocking_send(Ok(frame)).is_err() {
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
+struct Mp4BitstreamConverter {
+    length_size: u8,
+    sps: Vec<Vec<u8>>,
+    pps: Vec<Vec<u8>>,
+    prefix_emitted: bool,
+}
+
+impl Mp4BitstreamConverter {
+    fn from_track(track: &Mp4Track) -> YPlaneResult<Self> {
+        let avc1 = track
+            .trak
+            .mdia
+            .minf
+            .stbl
+            .stsd
+            .avc1
+            .as_ref()
+            .ok_or_else(|| {
+                YPlaneError::backend_failure(
+                    BACKEND_NAME,
+                    "video track is missing AVC1 configuration",
+                )
+            })?;
+        let avcc = &avc1.avcc;
+        let length_size = avcc.length_size_minus_one + 1;
+        if !(1..=4).contains(&length_size) {
+            return Err(YPlaneError::backend_failure(
+                BACKEND_NAME,
+                "unsupported H.264 length size in MP4 stream",
+            ));
+        }
+        let sps: Vec<Vec<u8>> = avcc
+            .sequence_parameter_sets
+            .iter()
+            .map(|nal| nal.bytes.clone())
+            .collect();
+        let pps: Vec<Vec<u8>> = avcc
+            .picture_parameter_sets
+            .iter()
+            .map(|nal| nal.bytes.clone())
+            .collect();
+        if sps.is_empty() || pps.is_empty() {
+            return Err(YPlaneError::backend_failure(
+                BACKEND_NAME,
+                "MP4 stream is missing SPS/PPS parameter sets",
+            ));
+        }
+        Ok(Self {
+            length_size,
+            sps,
+            pps,
+            prefix_emitted: false,
+        })
+    }
+
+    fn convert_sample(&mut self, sample: &[u8], out: &mut Vec<u8>) -> YPlaneResult<()> {
+        out.clear();
+        if !self.prefix_emitted {
+            self.write_parameter_sets(out);
+            self.prefix_emitted = true;
+        }
+
+        let mut stream = sample;
+        let length_size = self.length_size as usize;
+        while stream.len() >= length_size {
+            let mut nal_size = 0usize;
+            for _ in 0..length_size {
+                nal_size = (nal_size << 8) | stream[0] as usize;
+                stream = &stream[1..];
+            }
+            if nal_size == 0 || nal_size > stream.len() {
+                return Err(YPlaneError::backend_failure(
+                    BACKEND_NAME,
+                    "corrupt MP4 sample encountered while extracting NAL units",
+                ));
+            }
+            let nal = &stream[..nal_size];
+            let nal_type = nal[0] & 0x1F;
+            if nal_type == 5 {
+                self.write_parameter_sets(out);
+            }
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(nal);
+            stream = &stream[nal_size..];
+        }
+
+        Ok(())
+    }
+
+    fn write_parameter_sets(&self, out: &mut Vec<u8>) {
+        for sps in &self.sps {
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(sps);
+        }
+        for pps in &self.pps {
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(pps);
+        }
+    }
 }
 
 pub fn boxed_openh264<P: AsRef<Path>>(path: P) -> YPlaneResult<DynYPlaneProvider> {
@@ -215,11 +320,5 @@ mod tests {
     fn missing_file_returns_error() {
         let result = OpenH264Provider::open("/tmp/nonexistent-file.mp4");
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn nal_unit_type_detects_idr() {
-        let frame = vec![0, 0, 0, 1, 0x65, 0x88, 0x84];
-        assert!(is_idr_nal(&frame));
     }
 }

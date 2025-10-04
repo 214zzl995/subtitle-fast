@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use objc::rc::StrongPtr;
 use objc::runtime::{BOOL, NO, Object, YES};
-use objc::{class, msg_send};
+use objc::{class, msg_send, sel, sel_impl};
 use rayon::ThreadPool;
 
 use crate::core::{
@@ -18,19 +18,22 @@ use crate::core::{
 };
 
 #[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
 mod platform {
     use super::*;
 
     use core_foundation::base::{CFRelease, CFTypeRef};
     use core_foundation_sys::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
-    use core_foundation_sys::boolean::{CFBooleanGetValue, CFBooleanRef};
     use core_foundation_sys::dictionary::{CFDictionaryGetValue, CFDictionaryRef};
+    use core_foundation_sys::number::{CFBooleanGetValue, CFBooleanRef};
 
+    #[allow(improper_ctypes)]
     #[link(name = "AVFoundation", kind = "framework")]
-    extern "C" {}
+    unsafe extern "C" {}
 
+    #[allow(improper_ctypes)]
     #[link(name = "CoreMedia", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CMSampleBufferGetImageBuffer(buffer: CMSampleBufferRef) -> CVPixelBufferRef;
         fn CMSampleBufferGetPresentationTimeStamp(buffer: CMSampleBufferRef) -> CMTime;
         fn CMSampleBufferGetSampleAttachmentsArray(
@@ -40,8 +43,9 @@ mod platform {
         static kCMSampleAttachmentKey_NotSync: CFTypeRef;
     }
 
+    #[allow(improper_ctypes)]
     #[link(name = "CoreVideo", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CVPixelBufferLockBaseAddress(buffer: CVPixelBufferRef, flags: u64) -> i32;
         fn CVPixelBufferUnlockBaseAddress(buffer: CVPixelBufferRef, flags: u64) -> i32;
         fn CVPixelBufferGetPlaneCount(buffer: CVPixelBufferRef) -> usize;
@@ -83,6 +87,8 @@ mod platform {
         sample: CMSampleBufferRef,
         pts: CMTime,
     }
+
+    unsafe impl Send for PendingSample {}
 
     pub struct VideoToolboxProvider {
         input: PathBuf,
@@ -128,7 +134,7 @@ mod platform {
             let path = self.input.clone();
             spawn_stream_from_channel(32, move |tx| unsafe {
                 let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
-                if let Err(err) = decode_videotoolbox(path, tx) {
+                if let Err(err) = decode_videotoolbox(path.clone(), tx.clone()) {
                     let _ = tx.blocking_send(Err(err));
                 }
                 let _: () = msg_send![pool, drain];
@@ -413,8 +419,9 @@ mod platform {
         unsafe { kCVPixelBufferPixelFormatTypeKey as *mut Object }
     }
 
+    #[allow(improper_ctypes)]
     #[link(name = "CoreVideo", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         static kCVPixelBufferPixelFormatTypeKey: CFStringRef;
     }
 
@@ -422,8 +429,9 @@ mod platform {
         unsafe { AVMediaTypeVideo }
     }
 
+    #[allow(improper_ctypes)]
     #[link(name = "AVFoundation", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         static AVMediaTypeVideo: CFStringRef;
     }
 
@@ -445,7 +453,7 @@ mod platform {
             if value.is_null() {
                 true
             } else {
-                CFBooleanGetValue(value as CFBooleanRef) == 0
+                !CFBooleanGetValue(value as CFBooleanRef)
             }
         }
     }
@@ -469,8 +477,8 @@ mod platform {
 
     #[repr(i32)]
     enum AVAssetReaderStatus {
-        Unknown = 0,
-        Reading = 1,
+        _Unknown = 0,
+        _Reading = 1,
         Completed = 2,
         Failed = 3,
         Cancelled = 4,

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = []
+default = ["backend-videotoolbox"]
 backend-ffmpeg = ["subtitle-fast-decoder/backend-ffmpeg"]
 backend-videotoolbox = ["subtitle-fast-decoder/backend-videotoolbox"]
 backend-openh264 = ["subtitle-fast-decoder/backend-openh264"]

@@ -3,7 +3,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use subtitle_fast_decoder::{Backend, Configuration, YPlaneStreamProvider};
+use subtitle_fast_decoder::{Backend, Configuration};
 use tokio_stream::StreamExt;
 
 #[tokio::test(flavor = "multi_thread")]

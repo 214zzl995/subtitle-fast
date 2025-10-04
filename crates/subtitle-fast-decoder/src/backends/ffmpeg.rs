@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use ffmpeg::util::error::{EAGAIN, EWOULDBLOCK};
 use ffmpeg_next as ffmpeg;
 use tokio::sync::mpsc;
 
@@ -80,8 +81,10 @@ impl FfmpegProvider {
                             break;
                         }
                     }
-                    Err(err) if err == ffmpeg::Error::Again => break,
                     Err(err) => {
+                        if is_retryable_error(&err) || matches!(err, ffmpeg::Error::Eof) {
+                            break;
+                        }
                         return Err(YPlaneError::backend_failure(BACKEND_NAME, err.to_string()));
                     }
                 }
@@ -94,7 +97,7 @@ impl FfmpegProvider {
                 continue;
             }
             if let Err(err) = decoder.send_packet(&packet) {
-                if err != ffmpeg::Error::Again {
+                if !is_retryable_error(&err) {
                     return Err(YPlaneError::backend_failure(BACKEND_NAME, err.to_string()));
                 }
             }
@@ -136,10 +139,18 @@ fn frame_from_converted(
         buffer.extend_from_slice(&plane[offset..offset + stride]);
     }
     let timestamp = frame.pts().map(|pts| {
-        let seconds = pts as f64 * time_base.to_float();
+        let seconds = pts as f64 * f64::from(time_base);
         Duration::from_secs_f64(seconds)
     });
     YPlaneFrame::from_owned(width, height, stride, timestamp, buffer)
+}
+
+fn is_retryable_error(error: &ffmpeg::Error) -> bool {
+    matches!(
+        error,
+        ffmpeg::Error::Other { errno }
+            if *errno == EAGAIN || *errno == EWOULDBLOCK
+    )
 }
 
 pub fn boxed_ffmpeg<P: AsRef<Path>>(path: P) -> YPlaneResult<DynYPlaneProvider> {

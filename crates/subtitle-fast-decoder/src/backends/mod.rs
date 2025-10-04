@@ -1,3 +1,5 @@
+pub mod mock;
+
 #[cfg(feature = "backend-ffmpeg")]
 pub mod ffmpeg;
 
