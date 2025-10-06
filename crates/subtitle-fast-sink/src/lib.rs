@@ -1,3 +1,9 @@
+mod subtitle_detection;
+
+pub use subtitle_detection::{
+    SubtitleDetectionError, SubtitleDetectionFeatures, SubtitleDetectionResult, SubtitleDetector,
+};
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
