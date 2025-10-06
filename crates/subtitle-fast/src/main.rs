@@ -213,7 +213,10 @@ async fn decode_with_provider(
                 let timestamp = frame.timestamp();
 
                 if let Some(sink) = frame_sink.as_ref() {
-                    let _ = sink.push(frame.clone(), processed);
+                    let frame_index = frame
+                        .frame_index()
+                        .unwrap_or_else(|| processed.saturating_sub(1));
+                    let _ = sink.push(frame.clone(), frame_index);
                 }
 
                 let event = ProgressEvent {

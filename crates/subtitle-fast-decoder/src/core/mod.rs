@@ -27,8 +27,10 @@ pub struct YPlaneFrame {
     width: u32,
     height: u32,
     stride: usize,
+    frame_index: Option<u64>,
     timestamp: Option<Duration>,
     data: Arc<[u8]>,
+
 }
 
 impl fmt::Debug for YPlaneFrame {
@@ -39,6 +41,7 @@ impl fmt::Debug for YPlaneFrame {
             .field("stride", &self.stride)
             .field("timestamp", &self.timestamp)
             .field("bytes", &self.data.len())
+            .field("frame_index", &self.frame_index)
             .finish()
     }
 }
@@ -72,6 +75,7 @@ impl YPlaneFrame {
             stride,
             timestamp,
             data: Arc::from(data.into_boxed_slice()),
+            frame_index: None,
         })
     }
 
@@ -93,6 +97,19 @@ impl YPlaneFrame {
 
     pub fn data(&self) -> &[u8] {
         &self.data
+    }
+
+    pub fn frame_index(&self) -> Option<u64> {
+        self.frame_index
+    }
+
+    pub fn with_frame_index(mut self, index: Option<u64>) -> Self {
+        self.frame_index = index;
+        self
+    }
+
+    pub fn set_frame_index(&mut self, index: Option<u64>) {
+        self.frame_index = index;
     }
 }
 
@@ -165,6 +182,7 @@ mod tests {
         assert_eq!(frame.stride(), 4);
         assert_eq!(frame.timestamp(), Some(Duration::from_millis(10)));
         assert_eq!(frame.data().len(), 8);
+        assert_eq!(frame.frame_index(), None);
     }
 
     #[tokio::test(flavor = "multi_thread")]

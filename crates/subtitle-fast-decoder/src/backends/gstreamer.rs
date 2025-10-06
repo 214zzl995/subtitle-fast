@@ -97,11 +97,14 @@ impl GStreamerProvider {
             let bus = pipeline
                 .bus()
                 .ok_or_else(|| backend_error("pipeline missing bus"))?;
+            let mut frame_index: u64 = 0;
             loop {
                 match appsink.pull_sample() {
                     Ok(sample) => {
                         drain_bus_errors(&bus)?;
-                        let frame = frame_from_sample(&sample)?;
+                        let frame = frame_from_sample(&sample)?
+                            .with_frame_index(Some(frame_index));
+                        frame_index = frame_index.saturating_add(1);
                         if tx.blocking_send(Ok(frame)).is_err() {
                             break;
                         }

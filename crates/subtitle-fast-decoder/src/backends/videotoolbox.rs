@@ -90,6 +90,7 @@ mod platform {
     struct PendingSample {
         sample: CMSampleBufferRef,
         pts: CMTime,
+        index: u64,
     }
 
     #[repr(C)]
@@ -405,6 +406,7 @@ mod platform {
             let mut chunk_samples = Vec::new();
             let mut ordered = OrderedChunks::new();
             let mut emitted: u64 = 0;
+            let mut next_sample_index: u64 = 0;
 
             loop {
                 if drain_ready_chunks(&mut chunk_rx, &mut ordered, &tx, &mut emitted)? {
@@ -446,7 +448,9 @@ mod platform {
                 chunk_samples.push(PendingSample {
                     sample: sample_buf,
                     pts,
+                    index: next_sample_index,
                 });
+                next_sample_index = next_sample_index.saturating_add(1);
 
                 if chunk_samples.len() >= max_pending_samples {
                     flush_chunk(
@@ -486,7 +490,7 @@ mod platform {
             let results: Vec<_> = samples
                 .into_par_iter()
                 .map(|sample| unsafe {
-                    let result = sample_to_frame(sample.sample, sample.pts);
+                    let result = sample_to_frame(sample.sample, sample.pts, sample.index);
                     CFRelease(sample.sample as CFTypeRef);
                     result
                 })
@@ -558,7 +562,11 @@ mod platform {
         }
     }
 
-    fn sample_to_frame(sample: CMSampleBufferRef, pts: CMTime) -> YPlaneResult<YPlaneFrame> {
+    fn sample_to_frame(
+        sample: CMSampleBufferRef,
+        pts: CMTime,
+        index: u64,
+    ) -> YPlaneResult<YPlaneFrame> {
         unsafe {
             let pixel_buffer = CMSampleBufferGetImageBuffer(sample);
             if pixel_buffer.is_null() {
@@ -598,7 +606,8 @@ mod platform {
             CVPixelBufferUnlockBaseAddress(pixel_buffer, PIXEL_BUFFER_LOCK_READ_ONLY);
 
             let timestamp = cm_time_to_duration(pts);
-            YPlaneFrame::from_owned(width, height, stride, timestamp, buffer)
+            let frame = YPlaneFrame::from_owned(width, height, stride, timestamp, buffer)?;
+            Ok(frame.with_frame_index(Some(index)))
         }
     }
 

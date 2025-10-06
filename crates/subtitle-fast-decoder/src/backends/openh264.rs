@@ -153,8 +153,8 @@ fn decode_annexb_stream(data: &[u8], tx: Sender<YPlaneResult<YPlaneFrame>>) -> Y
         match decoder.decode(packet) {
             Ok(Some(image)) => {
                 let timestamp = Some(Duration::from_secs_f64(frame_index as f64 / 30.0));
+                let frame = convert_frame(&image, timestamp)?.with_frame_index(Some(frame_index));
                 frame_index = frame_index.saturating_add(1);
-                let frame = convert_frame(&image, timestamp)?;
                 if tx.blocking_send(Ok(frame)).is_err() {
                     return Ok(());
                 }
@@ -168,8 +168,8 @@ fn decode_annexb_stream(data: &[u8], tx: Sender<YPlaneResult<YPlaneFrame>>) -> Y
 
     for image in decoder.flush_remaining().map_err(map_openh264_error)? {
         let timestamp = Some(Duration::from_secs_f64(frame_index as f64 / 30.0));
+        let frame = convert_frame(&image, timestamp)?.with_frame_index(Some(frame_index));
         frame_index = frame_index.saturating_add(1);
-        let frame = convert_frame(&image, timestamp)?;
         if tx.blocking_send(Ok(frame)).is_err() {
             return Ok(());
         }
@@ -262,10 +262,12 @@ fn decode_mp4_stream(data: &[u8], tx: Sender<YPlaneResult<YPlaneFrame>>) -> YPla
             (None, None)
         };
 
+        let sample_index = u64::from(sample_id - 1);
         chunk_samples.push(ChunkSample::new(
             &converted,
             sample_timestamp,
             sample_duration,
+            sample_index,
         ));
     }
 
@@ -305,11 +307,19 @@ fn decode_chunk(samples: Vec<ChunkSample>) -> Vec<YPlaneResult<YPlaneFrame>> {
     };
     let mut next_frame_timestamp: Option<Duration> = None;
     let mut frame_duration_hint: Option<Duration> = None;
+    let mut next_index = samples.first().map(|sample| sample.index).unwrap_or(0);
 
     for sample in samples {
+        if sample.index > next_index {
+            next_index = sample.index;
+        }
         match decoder.decode(sample.data.as_slice()) {
             Ok(Some(image)) => match convert_frame(&image, sample.timestamp) {
-                Ok(frame) => frames.push(Ok(frame)),
+                Ok(frame) => {
+                    let frame = frame.with_frame_index(Some(next_index));
+                    next_index = next_index.saturating_add(1);
+                    frames.push(Ok(frame));
+                }
                 Err(err) => {
                     frames.push(Err(err));
                     return frames;
@@ -333,7 +343,11 @@ fn decode_chunk(samples: Vec<ChunkSample>) -> Vec<YPlaneResult<YPlaneFrame>> {
             for image in images {
                 let timestamp = next_frame_timestamp;
                 match convert_frame(&image, timestamp) {
-                    Ok(frame) => frames.push(Ok(frame)),
+                    Ok(frame) => {
+                        let frame = frame.with_frame_index(Some(next_index));
+                        next_index = next_index.saturating_add(1);
+                        frames.push(Ok(frame));
+                    }
                     Err(err) => {
                         frames.push(Err(err));
                         return frames;
@@ -441,14 +455,21 @@ struct ChunkSample {
     data: Vec<u8>,
     timestamp: Option<Duration>,
     duration: Option<Duration>,
+    index: u64,
 }
 
 impl ChunkSample {
-    fn new(data: &[u8], timestamp: Option<Duration>, duration: Option<Duration>) -> Self {
+    fn new(
+        data: &[u8],
+        timestamp: Option<Duration>,
+        duration: Option<Duration>,
+        index: u64,
+    ) -> Self {
         Self {
             data: data.to_vec(),
             timestamp,
             duration,
+            index,
         }
     }
 }

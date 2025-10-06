@@ -21,6 +21,8 @@ struct VideoFilterPipeline {
     source_ctx: *mut ffmpeg::ffi::AVFilterContext,
     sink_ctx: *mut ffmpeg::ffi::AVFilterContext,
     filtered: ffmpeg::util::frame::Video,
+    frame_rate: Option<(i32, i32)>,
+    next_fallback_index: u64,
 }
 
 impl VideoFilterPipeline {
@@ -101,6 +103,8 @@ impl VideoFilterPipeline {
             source_ctx,
             sink_ctx,
             filtered,
+            frame_rate,
+            next_fallback_index: 0,
         })
     }
 
@@ -144,7 +148,12 @@ impl VideoFilterPipeline {
             loop {
                 match sink.frame(&mut self.filtered) {
                     Ok(()) => {
-                        let frame = frame_from_converted(&self.filtered, sink_time_base)?;
+                        let frame = frame_from_converted(
+                            &self.filtered,
+                            sink_time_base,
+                            self.frame_rate,
+                            &mut self.next_fallback_index,
+                        )?;
                         ffmpeg::ffi::av_frame_unref(self.filtered.as_mut_ptr());
                         if tx.blocking_send(Ok(frame)).is_err() {
                             break;
@@ -281,6 +290,8 @@ fn drain_decoder(
 fn frame_from_converted(
     frame: &ffmpeg::util::frame::Video,
     time_base: ffmpeg::Rational,
+    frame_rate: Option<(i32, i32)>,
+    next_fallback_index: &mut u64,
 ) -> YPlaneResult<YPlaneFrame> {
     let plane = frame.data(0);
     let stride = frame.stride(0) as usize;
@@ -295,7 +306,42 @@ fn frame_from_converted(
         let seconds = pts as f64 * f64::from(time_base);
         Duration::from_secs_f64(seconds)
     });
-    YPlaneFrame::from_owned(width, height, stride, timestamp, buffer)
+    let frame_index = compute_frame_index(frame, time_base, frame_rate, next_fallback_index);
+    let frame = YPlaneFrame::from_owned(width, height, stride, timestamp, buffer)?;
+    Ok(frame.with_frame_index(frame_index))
+}
+
+fn compute_frame_index(
+    frame: &ffmpeg::util::frame::Video,
+    time_base: ffmpeg::Rational,
+    frame_rate: Option<(i32, i32)>,
+    next_fallback_index: &mut u64,
+) -> Option<u64> {
+    let pts = frame.timestamp().or_else(|| frame.pts());
+    if let Some(pts) = pts {
+        if let Some((num, den)) = frame_rate {
+            if num > 0 && den > 0 {
+                let time_base_seconds = f64::from(time_base);
+                let fps = num as f64 / den as f64;
+                let seconds = pts as f64 * time_base_seconds;
+                let index = (seconds * fps).round();
+                if index.is_finite() && index >= 0.0 {
+                    let value = index as u64;
+                    *next_fallback_index = value.saturating_add(1);
+                    return Some(value);
+                }
+            }
+        }
+        if pts >= 0 {
+            let value = pts as u64;
+            *next_fallback_index = value.saturating_add(1);
+            return Some(value);
+        }
+    }
+
+    let value = *next_fallback_index;
+    *next_fallback_index = next_fallback_index.saturating_add(1);
+    Some(value)
 }
 
 fn is_retryable_error(error: &ffmpeg::Error) -> bool {
