@@ -15,3 +15,4 @@ subtitle-fast-decoder = { path = "../subtitle-fast-decoder", default-features = 
 subtitle-fast-sink = { path = "../subtitle-fast-sink" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tokio-stream = "0.1"
+clap = { version = "4.5", features = ["derive"] }

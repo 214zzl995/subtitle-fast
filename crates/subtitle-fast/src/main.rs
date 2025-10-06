@@ -1,78 +1,41 @@
-use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use indicatif::{ProgressBar, ProgressStyle};
+mod cli;
+mod progress;
+
+use clap::{CommandFactory, Parser};
+use cli::CliArgs;
+use progress::{ProgressEvent, finalize_success, start_progress};
 use subtitle_fast_decoder::{Backend, Configuration, DynYPlaneProvider, YPlaneError};
-use subtitle_fast_sink::{FrameSink, JpegOptions};
-use tokio::sync::mpsc;
+use subtitle_fast_sink::{FrameMetadata, FrameSink, FrameSinkConfig};
 use tokio_stream::StreamExt;
 
 fn usage() {
-    println!("usage: subtitle-fast [--backend <name>] [--dump-dir <dir>] <video-path>");
-    println!("       subtitle-fast --list-backends");
-    print_available_backends();
+    let mut command = CliArgs::command();
+    command.print_help().ok();
+    println!();
+    display_available_backends();
 }
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), YPlaneError> {
-    let mut args = std::env::args_os();
-    let _ = args.next();
-    let mut backend_override = None;
-    let mut input_path = None;
-    let mut dump_dir: Option<PathBuf> = None;
+    let CliArgs {
+        backend,
+        dump_dir,
+        list_backends,
+        detection_samples_per_second,
+        input,
+    } = CliArgs::parse();
 
-    while let Some(arg) = args.next() {
-        if arg == "--help" || arg == "-h" {
-            usage();
-            return Ok(());
-        } else if arg == "--list-backends" {
-            print_available_backends();
-            return Ok(());
-        } else if arg == "--backend" || arg == "-b" {
-            let value = args
-                .next()
-                .ok_or_else(|| YPlaneError::configuration("--backend requires a backend name"))?;
-            backend_override = Some(parse_backend(value)?);
-        } else if let Some(value) = arg
-            .to_str()
-            .and_then(|s| s.strip_prefix("--backend="))
-            .map(|s| s.to_owned())
-        {
-            backend_override = Some(parse_backend(OsString::from(value))?);
-        } else if arg == "--dump-dir" {
-            let value = args.next().ok_or_else(|| {
-                YPlaneError::configuration("--dump-dir requires a directory path")
-            })?;
-            if dump_dir.is_some() {
-                return Err(YPlaneError::configuration(
-                    "--dump-dir specified more than once",
-                ));
-            }
-            dump_dir = Some(PathBuf::from(value));
-        } else if let Some(value) = arg
-            .to_str()
-            .and_then(|s| s.strip_prefix("--dump-dir="))
-            .map(|s| s.to_owned())
-        {
-            if dump_dir.is_some() {
-                return Err(YPlaneError::configuration(
-                    "--dump-dir specified more than once",
-                ));
-            }
-            dump_dir = Some(PathBuf::from(value));
-        } else if input_path.is_none() {
-            input_path = Some(PathBuf::from(arg));
-        } else {
-            return Err(YPlaneError::configuration(
-                "multiple input paths provided; only one is supported",
-            ));
-        }
+    if list_backends {
+        display_available_backends();
+        return Ok(());
     }
 
-    let input = match input_path {
+    let input = match input {
         Some(path) => path,
         None => {
             usage();
@@ -86,11 +49,15 @@ async fn main() -> Result<(), YPlaneError> {
 
     let env_backend_present = std::env::var("SUBFAST_BACKEND").is_ok();
     let mut config = Configuration::from_env().unwrap_or_default();
+    let backend_override = match backend {
+        Some(name) => Some(parse_backend(&name)?),
+        None => None,
+    };
+    let backend_locked = backend_override.is_some() || env_backend_present;
     if let Some(backend) = backend_override {
         config.backend = backend;
     }
     config.input = Some(input);
-    let backend_locked = backend_override.is_some() || env_backend_present;
 
     let available = Configuration::available_backends();
     if available.is_empty() {
@@ -115,7 +82,7 @@ async fn main() -> Result<(), YPlaneError> {
             Ok(provider) => provider,
             Err(err) => {
                 if !backend_locked {
-                    if let Some(next_backend) = next_backend(&available, &tried) {
+                    if let Some(next_backend) = select_next_backend(&available, &tried) {
                         let failed_backend = attempt_config.backend;
                         eprintln!(
                             "backend {failed} failed to initialize ({reason}); trying {next}",
@@ -131,11 +98,11 @@ async fn main() -> Result<(), YPlaneError> {
             }
         };
 
-        match decode_with_provider(provider, dump_dir.clone()).await {
+        match run_pipeline(provider, dump_dir.clone(), detection_samples_per_second).await {
             Ok(()) => return Ok(()),
             Err((err, processed)) => {
                 if processed == 0 && !backend_locked {
-                    if let Some(next_backend) = next_backend(&available, &tried) {
+                    if let Some(next_backend) = select_next_backend(&available, &tried) {
                         let failed_backend = attempt_config.backend;
                         eprintln!(
                             "backend {failed} failed to decode ({reason}); trying {next}",
@@ -153,56 +120,25 @@ async fn main() -> Result<(), YPlaneError> {
     }
 }
 
-fn parse_backend(value: OsString) -> Result<Backend, YPlaneError> {
-    let value = value
-        .into_string()
-        .map_err(|_| YPlaneError::configuration("backend name must be valid UTF-8"))?;
-    Backend::from_str(&value)
+fn parse_backend(value: &str) -> Result<Backend, YPlaneError> {
+    Backend::from_str(value)
 }
 
-async fn decode_with_provider(
+async fn run_pipeline(
     provider: DynYPlaneProvider,
     dump_dir: Option<PathBuf>,
+    detection_samples_per_second: u32,
 ) -> Result<(), (YPlaneError, u64)> {
     let total_frames = provider.total_frames();
     let mut stream = provider.into_stream();
 
-    let progress = match total_frames {
-        Some(total) => {
-            let bar = ProgressBar::new(total);
-            bar.set_style(
-                ProgressStyle::with_template(
-                    "{bar:40.cyan/blue} {percent:>3}% {pos}/{len} frames [{elapsed_precise}<{eta_precise}] speed {msg}",
-                )
-                .unwrap(),
-            );
-            bar
-        }
-        None => {
-            let spinner = ProgressBar::new_spinner();
-            spinner.set_style(
-                ProgressStyle::with_template(
-                    "{spinner:.cyan.bold} [{elapsed_precise}] frames {pos} • speed {msg}",
-                )
-                .unwrap()
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-            );
-            spinner
-        }
-    };
-    progress.enable_steady_tick(Duration::from_millis(100));
-
     let mut processed: u64 = 0;
     let started = Instant::now();
-    let frame_sink = dump_dir.map(|dir| FrameSink::jpeg_writer(dir, JpegOptions::default()));
-    let progress_capacity = progress_channel_capacity(total_frames);
-    let (progress_tx, progress_rx) = mpsc::channel::<ProgressEvent>(progress_capacity);
-    let progress_task = tokio::spawn(drive_progress(
-        progress.clone(),
-        progress_rx,
-        total_frames,
-        started,
-    ));
+
+    let sink_config = FrameSinkConfig::from_outputs(dump_dir, detection_samples_per_second);
+    let frame_sink = FrameSink::new(sink_config);
+
+    let (progress_bar, progress_tx, progress_task) = start_progress(total_frames, started);
 
     let mut failure: Option<YPlaneError> = None;
 
@@ -211,13 +147,16 @@ async fn decode_with_provider(
             Ok(frame) => {
                 processed = processed.saturating_add(1);
                 let timestamp = frame.timestamp();
+                let frame_index = frame
+                    .frame_index()
+                    .unwrap_or_else(|| processed.saturating_sub(1));
 
-                if let Some(sink) = frame_sink.as_ref() {
-                    let frame_index = frame
-                        .frame_index()
-                        .unwrap_or_else(|| processed.saturating_sub(1));
-                    let _ = sink.push(frame.clone(), frame_index);
-                }
+                let metadata = FrameMetadata {
+                    frame_index,
+                    processed_index: processed,
+                    timestamp,
+                };
+                let _ = frame_sink.push(frame, metadata);
 
                 let event = ProgressEvent {
                     index: processed,
@@ -242,46 +181,26 @@ async fn decode_with_provider(
 
     if let Some(err) = failure {
         let processed = summary.processed;
-        progress.abandon_with_message(format!("failed after {processed} frames"));
+        progress_bar.abandon_with_message(format!("failed after {processed} frames"));
+        frame_sink.shutdown().await;
         return Err((err, processed));
     }
 
-    if let Some(sink) = frame_sink {
-        sink.shutdown().await;
-    }
+    frame_sink.shutdown().await;
 
-    if let Some(total) = total_frames {
-        let display_total = if summary.processed < total {
-            progress.set_length(summary.processed);
-            summary.processed
-        } else {
-            total
-        };
-        if summary.processed >= display_total {
-            progress.set_position(display_total);
-        }
-        progress.finish_with_message(format!(
-            "completed {}/{} frames @ {:.2}x",
-            summary.processed, display_total, summary.last_speed
-        ));
-    } else {
-        progress.finish_with_message(format!(
-            "completed {} frames @ {:.2}x",
-            summary.processed, summary.last_speed
-        ));
-    }
+    finalize_success(&progress_bar, &summary, total_frames);
 
     Ok(())
 }
 
-fn next_backend(available: &[Backend], tried: &[Backend]) -> Option<Backend> {
+fn select_next_backend(available: &[Backend], tried: &[Backend]) -> Option<Backend> {
     available
         .iter()
         .copied()
         .find(|backend| !tried.contains(backend))
 }
 
-fn print_available_backends() {
+fn display_available_backends() {
     let names: Vec<&'static str> = Configuration::available_backends()
         .iter()
         .map(Backend::as_str)
@@ -290,60 +209,5 @@ fn print_available_backends() {
         println!("available backends: (none compiled)");
     } else {
         println!("available backends: {}", names.join(", "));
-    }
-}
-
-#[derive(Debug)]
-struct ProgressEvent {
-    index: u64,
-    timestamp: Option<Duration>,
-}
-
-#[derive(Debug)]
-struct ProgressSummary {
-    processed: u64,
-    last_speed: f64,
-}
-
-fn progress_channel_capacity(total_frames: Option<u64>) -> usize {
-    match total_frames {
-        Some(total) => total.min(1024).max(64).try_into().unwrap_or(1024),
-        None => 512,
-    }
-}
-
-async fn drive_progress(
-    progress: ProgressBar,
-    mut rx: mpsc::Receiver<ProgressEvent>,
-    total_frames: Option<u64>,
-    started: Instant,
-) -> ProgressSummary {
-    let mut processed = 0u64;
-    let mut last_speed = 0.0f64;
-
-    while let Some(event) = rx.recv().await {
-        processed = event.index;
-
-        if let Some(total) = total_frames {
-            if processed > total {
-                progress.set_length(processed);
-            }
-        }
-
-        progress.set_position(processed);
-
-        let media_position = event
-            .timestamp
-            .unwrap_or_else(|| Duration::from_secs_f64(processed as f64 / 30.0));
-        let elapsed_secs = started.elapsed().as_secs_f64();
-        if elapsed_secs > 0.0 {
-            last_speed = media_position.as_secs_f64() / elapsed_secs;
-            progress.set_message(format!("{:.2}x", last_speed));
-        }
-    }
-
-    ProgressSummary {
-        processed,
-        last_speed,
     }
 }

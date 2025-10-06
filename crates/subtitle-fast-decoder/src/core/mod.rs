@@ -30,7 +30,6 @@ pub struct YPlaneFrame {
     frame_index: Option<u64>,
     timestamp: Option<Duration>,
     data: Arc<[u8]>,
-
 }
 
 impl fmt::Debug for YPlaneFrame {
