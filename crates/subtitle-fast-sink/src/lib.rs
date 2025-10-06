@@ -4,6 +4,8 @@ use std::sync::Arc;
 use image::codecs::jpeg::JpegEncoder;
 use image::ColorType;
 use subtitle_fast_decoder::YPlaneFrame;
+
+pub mod subtitle_detection;
 use thiserror::Error;
 use tokio::sync::{
     mpsc::{self, Sender},
