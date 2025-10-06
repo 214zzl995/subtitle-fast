@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
 
 use objc::rc::StrongPtr;
@@ -296,6 +296,7 @@ mod platform {
             eprintln!("[videotoolbox] starting decode for {}", path.display());
         }
         unsafe {
+            const MAX_PENDING_SAMPLES: usize = 24;
             let ns_path = StrongPtr::new(nsstring_from_path(&path)?);
             let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath:*ns_path];
             if url.is_null() {
@@ -422,6 +423,16 @@ mod platform {
             let mut emitted: u64 = 0;
 
             loop {
+                if drain_ready_chunks(
+                    &chunk_rx,
+                    &mut ordered,
+                    &mut next_chunk,
+                    &tx,
+                    &mut emitted,
+                    debug,
+                )? {
+                    return Ok(());
+                }
                 let sample: *mut Object = msg_send![*output, copyNextSampleBuffer];
                 if sample.is_null() {
                     let status: i32 = msg_send![*reader, status];
@@ -466,47 +477,47 @@ mod platform {
                     sample: sample_buf,
                     pts,
                 });
+
+                if chunk_samples.len() >= MAX_PENDING_SAMPLES {
+                    flush_chunk(
+                        &thread_pool,
+                        chunk_index,
+                        std::mem::take(&mut chunk_samples),
+                        chunk_tx.clone(),
+                    );
+                    chunk_index += 1;
+                }
             }
 
             if !chunk_samples.is_empty() {
                 flush_chunk(&thread_pool, chunk_index, chunk_samples, chunk_tx.clone());
             }
             drop(chunk_tx);
-
-            for (index, frames) in chunk_rx {
-                if debug {
-                    eprintln!(
-                        "[videotoolbox] received chunk {index} containing {} frames",
-                        frames.len()
-                    );
+            if drain_ready_chunks(
+                &chunk_rx,
+                &mut ordered,
+                &mut next_chunk,
+                &tx,
+                &mut emitted,
+                debug,
+            )? {
+                return Ok(());
+            }
+            while let Ok((index, frames)) = chunk_rx.recv() {
+                if handle_chunk(
+                    index,
+                    frames,
+                    &mut ordered,
+                    &mut next_chunk,
+                    &tx,
+                    &mut emitted,
+                    debug,
+                )? {
+                    return Ok(());
                 }
-                ordered.insert(index, frames);
-                while let Some(frames) = ordered.remove(&next_chunk) {
-                    for frame in frames {
-                        match frame {
-                            Ok(frame) => {
-                                if tx.blocking_send(Ok(frame)).is_err() {
-                                    if debug {
-                                        eprintln!(
-                                            "[videotoolbox] channel closed after emitting {} frames",
-                                            emitted
-                                        );
-                                    }
-                                    return Ok(());
-                                }
-                                emitted = emitted.saturating_add(1);
-                                if debug && emitted % 500 == 0 {
-                                    eprintln!("[videotoolbox] emitted {emitted} frames so far");
-                                }
-                            }
-                            Err(err) => {
-                                let _ = tx.blocking_send(Err(err));
-                                return Ok(());
-                            }
-                        }
-                    }
-                    next_chunk += 1;
-                }
+            }
+            if flush_ordered(&mut ordered, &mut next_chunk, &tx, &mut emitted, debug)? {
+                return Ok(());
             }
             if debug {
                 eprintln!("[videotoolbox] finished decoding; total frames emitted {emitted}");
@@ -532,6 +543,82 @@ mod platform {
             }
             let _ = chunk_tx.send((chunk_index, results));
         });
+    }
+
+    fn drain_ready_chunks(
+        chunk_rx: &mpsc::Receiver<(usize, Vec<YPlaneResult<YPlaneFrame>>)>,
+        ordered: &mut BTreeMap<usize, Vec<YPlaneResult<YPlaneFrame>>>,
+        next_chunk: &mut usize,
+        tx: &tokio::sync::mpsc::Sender<YPlaneResult<YPlaneFrame>>,
+        emitted: &mut u64,
+        debug: bool,
+    ) -> YPlaneResult<bool> {
+        loop {
+            match chunk_rx.try_recv() {
+                Ok((index, frames)) => {
+                    if handle_chunk(index, frames, ordered, next_chunk, tx, emitted, debug)? {
+                        return Ok(true);
+                    }
+                }
+                Err(TryRecvError::Empty) => return Ok(false),
+                Err(TryRecvError::Disconnected) => return Ok(false),
+            }
+        }
+    }
+
+    fn handle_chunk(
+        index: usize,
+        frames: Vec<YPlaneResult<YPlaneFrame>>,
+        ordered: &mut BTreeMap<usize, Vec<YPlaneResult<YPlaneFrame>>>,
+        next_chunk: &mut usize,
+        tx: &tokio::sync::mpsc::Sender<YPlaneResult<YPlaneFrame>>,
+        emitted: &mut u64,
+        debug: bool,
+    ) -> YPlaneResult<bool> {
+        if debug {
+            eprintln!(
+                "[videotoolbox] received chunk {index} containing {} frames",
+                frames.len()
+            );
+        }
+        ordered.insert(index, frames);
+        flush_ordered(ordered, next_chunk, tx, emitted, debug)
+    }
+
+    fn flush_ordered(
+        ordered: &mut BTreeMap<usize, Vec<YPlaneResult<YPlaneFrame>>>,
+        next_chunk: &mut usize,
+        tx: &tokio::sync::mpsc::Sender<YPlaneResult<YPlaneFrame>>,
+        emitted: &mut u64,
+        debug: bool,
+    ) -> YPlaneResult<bool> {
+        while let Some(frames) = ordered.remove(&*next_chunk) {
+            for frame in frames {
+                match frame {
+                    Ok(frame) => {
+                        if tx.blocking_send(Ok(frame)).is_err() {
+                            if debug {
+                                eprintln!(
+                                    "[videotoolbox] channel closed after emitting {} frames",
+                                    *emitted
+                                );
+                            }
+                            return Ok(true);
+                        }
+                        *emitted = (*emitted).saturating_add(1);
+                        if debug && *emitted % 500 == 0 {
+                            eprintln!("[videotoolbox] emitted {} frames so far", *emitted);
+                        }
+                    }
+                    Err(err) => {
+                        let _ = tx.blocking_send(Err(err));
+                        return Ok(true);
+                    }
+                }
+            }
+            *next_chunk += 1;
+        }
+        Ok(false)
     }
 
     fn release_samples(samples: Vec<PendingSample>) {
