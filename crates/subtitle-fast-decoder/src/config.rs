@@ -3,6 +3,9 @@ use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+#[cfg(feature = "backend-ffmpeg")]
+use std::sync::OnceLock;
+
 use crate::core::{DynYPlaneProvider, YPlaneError, YPlaneResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,15 +54,37 @@ fn compiled_backends() -> Vec<Backend> {
     if github_ci_active() {
         backends.push(Backend::Mock);
     }
-    #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
+    append_platform_backends(&mut backends);
+    backends
+}
+
+#[cfg(target_os = "macos")]
+fn append_platform_backends(backends: &mut Vec<Backend>) {
+    #[cfg(feature = "backend-videotoolbox")]
     {
         backends.push(Backend::VideoToolbox);
     }
     #[cfg(feature = "backend-ffmpeg")]
     {
-        backends.push(Backend::Ffmpeg);
+        if ffmpeg_runtime_available() {
+            backends.push(Backend::Ffmpeg);
+        }
     }
-    #[cfg(all(feature = "backend-videotoolbox", not(target_os = "macos")))]
+    #[cfg(feature = "backend-openh264")]
+    {
+        backends.push(Backend::OpenH264);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn append_platform_backends(backends: &mut Vec<Backend>) {
+    #[cfg(feature = "backend-ffmpeg")]
+    {
+        if ffmpeg_runtime_available() {
+            backends.push(Backend::Ffmpeg);
+        }
+    }
+    #[cfg(feature = "backend-videotoolbox")]
     {
         backends.push(Backend::VideoToolbox);
     }
@@ -67,7 +92,23 @@ fn compiled_backends() -> Vec<Backend> {
     {
         backends.push(Backend::OpenH264);
     }
-    backends
+}
+
+#[cfg(feature = "backend-ffmpeg")]
+fn ffmpeg_runtime_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| match ffmpeg_next::init() {
+        Ok(()) => true,
+        Err(err) => {
+            eprintln!("ffmpeg backend disabled: failed to initialize libraries ({err})");
+            false
+        }
+    })
+}
+
+#[cfg(not(feature = "backend-ffmpeg"))]
+fn ffmpeg_runtime_available() -> bool {
+    false
 }
 
 #[derive(Debug, Clone)]

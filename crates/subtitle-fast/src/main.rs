@@ -1,14 +1,17 @@
+use std::ffi::OsString;
+use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::time::Instant;
-use std::{ffi::OsString, time::Duration};
+use std::time::{Duration, Instant};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use subtitle_fast_decoder::{Backend, Configuration, DynYPlaneProvider, YPlaneError};
+use subtitle_fast_sink::{FrameSink, JpegOptions};
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
 fn usage() {
-    println!("usage: subtitle-fast [--backend <name>] <video-path>");
+    println!("usage: subtitle-fast [--backend <name>] [--dump-dir <dir>] <video-path>");
     println!("       subtitle-fast --list-backends");
     print_available_backends();
 }
@@ -19,6 +22,7 @@ async fn main() -> Result<(), YPlaneError> {
     let _ = args.next();
     let mut backend_override = None;
     let mut input_path = None;
+    let mut dump_dir: Option<PathBuf> = None;
 
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
@@ -38,6 +42,27 @@ async fn main() -> Result<(), YPlaneError> {
             .map(|s| s.to_owned())
         {
             backend_override = Some(parse_backend(OsString::from(value))?);
+        } else if arg == "--dump-dir" {
+            let value = args.next().ok_or_else(|| {
+                YPlaneError::configuration("--dump-dir requires a directory path")
+            })?;
+            if dump_dir.is_some() {
+                return Err(YPlaneError::configuration(
+                    "--dump-dir specified more than once",
+                ));
+            }
+            dump_dir = Some(PathBuf::from(value));
+        } else if let Some(value) = arg
+            .to_str()
+            .and_then(|s| s.strip_prefix("--dump-dir="))
+            .map(|s| s.to_owned())
+        {
+            if dump_dir.is_some() {
+                return Err(YPlaneError::configuration(
+                    "--dump-dir specified more than once",
+                ));
+            }
+            dump_dir = Some(PathBuf::from(value));
         } else if input_path.is_none() {
             input_path = Some(PathBuf::from(arg));
         } else {
@@ -55,11 +80,17 @@ async fn main() -> Result<(), YPlaneError> {
         }
     };
 
+    if let Some(dir) = dump_dir.as_ref() {
+        fs::create_dir_all(dir)?;
+    }
+
+    let env_backend_present = std::env::var("SUBFAST_BACKEND").is_ok();
     let mut config = Configuration::from_env().unwrap_or_default();
     if let Some(backend) = backend_override {
         config.backend = backend;
     }
     config.input = Some(input);
+    let backend_locked = backend_override.is_some() || env_backend_present;
 
     let available = Configuration::available_backends();
     if available.is_empty() {
@@ -83,24 +114,35 @@ async fn main() -> Result<(), YPlaneError> {
         let provider = match attempt_config.create_provider() {
             Ok(provider) => provider,
             Err(err) => {
-                if let Some(next_backend) =
-                    determine_fallback_backend(attempt_config.backend, &available, &tried, &err)
-                {
-                    attempt_config.backend = next_backend;
-                    continue;
-                } else {
-                    return Err(err);
+                if !backend_locked {
+                    if let Some(next_backend) = next_backend(&available, &tried) {
+                        let failed_backend = attempt_config.backend;
+                        eprintln!(
+                            "backend {failed} failed to initialize ({reason}); trying {next}",
+                            failed = failed_backend.as_str(),
+                            reason = err,
+                            next = next_backend.as_str()
+                        );
+                        attempt_config.backend = next_backend;
+                        continue;
+                    }
                 }
+                return Err(err);
             }
         };
 
-        match decode_with_provider(provider).await {
+        match decode_with_provider(provider, dump_dir.clone()).await {
             Ok(()) => return Ok(()),
             Err((err, processed)) => {
-                if processed == 0 {
-                    if let Some(next_backend) =
-                        determine_fallback_backend(attempt_config.backend, &available, &tried, &err)
-                    {
+                if processed == 0 && !backend_locked {
+                    if let Some(next_backend) = next_backend(&available, &tried) {
+                        let failed_backend = attempt_config.backend;
+                        eprintln!(
+                            "backend {failed} failed to decode ({reason}); trying {next}",
+                            failed = failed_backend.as_str(),
+                            reason = err,
+                            next = next_backend.as_str()
+                        );
                         attempt_config.backend = next_backend;
                         continue;
                     }
@@ -118,7 +160,10 @@ fn parse_backend(value: OsString) -> Result<Backend, YPlaneError> {
     Backend::from_str(&value)
 }
 
-async fn decode_with_provider(provider: DynYPlaneProvider) -> Result<(), (YPlaneError, u64)> {
+async fn decode_with_provider(
+    provider: DynYPlaneProvider,
+    dump_dir: Option<PathBuf>,
+) -> Result<(), (YPlaneError, u64)> {
     let total_frames = provider.total_frames();
     let mut stream = provider.into_stream();
 
@@ -148,91 +193,89 @@ async fn decode_with_provider(provider: DynYPlaneProvider) -> Result<(), (YPlane
     progress.enable_steady_tick(Duration::from_millis(100));
 
     let mut processed: u64 = 0;
-    let mut last_timestamp: Option<Duration> = None;
-    let mut last_speed = 0.0f64;
     let started = Instant::now();
+    let frame_sink = dump_dir.map(|dir| FrameSink::jpeg_writer(dir, JpegOptions::default()));
+    let progress_capacity = progress_channel_capacity(total_frames);
+    let (progress_tx, progress_rx) = mpsc::channel::<ProgressEvent>(progress_capacity);
+    let progress_task = tokio::spawn(drive_progress(
+        progress.clone(),
+        progress_rx,
+        total_frames,
+        started,
+    ));
+
+    let mut failure: Option<YPlaneError> = None;
 
     while let Some(frame) = stream.next().await {
         match frame {
             Ok(frame) => {
-                processed += 1;
-                if let Some(ts) = frame.timestamp() {
-                    last_timestamp = Some(ts);
+                processed = processed.saturating_add(1);
+                let timestamp = frame.timestamp();
+
+                if let Some(sink) = frame_sink.as_ref() {
+                    let _ = sink.push(frame.clone(), processed);
                 }
 
-                let elapsed = started.elapsed();
-                let media_position = last_timestamp
-                    .unwrap_or_else(|| Duration::from_secs_f64(processed as f64 / 30.0));
-                let elapsed_secs = elapsed.as_secs_f64();
-                if elapsed_secs > 0.0 {
-                    last_speed = media_position.as_secs_f64() / elapsed_secs;
-                }
-
-                if let Some(total) = total_frames {
-                    if processed > total {
-                        progress.set_length(processed);
+                let event = ProgressEvent {
+                    index: processed,
+                    timestamp,
+                };
+                if let Err(err) = progress_tx.try_send(event) {
+                    let event = err.into_inner();
+                    if progress_tx.send(event).await.is_err() {
+                        break;
                     }
                 }
-                progress.set_position(processed);
-                progress.set_message(format!("{:.2}x", last_speed));
             }
             Err(err) => {
-                progress.abandon_with_message(format!("failed after {processed} frames"));
-                return Err((err, processed));
+                failure = Some(err);
+                break;
             }
         }
     }
 
+    drop(progress_tx);
+    let summary = progress_task.await.expect("progress task panicked");
+
+    if let Some(err) = failure {
+        let processed = summary.processed;
+        progress.abandon_with_message(format!("failed after {processed} frames"));
+        return Err((err, processed));
+    }
+
+    if let Some(sink) = frame_sink {
+        sink.shutdown().await;
+    }
+
     if let Some(total) = total_frames {
-        let display_total = if processed < total {
-            progress.set_length(processed);
-            progress.set_position(processed);
-            processed
+        let display_total = if summary.processed < total {
+            progress.set_length(summary.processed);
+            summary.processed
         } else {
             total
         };
-        if processed >= display_total {
+        if summary.processed >= display_total {
             progress.set_position(display_total);
         }
         progress.finish_with_message(format!(
-            "completed {processed}/{display_total} frames @ {:.2}x",
-            last_speed
+            "completed {}/{} frames @ {:.2}x",
+            summary.processed, display_total, summary.last_speed
         ));
     } else {
-        progress.finish_with_message(format!("completed {processed} frames @ {:.2}x", last_speed));
+        progress.finish_with_message(format!(
+            "completed {} frames @ {:.2}x",
+            summary.processed, summary.last_speed
+        ));
     }
 
     Ok(())
 }
 
-fn determine_fallback_backend(
-    current: Backend,
-    available: &[Backend],
-    tried: &[Backend],
-    err: &YPlaneError,
-) -> Option<Backend> {
-    if current != Backend::VideoToolbox {
-        return None;
-    }
-    let message = match err {
-        YPlaneError::BackendFailure { backend, message } if *backend == "videotoolbox" => message,
-        _ => return None,
-    };
-    if !message.contains("Cannot Decode") {
-        return None;
-    }
-    #[cfg(feature = "backend-ffmpeg")]
-    {
-        if available.contains(&Backend::Ffmpeg) && !tried.contains(&Backend::Ffmpeg) {
-            eprintln!("videotoolbox backend cannot decode this media; falling back to ffmpeg");
-            return Some(Backend::Ffmpeg);
-        }
-    }
-    #[cfg(not(feature = "backend-ffmpeg"))]
-    {
-        let _ = (available, tried);
-    }
-    None
+fn next_backend(available: &[Backend], tried: &[Backend]) -> Option<Backend> {
+    available
+        .iter()
+        .copied()
+        .find(|backend| !tried.contains(backend))
 }
 
 fn print_available_backends() {
@@ -244,5 +287,60 @@ fn print_available_backends() {
         println!("available backends: (none compiled)");
     } else {
         println!("available backends: {}", names.join(", "));
+    }
+}
+
+#[derive(Debug)]
+struct ProgressEvent {
+    index: u64,
+    timestamp: Option<Duration>,
+}
+
+#[derive(Debug)]
+struct ProgressSummary {
+    processed: u64,
+    last_speed: f64,
+}
+
+fn progress_channel_capacity(total_frames: Option<u64>) -> usize {
+    match total_frames {
+        Some(total) => total.min(1024).max(64).try_into().unwrap_or(1024),
+        None => 512,
+    }
+}
+
+async fn drive_progress(
+    progress: ProgressBar,
+    mut rx: mpsc::Receiver<ProgressEvent>,
+    total_frames: Option<u64>,
+    started: Instant,
+) -> ProgressSummary {
+    let mut processed = 0u64;
+    let mut last_speed = 0.0f64;
+
+    while let Some(event) = rx.recv().await {
+        processed = event.index;
+
+        if let Some(total) = total_frames {
+            if processed > total {
+                progress.set_length(processed);
+            }
+        }
+
+        progress.set_position(processed);
+
+        let media_position = event
+            .timestamp
+            .unwrap_or_else(|| Duration::from_secs_f64(processed as f64 / 30.0));
+        let elapsed_secs = started.elapsed().as_secs_f64();
+        if elapsed_secs > 0.0 {
+            last_speed = media_position.as_secs_f64() / elapsed_secs;
+            progress.set_message(format!("{:.2}x", last_speed));
+        }
+    }
+
+    ProgressSummary {
+        processed,
+        last_speed,
     }
 }

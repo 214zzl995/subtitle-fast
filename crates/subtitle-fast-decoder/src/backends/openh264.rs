@@ -1,5 +1,6 @@
 #![cfg(feature = "backend-openh264")]
 
+use std::collections::VecDeque;
 use std::fs;
 use std::fs::File;
 use std::io::Cursor;
@@ -11,14 +12,16 @@ use openh264::Error as OpenH264Error;
 use openh264::decoder::Decoder;
 use openh264::formats::YUVSource;
 use openh264::nal_units;
-use tokio::sync::mpsc;
+use rayon::spawn;
 
 use crate::core::{
     DynYPlaneProvider, YPlaneError, YPlaneFrame, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
     spawn_stream_from_channel,
 };
+use tokio::sync::mpsc::{self, Sender, error::TryRecvError};
 
 const BACKEND_NAME: &str = "openh264";
+const CHUNK_RESULT_CAPACITY: usize = 64;
 
 pub struct OpenH264Provider {
     input: PathBuf,
@@ -41,7 +44,7 @@ impl OpenH264Provider {
         })
     }
 
-    fn decode_loop(&self, tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
+    fn decode_loop(&self, tx: Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
         let data = fs::read(&self.input)?;
         match decode_mp4_stream(data.as_slice(), tx.clone()) {
             Ok(()) => Ok(()),
@@ -112,7 +115,7 @@ fn probe_total_frames(path: &Path) -> YPlaneResult<Option<u64>> {
     let file = File::open(path)?;
     let size = file.metadata()?.len();
 
-    let mut reader = match Mp4Reader::read_header(file, size) {
+    let reader = match Mp4Reader::read_header(file, size) {
         Ok(reader) => reader,
         Err(_) => return Ok(None),
     };
@@ -143,10 +146,7 @@ fn probe_total_frames(path: &Path) -> YPlaneResult<Option<u64>> {
     Ok(Some(sample_count.into()))
 }
 
-fn decode_annexb_stream(
-    data: &[u8],
-    tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>,
-) -> YPlaneResult<()> {
+fn decode_annexb_stream(data: &[u8], tx: Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
     let mut decoder = Decoder::new().map_err(map_openh264_error)?;
     let mut frame_index: u64 = 0;
     for packet in nal_units(data) {
@@ -178,7 +178,7 @@ fn decode_annexb_stream(
     Ok(())
 }
 
-fn decode_mp4_stream(data: &[u8], tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
+fn decode_mp4_stream(data: &[u8], tx: Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
     let size = u64::try_from(data.len()).map_err(|err| {
         YPlaneError::backend_failure(
             BACKEND_NAME,
@@ -211,7 +211,6 @@ fn decode_mp4_stream(data: &[u8], tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>) -
     })?;
 
     let mut converter = Mp4BitstreamConverter::from_track(track)?;
-    let mut decoder = Decoder::new().map_err(map_openh264_error)?;
     let timescale = track.timescale();
     let sample_count = reader.sample_count(track_id).map_err(|err| {
         YPlaneError::backend_failure(
@@ -220,10 +219,18 @@ fn decode_mp4_stream(data: &[u8], tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>) -
         )
     })?;
 
+    let (chunk_tx, mut chunk_rx) =
+        mpsc::channel::<(usize, Vec<YPlaneResult<YPlaneFrame>>)>(CHUNK_RESULT_CAPACITY);
+    let mut ordered = OrderedChunks::new();
+    let mut chunk_samples = Vec::new();
     let mut converted = Vec::new();
-    let mut next_frame_timestamp: Option<Duration> = None;
-    let mut frame_duration_hint: Option<Duration> = None;
+    let mut chunk_index = 0usize;
+
     for sample_id in 1..=sample_count {
+        if drain_ready_chunks(&mut chunk_rx, &mut ordered, &tx)? {
+            return Ok(());
+        }
+
         let Some(sample) = reader.read_sample(track_id, sample_id).map_err(|err| {
             YPlaneError::backend_failure(
                 BACKEND_NAME,
@@ -233,6 +240,17 @@ fn decode_mp4_stream(data: &[u8], tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>) -
         else {
             continue;
         };
+
+        let is_keyframe = sample.is_sync;
+
+        if is_keyframe && !chunk_samples.is_empty() {
+            flush_chunk(
+                chunk_index,
+                std::mem::take(&mut chunk_samples),
+                chunk_tx.clone(),
+            );
+            chunk_index += 1;
+        }
 
         converter.convert_sample(sample.bytes.as_ref(), &mut converted)?;
 
@@ -244,36 +262,195 @@ fn decode_mp4_stream(data: &[u8], tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>) -
             (None, None)
         };
 
-        match decoder.decode(&converted) {
-            Ok(Some(image)) => {
-                let frame = convert_frame(&image, sample_timestamp)?;
-                if tx.blocking_send(Ok(frame)).is_err() {
-                    return Ok(());
+        chunk_samples.push(ChunkSample::new(
+            &converted,
+            sample_timestamp,
+            sample_duration,
+        ));
+    }
+
+    if !chunk_samples.is_empty() {
+        flush_chunk(chunk_index, chunk_samples, chunk_tx.clone());
+    }
+    drop(chunk_tx);
+
+    if drain_ready_chunks(&mut chunk_rx, &mut ordered, &tx)? {
+        return Ok(());
+    }
+    while let Some((index, frames)) = chunk_rx.blocking_recv() {
+        if handle_chunk(index, frames, &mut ordered, &tx)? {
+            return Ok(());
+        }
+    }
+    flush_ordered(&mut ordered, &tx)?;
+    Ok(())
+}
+
+fn flush_chunk(
+    chunk_index: usize,
+    samples: Vec<ChunkSample>,
+    chunk_tx: mpsc::Sender<(usize, Vec<YPlaneResult<YPlaneFrame>>)>,
+) {
+    spawn(move || {
+        let results = decode_chunk(samples);
+        let _ = chunk_tx.blocking_send((chunk_index, results));
+    });
+}
+
+fn decode_chunk(samples: Vec<ChunkSample>) -> Vec<YPlaneResult<YPlaneFrame>> {
+    let mut frames = Vec::new();
+    let mut decoder = match Decoder::new() {
+        Ok(decoder) => decoder,
+        Err(err) => return vec![Err(map_openh264_error(err))],
+    };
+    let mut next_frame_timestamp: Option<Duration> = None;
+    let mut frame_duration_hint: Option<Duration> = None;
+
+    for sample in samples {
+        match decoder.decode(sample.data.as_slice()) {
+            Ok(Some(image)) => match convert_frame(&image, sample.timestamp) {
+                Ok(frame) => frames.push(Ok(frame)),
+                Err(err) => {
+                    frames.push(Err(err));
+                    return frames;
                 }
-            }
+            },
             Ok(None) => {}
             Err(err) => {
-                return Err(map_openh264_error(err));
+                frames.push(Err(map_openh264_error(err)));
+                return frames;
             }
         }
 
-        if let (Some(ts), Some(dur)) = (sample_timestamp, sample_duration) {
+        if let (Some(ts), Some(dur)) = (sample.timestamp, sample.duration) {
             next_frame_timestamp = Some(ts + dur);
             frame_duration_hint = Some(dur);
         }
     }
 
-    for image in decoder.flush_remaining().map_err(map_openh264_error)? {
-        let frame = convert_frame(&image, next_frame_timestamp)?;
-        if tx.blocking_send(Ok(frame)).is_err() {
-            return Ok(());
+    match decoder.flush_remaining() {
+        Ok(images) => {
+            for image in images {
+                let timestamp = next_frame_timestamp;
+                match convert_frame(&image, timestamp) {
+                    Ok(frame) => frames.push(Ok(frame)),
+                    Err(err) => {
+                        frames.push(Err(err));
+                        return frames;
+                    }
+                }
+                if let (Some(ts), Some(dur)) = (timestamp, frame_duration_hint) {
+                    next_frame_timestamp = Some(ts + dur);
+                }
+            }
         }
-        if let (Some(ts), Some(dur)) = (next_frame_timestamp, frame_duration_hint) {
-            next_frame_timestamp = Some(ts + dur);
+        Err(err) => frames.push(Err(map_openh264_error(err))),
+    }
+
+    frames
+}
+
+fn drain_ready_chunks(
+    chunk_rx: &mut mpsc::Receiver<(usize, Vec<YPlaneResult<YPlaneFrame>>)>,
+    ordered: &mut OrderedChunks,
+    tx: &Sender<YPlaneResult<YPlaneFrame>>,
+) -> YPlaneResult<bool> {
+    loop {
+        match chunk_rx.try_recv() {
+            Ok((index, frames)) => {
+                if handle_chunk(index, frames, ordered, tx)? {
+                    return Ok(true);
+                }
+            }
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => break,
+        }
+    }
+    flush_ordered(ordered, tx)
+}
+
+fn handle_chunk(
+    index: usize,
+    frames: Vec<YPlaneResult<YPlaneFrame>>,
+    ordered: &mut OrderedChunks,
+    tx: &Sender<YPlaneResult<YPlaneFrame>>,
+) -> YPlaneResult<bool> {
+    ordered.insert(index, frames);
+    flush_ordered(ordered, tx)
+}
+
+fn flush_ordered(
+    ordered: &mut OrderedChunks,
+    tx: &Sender<YPlaneResult<YPlaneFrame>>,
+) -> YPlaneResult<bool> {
+    while let Some(frames) = ordered.pop_ready() {
+        for frame in frames {
+            match frame {
+                Ok(frame) => {
+                    if tx.blocking_send(Ok(frame)).is_err() {
+                        return Ok(true);
+                    }
+                }
+                Err(err) => {
+                    let _ = tx.blocking_send(Err(err));
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+struct OrderedChunks {
+    next_index: usize,
+    pending: VecDeque<Option<Vec<YPlaneResult<YPlaneFrame>>>>,
+}
+
+impl OrderedChunks {
+    fn new() -> Self {
+        Self {
+            next_index: 0,
+            pending: VecDeque::new(),
         }
     }
 
-    Ok(())
+    fn insert(&mut self, index: usize, frames: Vec<YPlaneResult<YPlaneFrame>>) {
+        if index < self.next_index {
+            return;
+        }
+        let relative = index - self.next_index;
+        if relative >= self.pending.len() {
+            self.pending.resize_with(relative + 1, || None);
+        }
+        self.pending[relative] = Some(frames);
+    }
+
+    fn pop_ready(&mut self) -> Option<Vec<YPlaneResult<YPlaneFrame>>> {
+        if let Some(slot) = self.pending.front_mut() {
+            if let Some(frames) = slot.take() {
+                self.pending.pop_front();
+                self.next_index = self.next_index.saturating_add(1);
+                return Some(frames);
+            }
+        }
+        None
+    }
+}
+
+struct ChunkSample {
+    data: Vec<u8>,
+    timestamp: Option<Duration>,
+    duration: Option<Duration>,
+}
+
+impl ChunkSample {
+    fn new(data: &[u8], timestamp: Option<Duration>, duration: Option<Duration>) -> Self {
+        Self {
+            data: data.to_vec(),
+            timestamp,
+            duration,
+        }
+    }
 }
 
 struct Mp4BitstreamConverter {

@@ -1,18 +1,19 @@
 #![cfg(feature = "backend-videotoolbox")]
 
-use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::BufReader;
 use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
+use tokio::sync::mpsc::{self, error::TryRecvError};
 
 use objc::rc::StrongPtr;
 use objc::runtime::{BOOL, NO, Object, YES};
 use objc::{class, msg_send, sel, sel_impl};
-use rayon::ThreadPool;
+use rayon::prelude::*;
+use rayon::spawn;
 
 use crate::core::{
     DynYPlaneProvider, YPlaneError, YPlaneFrame, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
@@ -121,25 +122,8 @@ mod platform {
             })
         }
 
-        fn available_parallelism() -> usize {
-            std::thread::available_parallelism()
-                .map(|p| p.get())
-                .unwrap_or(2)
-                .max(1)
-        }
-
-        fn build_pool() -> YPlaneResult<ThreadPool> {
-            rayon::ThreadPoolBuilder::new()
-                .thread_name(|idx| format!("vt-worker-{idx}"))
-                .num_threads(Self::available_parallelism())
-                .build()
-                .map_err(|err| {
-                    YPlaneError::backend_failure(
-                        "videotoolbox",
-                        format!("failed to build worker pool: {err}"),
-                    )
-                })
-        }
+        const RESULT_CHANNEL_CAPACITY: usize = 512;
+        const MAX_PENDING_SAMPLES: usize = 8;
 
         fn probe_total_frames(path: &Path) -> YPlaneResult<Option<u64>> {
             if let Some(total) = Self::probe_total_frames_mp4(path)? {
@@ -277,7 +261,7 @@ mod platform {
 
         fn into_stream(self: Box<Self>) -> YPlaneStream {
             let path = self.input.clone();
-            spawn_stream_from_channel(32, move |tx| unsafe {
+            spawn_stream_from_channel(Self::RESULT_CHANNEL_CAPACITY, move |tx| unsafe {
                 let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
                 if let Err(err) = decode_videotoolbox(path.clone(), tx.clone()) {
                     let _ = tx.blocking_send(Err(err));
@@ -289,14 +273,10 @@ mod platform {
 
     fn decode_videotoolbox(
         path: PathBuf,
-        tx: tokio::sync::mpsc::Sender<YPlaneResult<YPlaneFrame>>,
+        tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>,
     ) -> YPlaneResult<()> {
-        let debug = std::env::var_os("SUBFAST_DEBUG_VT").is_some();
-        if debug {
-            eprintln!("[videotoolbox] starting decode for {}", path.display());
-        }
         unsafe {
-            const MAX_PENDING_SAMPLES: usize = 24;
+            let max_pending_samples = VideoToolboxProvider::MAX_PENDING_SAMPLES;
             let ns_path = StrongPtr::new(nsstring_from_path(&path)?);
             let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath:*ns_path];
             if url.is_null() {
@@ -397,6 +377,11 @@ mod platform {
                 ));
             }
             let output = StrongPtr::new(output_obj);
+            let responds: BOOL =
+                msg_send![*output, respondsToSelector: sel!(setAlwaysCopiesSampleData:)];
+            if responds == YES {
+                let _: () = msg_send![*output, setAlwaysCopiesSampleData:NO];
+            }
 
             let can_add: BOOL = msg_send![*reader, canAddOutput:*output];
             if can_add != YES {
@@ -413,36 +398,22 @@ mod platform {
                 return Err(vt_error("failed to start reading", err_obj));
             }
 
-            let thread_pool = VideoToolboxProvider::build_pool()?;
-            let (chunk_tx, chunk_rx) = mpsc::channel();
+            let (chunk_tx, mut chunk_rx) =
+                mpsc::channel(VideoToolboxProvider::RESULT_CHANNEL_CAPACITY);
 
             let mut chunk_index = 0usize;
-            let mut next_chunk = 0usize;
             let mut chunk_samples = Vec::new();
-            let mut ordered = BTreeMap::<usize, Vec<YPlaneResult<YPlaneFrame>>>::new();
+            let mut ordered = OrderedChunks::new();
             let mut emitted: u64 = 0;
 
             loop {
-                if drain_ready_chunks(
-                    &chunk_rx,
-                    &mut ordered,
-                    &mut next_chunk,
-                    &tx,
-                    &mut emitted,
-                    debug,
-                )? {
+                if drain_ready_chunks(&mut chunk_rx, &mut ordered, &tx, &mut emitted)? {
                     return Ok(());
                 }
                 let sample: *mut Object = msg_send![*output, copyNextSampleBuffer];
                 if sample.is_null() {
                     let status: i32 = msg_send![*reader, status];
                     if status == AVAssetReaderStatus::Completed as i32 {
-                        if debug {
-                            eprintln!(
-                                "[videotoolbox] reader reported completion after chunk {}",
-                                chunk_index
-                            );
-                        }
                         break;
                     } else if status == AVAssetReaderStatus::Failed as i32 {
                         let err_obj: *mut Object = msg_send![*reader, error];
@@ -464,7 +435,6 @@ mod platform {
 
                 if is_keyframe && !chunk_samples.is_empty() {
                     flush_chunk(
-                        &thread_pool,
                         chunk_index,
                         std::mem::take(&mut chunk_samples),
                         chunk_tx.clone(),
@@ -478,9 +448,8 @@ mod platform {
                     pts,
                 });
 
-                if chunk_samples.len() >= MAX_PENDING_SAMPLES {
+                if chunk_samples.len() >= max_pending_samples {
                     flush_chunk(
-                        &thread_pool,
                         chunk_index,
                         std::mem::take(&mut chunk_samples),
                         chunk_tx.clone(),
@@ -490,125 +459,86 @@ mod platform {
             }
 
             if !chunk_samples.is_empty() {
-                flush_chunk(&thread_pool, chunk_index, chunk_samples, chunk_tx.clone());
+                flush_chunk(chunk_index, chunk_samples, chunk_tx.clone());
             }
             drop(chunk_tx);
-            if drain_ready_chunks(
-                &chunk_rx,
-                &mut ordered,
-                &mut next_chunk,
-                &tx,
-                &mut emitted,
-                debug,
-            )? {
+            if drain_ready_chunks(&mut chunk_rx, &mut ordered, &tx, &mut emitted)? {
                 return Ok(());
             }
-            while let Ok((index, frames)) = chunk_rx.recv() {
-                if handle_chunk(
-                    index,
-                    frames,
-                    &mut ordered,
-                    &mut next_chunk,
-                    &tx,
-                    &mut emitted,
-                    debug,
-                )? {
+            while let Some((index, frames)) = chunk_rx.blocking_recv() {
+                if handle_chunk(index, frames, &mut ordered, &tx, &mut emitted)? {
                     return Ok(());
                 }
             }
-            if flush_ordered(&mut ordered, &mut next_chunk, &tx, &mut emitted, debug)? {
+            if flush_ordered(&mut ordered, &tx, &mut emitted)? {
                 return Ok(());
-            }
-            if debug {
-                eprintln!("[videotoolbox] finished decoding; total frames emitted {emitted}");
             }
         }
         Ok(())
     }
 
     fn flush_chunk(
-        pool: &ThreadPool,
         chunk_index: usize,
         samples: Vec<PendingSample>,
         chunk_tx: mpsc::Sender<(usize, Vec<YPlaneResult<YPlaneFrame>>)>,
     ) {
-        pool.spawn_fifo(move || {
-            let mut results = Vec::with_capacity(samples.len());
-            for sample in samples {
-                unsafe {
+        spawn(move || {
+            let results: Vec<_> = samples
+                .into_par_iter()
+                .map(|sample| unsafe {
                     let result = sample_to_frame(sample.sample, sample.pts);
                     CFRelease(sample.sample as CFTypeRef);
-                    results.push(result);
-                }
-            }
-            let _ = chunk_tx.send((chunk_index, results));
+                    result
+                })
+                .collect();
+            let _ = chunk_tx.blocking_send((chunk_index, results));
         });
     }
 
     fn drain_ready_chunks(
-        chunk_rx: &mpsc::Receiver<(usize, Vec<YPlaneResult<YPlaneFrame>>)>,
-        ordered: &mut BTreeMap<usize, Vec<YPlaneResult<YPlaneFrame>>>,
-        next_chunk: &mut usize,
-        tx: &tokio::sync::mpsc::Sender<YPlaneResult<YPlaneFrame>>,
+        chunk_rx: &mut mpsc::Receiver<(usize, Vec<YPlaneResult<YPlaneFrame>>)>,
+        ordered: &mut OrderedChunks,
+        tx: &mpsc::Sender<YPlaneResult<YPlaneFrame>>,
         emitted: &mut u64,
-        debug: bool,
     ) -> YPlaneResult<bool> {
         loop {
             match chunk_rx.try_recv() {
                 Ok((index, frames)) => {
-                    if handle_chunk(index, frames, ordered, next_chunk, tx, emitted, debug)? {
+                    if handle_chunk(index, frames, ordered, tx, emitted)? {
                         return Ok(true);
                     }
                 }
-                Err(TryRecvError::Empty) => return Ok(false),
-                Err(TryRecvError::Disconnected) => return Ok(false),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
             }
         }
+        flush_ordered(ordered, tx, emitted)
     }
 
     fn handle_chunk(
         index: usize,
         frames: Vec<YPlaneResult<YPlaneFrame>>,
-        ordered: &mut BTreeMap<usize, Vec<YPlaneResult<YPlaneFrame>>>,
-        next_chunk: &mut usize,
-        tx: &tokio::sync::mpsc::Sender<YPlaneResult<YPlaneFrame>>,
+        ordered: &mut OrderedChunks,
+        tx: &mpsc::Sender<YPlaneResult<YPlaneFrame>>,
         emitted: &mut u64,
-        debug: bool,
     ) -> YPlaneResult<bool> {
-        if debug {
-            eprintln!(
-                "[videotoolbox] received chunk {index} containing {} frames",
-                frames.len()
-            );
-        }
         ordered.insert(index, frames);
-        flush_ordered(ordered, next_chunk, tx, emitted, debug)
+        flush_ordered(ordered, tx, emitted)
     }
 
     fn flush_ordered(
-        ordered: &mut BTreeMap<usize, Vec<YPlaneResult<YPlaneFrame>>>,
-        next_chunk: &mut usize,
-        tx: &tokio::sync::mpsc::Sender<YPlaneResult<YPlaneFrame>>,
+        ordered: &mut OrderedChunks,
+        tx: &mpsc::Sender<YPlaneResult<YPlaneFrame>>,
         emitted: &mut u64,
-        debug: bool,
     ) -> YPlaneResult<bool> {
-        while let Some(frames) = ordered.remove(&*next_chunk) {
+        while let Some(frames) = ordered.pop_ready() {
             for frame in frames {
                 match frame {
                     Ok(frame) => {
                         if tx.blocking_send(Ok(frame)).is_err() {
-                            if debug {
-                                eprintln!(
-                                    "[videotoolbox] channel closed after emitting {} frames",
-                                    *emitted
-                                );
-                            }
                             return Ok(true);
                         }
                         *emitted = (*emitted).saturating_add(1);
-                        if debug && *emitted % 500 == 0 {
-                            eprintln!("[videotoolbox] emitted {} frames so far", *emitted);
-                        }
                     }
                     Err(err) => {
                         let _ = tx.blocking_send(Err(err));
@@ -616,7 +546,6 @@ mod platform {
                     }
                 }
             }
-            *next_chunk += 1;
         }
         Ok(false)
     }
@@ -664,13 +593,48 @@ mod platform {
                     "calculated stride overflow for Y plane",
                 )
             })?;
-            let mut buffer = vec![0u8; len];
-            std::ptr::copy_nonoverlapping(base, buffer.as_mut_ptr(), len);
+            let buffer = std::slice::from_raw_parts(base, len).to_vec();
 
             CVPixelBufferUnlockBaseAddress(pixel_buffer, PIXEL_BUFFER_LOCK_READ_ONLY);
 
             let timestamp = cm_time_to_duration(pts);
             YPlaneFrame::from_owned(width, height, stride, timestamp, buffer)
+        }
+    }
+
+    struct OrderedChunks {
+        next_index: usize,
+        pending: VecDeque<Option<Vec<YPlaneResult<YPlaneFrame>>>>,
+    }
+
+    impl OrderedChunks {
+        fn new() -> Self {
+            Self {
+                next_index: 0,
+                pending: VecDeque::new(),
+            }
+        }
+
+        fn insert(&mut self, index: usize, frames: Vec<YPlaneResult<YPlaneFrame>>) {
+            if index < self.next_index {
+                return;
+            }
+            let relative = index - self.next_index;
+            if relative >= self.pending.len() {
+                self.pending.resize_with(relative + 1, || None);
+            }
+            self.pending[relative] = Some(frames);
+        }
+
+        fn pop_ready(&mut self) -> Option<Vec<YPlaneResult<YPlaneFrame>>> {
+            if let Some(slot) = self.pending.front_mut() {
+                if let Some(frames) = slot.take() {
+                    self.pending.pop_front();
+                    self.next_index = self.next_index.saturating_add(1);
+                    return Some(frames);
+                }
+            }
+            None
         }
     }
 

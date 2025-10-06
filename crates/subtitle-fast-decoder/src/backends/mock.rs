@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::Sender;
 
 use crate::core::{
     DynYPlaneProvider, YPlaneFrame, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
@@ -30,7 +30,7 @@ impl MockProvider {
         }
     }
 
-    fn emit_frames(&self, tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>) {
+    fn emit_frames(&self, tx: Sender<YPlaneResult<YPlaneFrame>>) {
         for index in 0..self.frame_count {
             if tx.is_closed() {
                 break;

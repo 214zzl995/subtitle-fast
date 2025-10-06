@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_core::Stream;
+use futures_util::stream::unfold;
 use thiserror::Error;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::sync::mpsc::{self, Sender};
 
 pub type YPlaneStream = Pin<Box<dyn Stream<Item = YPlaneResult<YPlaneFrame>> + Send>>;
 
@@ -138,11 +138,17 @@ impl YPlaneError {
 
 pub fn spawn_stream_from_channel(
     capacity: usize,
-    task: impl FnOnce(mpsc::Sender<YPlaneResult<YPlaneFrame>>) + Send + 'static,
+    task: impl FnOnce(Sender<YPlaneResult<YPlaneFrame>>) + Send + 'static,
 ) -> YPlaneStream {
     let (tx, rx) = mpsc::channel(capacity);
     tokio::task::spawn_blocking(move || task(tx));
-    Box::pin(ReceiverStream::new(rx))
+    let stream = unfold(rx, |mut receiver| async {
+        match receiver.recv().await {
+            Some(item) => Some((item, receiver)),
+            None => None,
+        }
+    });
+    Box::pin(stream)
 }
 
 #[cfg(test)]

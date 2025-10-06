@@ -5,12 +5,12 @@ use std::time::Duration;
 
 use ffmpeg::util::error::{EAGAIN, EWOULDBLOCK};
 use ffmpeg_next as ffmpeg;
-use tokio::sync::mpsc;
 
 use crate::core::{
     DynYPlaneProvider, YPlaneError, YPlaneFrame, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
     spawn_stream_from_channel,
 };
+use tokio::sync::mpsc::Sender;
 
 const BACKEND_NAME: &str = "ffmpeg";
 const FILTER_SPEC: &str =
@@ -127,7 +127,7 @@ impl VideoFilterPipeline {
     fn drain(
         &mut self,
         fallback_time_base: ffmpeg::Rational,
-        tx: &mpsc::Sender<YPlaneResult<YPlaneFrame>>,
+        tx: &Sender<YPlaneResult<YPlaneFrame>>,
     ) -> YPlaneResult<()> {
         unsafe {
             let mut context = ffmpeg::filter::context::Context::wrap(self.sink_ctx);
@@ -188,7 +188,7 @@ impl FfmpegProvider {
         })
     }
 
-    fn decode_loop(&self, tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
+    fn decode_loop(&self, tx: Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
         let mut ictx = ffmpeg::format::input(&self.input)
             .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
         let input_stream = ictx
@@ -256,7 +256,7 @@ fn drain_decoder(
     decoded: &mut ffmpeg::util::frame::Video,
     filter: &mut VideoFilterPipeline,
     fallback_time_base: ffmpeg::Rational,
-    tx: &mpsc::Sender<YPlaneResult<YPlaneFrame>>,
+    tx: &Sender<YPlaneResult<YPlaneFrame>>,
 ) -> YPlaneResult<()> {
     loop {
         match decoder.receive_frame(decoded) {

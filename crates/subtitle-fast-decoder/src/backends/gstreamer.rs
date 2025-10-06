@@ -9,7 +9,7 @@ use gstreamer::MessageView;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::Sender;
 
 use crate::core::{
     DynYPlaneProvider, YPlaneError, YPlaneFrame, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
@@ -38,7 +38,7 @@ impl GStreamerProvider {
         })
     }
 
-    fn run(&self, tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
+    fn run(&self, tx: Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
         gst::init().map_err(|err| backend_error(err.to_string()))?;
         let pipeline = gst::Pipeline::new();
         let src = gst::ElementFactory::make("filesrc")

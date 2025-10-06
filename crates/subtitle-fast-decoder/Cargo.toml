@@ -13,10 +13,11 @@ backend-videotoolbox = [
     "dep:objc",
     "dep:rayon",
 ]
-backend-openh264 = ["dep:openh264", "dep:mp4"]
+backend-openh264 = ["dep:openh264", "dep:mp4", "dep:rayon"]
 
 [dependencies]
 futures-core = "0.3"
+futures-util = "0.3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-stream = "0.1"

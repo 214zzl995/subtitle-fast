@@ -2,5 +2,6 @@
 members = [
     "crates/subtitle-fast",
     "crates/subtitle-fast-decoder",
+    "crates/subtitle-fast-sink",
 ]
 resolver = "2"
