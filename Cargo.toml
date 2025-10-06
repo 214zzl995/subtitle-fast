@@ -1,6 +1,6 @@
-[package]
-name = "subtitle-fast"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
+[workspace]
+members = [
+    "crates/subtitle-fast",
+    "crates/subtitle-fast-decoder",
+]
+resolver = "2"
