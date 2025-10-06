@@ -14,6 +14,8 @@ use tokio::task::{self, JoinHandle, JoinSet};
 const DEFAULT_CHANNEL_CAPACITY: usize = 64;
 const DEFAULT_MAX_CONCURRENCY: usize = 8;
 
+pub mod subtitle_detection;
+
 pub struct FrameSink {
     sender: Sender<Job>,
     worker: JoinHandle<()>,
