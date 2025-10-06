@@ -17,6 +17,7 @@ const BACKEND_NAME: &str = "ffmpeg";
 pub struct FfmpegProvider {
     input: PathBuf,
     channel_capacity: usize,
+    total_frames: Option<u64>,
 }
 
 impl FfmpegProvider {
@@ -30,9 +31,11 @@ impl FfmpegProvider {
         }
         ffmpeg::init()
             .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+        let total_frames = probe_total_frames(path)?;
         Ok(Self {
             input: path.to_path_buf(),
             channel_capacity: 8,
+            total_frames,
         })
     }
 
@@ -113,6 +116,10 @@ impl FfmpegProvider {
 }
 
 impl YPlaneStreamProvider for FfmpegProvider {
+    fn total_frames(&self) -> Option<u64> {
+        self.total_frames
+    }
+
     fn into_stream(self: Box<Self>) -> YPlaneStream {
         let provider = *self;
         let capacity = provider.channel_capacity;
@@ -151,6 +158,44 @@ fn is_retryable_error(error: &ffmpeg::Error) -> bool {
         ffmpeg::Error::Other { errno }
             if *errno == EAGAIN || *errno == EWOULDBLOCK
     )
+}
+
+fn probe_total_frames(path: &Path) -> YPlaneResult<Option<u64>> {
+    let ictx = ffmpeg::format::input(path)
+        .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+    let stream = ictx
+        .streams()
+        .best(ffmpeg::media::Type::Video)
+        .ok_or_else(|| YPlaneError::backend_failure(BACKEND_NAME, "no video stream found"))?;
+    Ok(estimate_stream_total_frames(&stream))
+}
+
+fn estimate_stream_total_frames(stream: &ffmpeg::format::stream::Stream) -> Option<u64> {
+    let frames = stream.frames();
+    if frames > 0 {
+        return Some(frames as u64);
+    }
+
+    let duration = stream.duration();
+    if duration <= 0 {
+        return None;
+    }
+    let time_base = stream.time_base();
+    let avg_frame_rate = stream.avg_frame_rate();
+    let seconds = (duration as f64) * f64::from(time_base);
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return None;
+    }
+    let fps = f64::from(avg_frame_rate);
+    if !fps.is_finite() || fps <= 0.0 {
+        return None;
+    }
+    let total = (seconds * fps).round();
+    if total.is_sign_negative() || !total.is_finite() {
+        None
+    } else {
+        Some(total as u64)
+    }
 }
 
 pub fn boxed_ffmpeg<P: AsRef<Path>>(path: P) -> YPlaneResult<DynYPlaneProvider> {

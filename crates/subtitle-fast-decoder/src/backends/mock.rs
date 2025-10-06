@@ -54,6 +54,10 @@ impl MockProvider {
 }
 
 impl YPlaneStreamProvider for MockProvider {
+    fn total_frames(&self) -> Option<u64> {
+        Some(self.frame_count as u64)
+    }
+
     fn into_stream(self: Box<Self>) -> YPlaneStream {
         let provider = *self;
         spawn_stream_from_channel(8, move |tx| {
@@ -74,7 +78,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn mock_backend_emits_frames() {
         let provider = boxed_mock(None).unwrap();
+        let total = provider.total_frames();
         let mut stream = provider.into_stream();
+        assert_eq!(total, Some(120));
         let frame = stream.next().await.unwrap().unwrap();
         assert_eq!(frame.width(), 640);
         assert_eq!(frame.height(), 360);

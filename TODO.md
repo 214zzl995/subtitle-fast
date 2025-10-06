@@ -25,14 +25,9 @@
 - [x] Convert decoded frames to Y-plane buffers and push through async stream.
 - [ ] Benchmark/monitor performance impacts.
 
-## GStreamer Backend
-- [x] Depend on `gstreamer` Rust bindings with required feature flags for H.264.
-- [x] Build pipeline using appsrc/appsink (or similar) to access Y-plane data in real time.
-- [x] Wrap GStreamer bus/event handling inside async-compatible stream producer.
-
 ## Cross-Cutting Concerns
 - [x] Define configuration layer selecting backend at runtime or compile time.
-- [ ] Implement unit/integration tests using sample H.264 assets for each backend (where supported). *(FFmpeg, OpenH264, and VideoToolbox covered; GStreamer pending)*
+- [ ] Implement unit/integration tests using sample H.264 assets for each backend (where supported). *(FFmpeg, OpenH264, and VideoToolbox covered.)*
 - [ ] Provide mock/test double for Y-plane provider for environments lacking native support. *(Removed during workspace split; reconsider lightweight stub if needed.)*
 - [x] Document usage, backend selection, and platform requirements in README.
 - [x] Set up CI to build with minimal backend (e.g., OpenH264) and run lint/tests.

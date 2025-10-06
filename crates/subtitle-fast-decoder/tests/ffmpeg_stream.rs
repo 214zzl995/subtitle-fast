@@ -3,7 +3,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use subtitle_fast_decoder::{Backend, Configuration, YPlaneStreamProvider};
+use subtitle_fast_decoder::{Backend, Configuration};
 use tokio_stream::StreamExt;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -26,6 +26,7 @@ async fn ffmpeg_backend_requires_asset() {
         }
     };
 
+    let total_frames = provider.total_frames();
     let mut stream = provider.into_stream();
     let frame = stream
         .next()
@@ -34,4 +35,10 @@ async fn ffmpeg_backend_requires_asset() {
     let frame = frame.expect("frame decoding should succeed");
     assert!(frame.width() > 0);
     assert!(frame.height() > 0);
+    if let Some(total) = total_frames {
+        assert!(
+            total > 0,
+            "ffmpeg backend should report positive frame count"
+        );
+    }
 }

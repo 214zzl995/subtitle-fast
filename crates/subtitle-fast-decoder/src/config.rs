@@ -11,7 +11,6 @@ pub enum Backend {
     Ffmpeg,
     VideoToolbox,
     OpenH264,
-    GStreamer,
 }
 
 impl FromStr for Backend {
@@ -23,7 +22,6 @@ impl FromStr for Backend {
             "ffmpeg" => Ok(Backend::Ffmpeg),
             "videotoolbox" => Ok(Backend::VideoToolbox),
             "openh264" => Ok(Backend::OpenH264),
-            "gstreamer" => Ok(Backend::GStreamer),
             other => Err(YPlaneError::configuration(format!(
                 "unknown backend '{other}'"
             ))),
@@ -38,7 +36,6 @@ impl Backend {
             Backend::Ffmpeg => "ffmpeg",
             Backend::VideoToolbox => "videotoolbox",
             Backend::OpenH264 => "openh264",
-            Backend::GStreamer => "gstreamer",
         }
     }
 }
@@ -54,21 +51,21 @@ fn compiled_backends() -> Vec<Backend> {
     if github_ci_active() {
         backends.push(Backend::Mock);
     }
+    #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
+    {
+        backends.push(Backend::VideoToolbox);
+    }
     #[cfg(feature = "backend-ffmpeg")]
     {
         backends.push(Backend::Ffmpeg);
     }
-    #[cfg(feature = "backend-videotoolbox")]
+    #[cfg(all(feature = "backend-videotoolbox", not(target_os = "macos")))]
     {
         backends.push(Backend::VideoToolbox);
     }
     #[cfg(feature = "backend-openh264")]
     {
         backends.push(Backend::OpenH264);
-    }
-    #[cfg(feature = "backend-gstreamer")]
-    {
-        backends.push(Backend::GStreamer);
     }
     backends
 }
@@ -157,21 +154,6 @@ impl Configuration {
                 #[cfg(not(feature = "backend-openh264"))]
                 {
                     return Err(YPlaneError::unsupported("openh264"));
-                }
-            }
-            Backend::GStreamer => {
-                #[cfg(feature = "backend-gstreamer")]
-                {
-                    let path = self.input.clone().ok_or_else(|| {
-                        YPlaneError::configuration(
-                            "GStreamer backend requires SUBFAST_INPUT to be set",
-                        )
-                    })?;
-                    return crate::backends::gstreamer::boxed_gstreamer(path);
-                }
-                #[cfg(not(feature = "backend-gstreamer"))]
-                {
-                    return Err(YPlaneError::unsupported("gstreamer"));
                 }
             }
         }

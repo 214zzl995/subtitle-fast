@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
+use std::fs::File;
+use std::io::BufReader;
 use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -26,6 +28,7 @@ mod platform {
     use core_foundation_sys::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
     use core_foundation_sys::dictionary::{CFDictionaryGetValue, CFDictionaryRef};
     use core_foundation_sys::number::{CFBooleanGetValue, CFBooleanRef};
+    use mp4::{Mp4Reader, TrackType};
 
     #[allow(improper_ctypes)]
     #[link(name = "AVFoundation", kind = "framework")]
@@ -88,10 +91,18 @@ mod platform {
         pts: CMTime,
     }
 
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CMTimeRange {
+        start: CMTime,
+        duration: CMTime,
+    }
+
     unsafe impl Send for PendingSample {}
 
     pub struct VideoToolboxProvider {
         input: PathBuf,
+        total_frames: Option<u64>,
     }
 
     impl VideoToolboxProvider {
@@ -103,8 +114,10 @@ mod platform {
                     format!("input file {} does not exist", path.display()),
                 )));
             }
+            let total_frames = Self::probe_total_frames(path)?;
             Ok(Self {
                 input: path.to_path_buf(),
+                total_frames,
             })
         }
 
@@ -127,9 +140,141 @@ mod platform {
                     )
                 })
         }
+
+        fn probe_total_frames(path: &Path) -> YPlaneResult<Option<u64>> {
+            if let Some(total) = Self::probe_total_frames_mp4(path)? {
+                return Ok(Some(total));
+            }
+            unsafe { Self::probe_total_frames_avfoundation(path) }
+        }
+
+        fn probe_total_frames_mp4(path: &Path) -> YPlaneResult<Option<u64>> {
+            let file = File::open(path)?;
+            let size = file.metadata()?.len();
+            let reader = BufReader::new(file);
+            let mut reader = match Mp4Reader::read_header(reader, size) {
+                Ok(reader) => reader,
+                Err(_) => return Ok(None),
+            };
+
+            let track_id = match reader
+                .tracks()
+                .iter()
+                .find(|(_, track)| matches!(track.track_type(), Ok(TrackType::Video)))
+            {
+                Some((&id, _)) => id,
+                None => return Ok(None),
+            };
+
+            let count = reader.sample_count(track_id).map_err(|err| {
+                YPlaneError::backend_failure(
+                    "videotoolbox",
+                    format!("failed to query MP4 sample count: {err}"),
+                )
+            })?;
+
+            if count == 0 {
+                return Ok(None);
+            }
+
+            let mut available: u64 = 0;
+            for sample_id in 1..=count {
+                let sample = reader.read_sample(track_id, sample_id).map_err(|err| {
+                    YPlaneError::backend_failure(
+                        "videotoolbox",
+                        format!("failed to read MP4 sample {sample_id}: {err}"),
+                    )
+                })?;
+                if sample.is_some() {
+                    available = available.saturating_add(1);
+                }
+            }
+
+            if available == 0 {
+                Ok(None)
+            } else {
+                Ok(Some(available))
+            }
+        }
+
+        unsafe fn probe_total_frames_avfoundation(path: &Path) -> YPlaneResult<Option<u64>> {
+            let ns_path = unsafe { StrongPtr::new(nsstring_from_path(path)?) };
+            let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath:*ns_path];
+            if url.is_null() {
+                return Err(YPlaneError::backend_failure(
+                    "videotoolbox",
+                    format!("failed to create file URL for {}", path.display()),
+                ));
+            }
+
+            let asset: *mut Object = msg_send![class!(AVURLAsset), alloc];
+            let asset: *mut Object = msg_send![asset,
+                initWithURL:url
+                options:std::ptr::null_mut::<c_void>() as *mut Object
+            ];
+            if asset.is_null() {
+                return Err(YPlaneError::backend_failure(
+                    "videotoolbox",
+                    "failed to open AVURLAsset",
+                ));
+            }
+            let asset = unsafe { StrongPtr::new(asset) };
+
+            let media_type: CFStringRef = av_media_type_video();
+            let tracks: *mut Object = msg_send![*asset, tracksWithMediaType:media_type];
+            if tracks.is_null() {
+                return Err(YPlaneError::backend_failure(
+                    "videotoolbox",
+                    "asset contains no video tracks",
+                ));
+            }
+            let track: *mut Object = msg_send![tracks, firstObject];
+            if track.is_null() {
+                return Err(YPlaneError::backend_failure(
+                    "videotoolbox",
+                    "asset contains no primary video track",
+                ));
+            }
+
+            let time_range: CMTimeRange = msg_send![track, timeRange];
+            let duration_seconds = match cm_time_to_seconds(time_range.duration) {
+                Some(value) if value.is_finite() && value > 0.0 => value,
+                _ => return Ok(None),
+            };
+
+            let nominal_frame_rate: f64 = msg_send![track, nominalFrameRate];
+            let fps = if nominal_frame_rate.is_finite() && nominal_frame_rate > 0.0 {
+                Some(nominal_frame_rate)
+            } else {
+                let min_frame_duration: CMTime = msg_send![track, minFrameDuration];
+                cm_time_to_seconds(min_frame_duration).and_then(|seconds| {
+                    if seconds > 0.0 {
+                        Some(1.0 / seconds)
+                    } else {
+                        None
+                    }
+                })
+            };
+
+            let fps = match fps {
+                Some(value) if value.is_finite() && value > 0.0 => value,
+                _ => return Ok(None),
+            };
+
+            let total = (duration_seconds * fps).round();
+            if total.is_sign_negative() || !total.is_finite() || total <= 0.0 {
+                Ok(None)
+            } else {
+                Ok(Some(total as u64))
+            }
+        }
     }
 
     impl YPlaneStreamProvider for VideoToolboxProvider {
+        fn total_frames(&self) -> Option<u64> {
+            self.total_frames
+        }
+
         fn into_stream(self: Box<Self>) -> YPlaneStream {
             let path = self.input.clone();
             spawn_stream_from_channel(32, move |tx| unsafe {
@@ -146,6 +291,10 @@ mod platform {
         path: PathBuf,
         tx: tokio::sync::mpsc::Sender<YPlaneResult<YPlaneFrame>>,
     ) -> YPlaneResult<()> {
+        let debug = std::env::var_os("SUBFAST_DEBUG_VT").is_some();
+        if debug {
+            eprintln!("[videotoolbox] starting decode for {}", path.display());
+        }
         unsafe {
             let ns_path = StrongPtr::new(nsstring_from_path(&path)?);
             let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath:*ns_path];
@@ -176,37 +325,77 @@ mod platform {
                 ));
             }
 
-            let pixel_format = StrongPtr::new(
-                msg_send![class!(NSNumber), numberWithUnsignedInt:PIXEL_FORMAT_NV12],
-            );
+            let pixel_format_obj: *mut Object = msg_send![class!(NSNumber), alloc];
+            if pixel_format_obj.is_null() {
+                return Err(YPlaneError::backend_failure(
+                    "videotoolbox",
+                    "failed to allocate NSNumber for pixel format",
+                ));
+            }
+            let pixel_format_obj: *mut Object =
+                msg_send![pixel_format_obj, initWithUnsignedInt:PIXEL_FORMAT_NV12];
+            if pixel_format_obj.is_null() {
+                return Err(YPlaneError::backend_failure(
+                    "videotoolbox",
+                    "failed to create pixel format NSNumber",
+                ));
+            }
+            let pixel_format = StrongPtr::new(pixel_format_obj);
             let keys = [k_cv_pixel_buffer_pixel_format_type_key()];
             let values = [*pixel_format];
-            let settings: *mut Object = msg_send![class!(NSDictionary),
-                dictionaryWithObjects:values.as_ptr()
+            let settings_obj: *mut Object = msg_send![class!(NSDictionary), alloc];
+            if settings_obj.is_null() {
+                return Err(YPlaneError::backend_failure(
+                    "videotoolbox",
+                    "failed to create output settings dictionary",
+                ));
+            }
+            let settings_obj: *mut Object = msg_send![settings_obj,
+                initWithObjects:values.as_ptr()
                 forKeys:keys.as_ptr()
                 count:keys.len()
             ];
-            let settings = StrongPtr::new(settings);
+            if settings_obj.is_null() {
+                return Err(YPlaneError::backend_failure(
+                    "videotoolbox",
+                    "failed to initialize output settings dictionary",
+                ));
+            }
+            let settings = StrongPtr::new(settings_obj);
 
             let mut error: *mut Object = std::ptr::null_mut();
-            let reader: *mut Object =
-                msg_send![class!(AVAssetReader), assetReaderWithAsset:*asset error:&mut error];
-            if reader.is_null() {
+            let reader_obj: *mut Object = msg_send![class!(AVAssetReader), alloc];
+            if reader_obj.is_null() {
+                return Err(YPlaneError::backend_failure(
+                    "videotoolbox",
+                    "failed to allocate AVAssetReader",
+                ));
+            }
+            let reader_obj: *mut Object =
+                msg_send![reader_obj, initWithAsset:*asset error:&mut error];
+            if reader_obj.is_null() {
                 return Err(vt_error("failed to create AVAssetReader", error));
             }
-            let reader = StrongPtr::new(reader);
+            let reader = StrongPtr::new(reader_obj);
 
-            let output: *mut Object = msg_send![class!(AVAssetReaderTrackOutput),
-                assetReaderTrackOutputWithTrack:track
+            let output_obj: *mut Object = msg_send![class!(AVAssetReaderTrackOutput), alloc];
+            if output_obj.is_null() {
+                return Err(YPlaneError::backend_failure(
+                    "videotoolbox",
+                    "failed to allocate AVAssetReaderTrackOutput",
+                ));
+            }
+            let output_obj: *mut Object = msg_send![output_obj,
+                initWithTrack:track
                 outputSettings:*settings
             ];
-            if output.is_null() {
+            if output_obj.is_null() {
                 return Err(YPlaneError::backend_failure(
                     "videotoolbox",
                     "failed to create track output",
                 ));
             }
-            let output = StrongPtr::new(output);
+            let output = StrongPtr::new(output_obj);
 
             let can_add: BOOL = msg_send![*reader, canAddOutput:*output];
             if can_add != YES {
@@ -230,12 +419,19 @@ mod platform {
             let mut next_chunk = 0usize;
             let mut chunk_samples = Vec::new();
             let mut ordered = BTreeMap::<usize, Vec<YPlaneResult<YPlaneFrame>>>::new();
+            let mut emitted: u64 = 0;
 
             loop {
                 let sample: *mut Object = msg_send![*output, copyNextSampleBuffer];
                 if sample.is_null() {
                     let status: i32 = msg_send![*reader, status];
                     if status == AVAssetReaderStatus::Completed as i32 {
+                        if debug {
+                            eprintln!(
+                                "[videotoolbox] reader reported completion after chunk {}",
+                                chunk_index
+                            );
+                        }
                         break;
                     } else if status == AVAssetReaderStatus::Failed as i32 {
                         let err_obj: *mut Object = msg_send![*reader, error];
@@ -278,13 +474,29 @@ mod platform {
             drop(chunk_tx);
 
             for (index, frames) in chunk_rx {
+                if debug {
+                    eprintln!(
+                        "[videotoolbox] received chunk {index} containing {} frames",
+                        frames.len()
+                    );
+                }
                 ordered.insert(index, frames);
                 while let Some(frames) = ordered.remove(&next_chunk) {
                     for frame in frames {
                         match frame {
                             Ok(frame) => {
                                 if tx.blocking_send(Ok(frame)).is_err() {
+                                    if debug {
+                                        eprintln!(
+                                            "[videotoolbox] channel closed after emitting {} frames",
+                                            emitted
+                                        );
+                                    }
                                     return Ok(());
+                                }
+                                emitted = emitted.saturating_add(1);
+                                if debug && emitted % 500 == 0 {
+                                    eprintln!("[videotoolbox] emitted {emitted} frames so far");
                                 }
                             }
                             Err(err) => {
@@ -295,6 +507,9 @@ mod platform {
                     }
                     next_chunk += 1;
                 }
+            }
+            if debug {
+                eprintln!("[videotoolbox] finished decoding; total frames emitted {emitted}");
             }
         }
         Ok(())
@@ -377,8 +592,14 @@ mod platform {
             YPlaneError::backend_failure("videotoolbox", format!("invalid path encoding: {err}"))
         })?;
         unsafe {
-            let string: *mut Object =
-                msg_send![class!(NSString), stringWithUTF8String:cstring.as_ptr()];
+            let string: *mut Object = msg_send![class!(NSString), alloc];
+            if string.is_null() {
+                return Err(YPlaneError::backend_failure(
+                    "videotoolbox",
+                    "failed to allocate NSString",
+                ));
+            }
+            let string: *mut Object = msg_send![string, initWithUTF8String:cstring.as_ptr()];
             if string.is_null() {
                 Err(YPlaneError::backend_failure(
                     "videotoolbox",
@@ -396,7 +617,22 @@ mod platform {
         }
         unsafe {
             let description: *mut Object = msg_send![error, localizedDescription];
-            let message = nsstring_to_string(description).unwrap_or_else(|| context.to_string());
+            let domain: *mut Object = msg_send![error, domain];
+            let code: i64 = msg_send![error, code];
+            let reason: *mut Object = msg_send![error, localizedFailureReason];
+            let suggestion: *mut Object = msg_send![error, localizedRecoverySuggestion];
+            let mut message = nsstring_to_string(description)
+                .map(|desc| format!("{context}: {desc}"))
+                .unwrap_or_else(|| context.to_string());
+            if let Some(domain) = nsstring_to_string(domain) {
+                message = format!("{message} (domain={domain} code={code})");
+            }
+            if let Some(reason) = nsstring_to_string(reason) {
+                message = format!("{message} reason={reason}");
+            }
+            if let Some(suggestion) = nsstring_to_string(suggestion) {
+                message = format!("{message} suggestion={suggestion}");
+            }
             YPlaneError::backend_failure("videotoolbox", message)
         }
     }
@@ -473,6 +709,10 @@ mod platform {
         } else {
             Some(Duration::from_nanos(nanos as u64))
         }
+    }
+
+    fn cm_time_to_seconds(time: CMTime) -> Option<f64> {
+        cm_time_to_duration(time).map(|duration| duration.as_secs_f64())
     }
 
     #[repr(i32)]

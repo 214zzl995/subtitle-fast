@@ -27,6 +27,7 @@ async fn videotoolbox_backend_streams_frames() {
         }
     };
 
+    let total_frames = provider.total_frames();
     let mut stream = provider.into_stream();
     let frame = stream
         .next()
@@ -35,4 +36,10 @@ async fn videotoolbox_backend_streams_frames() {
     let frame = frame.expect("frame decoding should succeed");
     assert!(frame.width() > 0);
     assert!(frame.height() > 0);
+    if let Some(total) = total_frames {
+        assert!(
+            total > 0,
+            "videotoolbox backend should report positive frame count"
+        );
+    }
 }

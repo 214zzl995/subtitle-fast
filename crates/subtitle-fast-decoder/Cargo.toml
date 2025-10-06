@@ -9,11 +9,11 @@ backend-ffmpeg = ["dep:ffmpeg-next"]
 backend-videotoolbox = [
     "dep:core-foundation",
     "dep:core-foundation-sys",
+    "dep:mp4",
     "dep:objc",
     "dep:rayon",
 ]
 backend-openh264 = ["dep:openh264", "dep:mp4"]
-backend-gstreamer = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 
 [dependencies]
 futures-core = "0.3"
@@ -24,9 +24,6 @@ tokio-stream = "0.1"
 ffmpeg-next = { version = "8", optional = true }
 openh264 = { version = "0.9", optional = true }
 mp4 = { version = "0.14", optional = true }
-gstreamer = { version = "0.24", optional = true }
-gstreamer-app = { version = "0.24", optional = true }
-gstreamer-video = { version = "0.24", optional = true }
 core-foundation = { version = "0.10", optional = true }
 core-foundation-sys = { version = "0.8", optional = true }
 objc = { version = "0.2", optional = true }

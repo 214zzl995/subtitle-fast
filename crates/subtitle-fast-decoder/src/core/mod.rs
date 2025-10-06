@@ -15,6 +15,10 @@ pub type DynYPlaneProvider = Box<dyn YPlaneStreamProvider>;
 pub type YPlaneResult<T> = Result<T, YPlaneError>;
 
 pub trait YPlaneStreamProvider: Send + 'static {
+    fn total_frames(&self) -> Option<u64> {
+        None
+    }
+
     fn into_stream(self: Box<Self>) -> YPlaneStream;
 }
 
