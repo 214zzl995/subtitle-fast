@@ -1,19 +1,16 @@
 #![cfg(feature = "backend-videotoolbox")]
 
-use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::BufReader;
 use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::sync::mpsc::{self, error::TryRecvError};
+use tokio::sync::mpsc;
 
 use objc::rc::StrongPtr;
 use objc::runtime::{BOOL, NO, Object, YES};
 use objc::{class, msg_send, sel, sel_impl};
-use rayon::prelude::*;
-use rayon::spawn;
 
 use crate::core::{
     DynYPlaneProvider, YPlaneError, YPlaneFrame, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
@@ -26,9 +23,6 @@ mod platform {
     use super::*;
 
     use core_foundation::base::{CFRelease, CFTypeRef};
-    use core_foundation_sys::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
-    use core_foundation_sys::dictionary::{CFDictionaryGetValue, CFDictionaryRef};
-    use core_foundation_sys::number::{CFBooleanGetValue, CFBooleanRef};
     use mp4::{Mp4Reader, TrackType};
 
     #[allow(improper_ctypes)]
@@ -40,11 +34,6 @@ mod platform {
     unsafe extern "C" {
         fn CMSampleBufferGetImageBuffer(buffer: CMSampleBufferRef) -> CVPixelBufferRef;
         fn CMSampleBufferGetPresentationTimeStamp(buffer: CMSampleBufferRef) -> CMTime;
-        fn CMSampleBufferGetSampleAttachmentsArray(
-            buffer: CMSampleBufferRef,
-            create_if_necessary: BOOL,
-        ) -> CFArrayRef;
-        static kCMSampleAttachmentKey_NotSync: CFTypeRef;
     }
 
     #[allow(improper_ctypes)]
@@ -86,21 +75,12 @@ mod platform {
     const PIXEL_FORMAT_NV12: u32 = 875_704_438; // kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
     const PIXEL_BUFFER_LOCK_READ_ONLY: u64 = 0x0000_0001;
 
-    #[derive(Clone, Copy)]
-    struct PendingSample {
-        sample: CMSampleBufferRef,
-        pts: CMTime,
-        index: u64,
-    }
-
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct CMTimeRange {
         start: CMTime,
         duration: CMTime,
     }
-
-    unsafe impl Send for PendingSample {}
 
     pub struct VideoToolboxProvider {
         input: PathBuf,
@@ -123,8 +103,7 @@ mod platform {
             })
         }
 
-        const RESULT_CHANNEL_CAPACITY: usize = 512;
-        const MAX_PENDING_SAMPLES: usize = 8;
+        const RESULT_CHANNEL_CAPACITY: usize = 16;
 
         fn probe_total_frames(path: &Path) -> YPlaneResult<Option<u64>> {
             if let Some(total) = Self::probe_total_frames_mp4(path)? {
@@ -277,7 +256,6 @@ mod platform {
         tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>,
     ) -> YPlaneResult<()> {
         unsafe {
-            let max_pending_samples = VideoToolboxProvider::MAX_PENDING_SAMPLES;
             let ns_path = StrongPtr::new(nsstring_from_path(&path)?);
             let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath:*ns_path];
             if url.is_null() {
@@ -399,19 +377,9 @@ mod platform {
                 return Err(vt_error("failed to start reading", err_obj));
             }
 
-            let (chunk_tx, mut chunk_rx) =
-                mpsc::channel(VideoToolboxProvider::RESULT_CHANNEL_CAPACITY);
-
-            let mut chunk_index = 0usize;
-            let mut chunk_samples = Vec::new();
-            let mut ordered = OrderedChunks::new();
-            let mut emitted: u64 = 0;
             let mut next_sample_index: u64 = 0;
 
             loop {
-                if drain_ready_chunks(&mut chunk_rx, &mut ordered, &tx, &mut emitted)? {
-                    return Ok(());
-                }
                 let sample: *mut Object = msg_send![*output, copyNextSampleBuffer];
                 if sample.is_null() {
                     let status: i32 = msg_send![*reader, status];
@@ -419,10 +387,8 @@ mod platform {
                         break;
                     } else if status == AVAssetReaderStatus::Failed as i32 {
                         let err_obj: *mut Object = msg_send![*reader, error];
-                        release_samples(std::mem::take(&mut chunk_samples));
                         return Err(vt_error("videotoolbox reader failed", err_obj));
                     } else if status == AVAssetReaderStatus::Cancelled as i32 {
-                        release_samples(std::mem::take(&mut chunk_samples));
                         return Err(YPlaneError::backend_failure(
                             "videotoolbox",
                             "videotoolbox reader was cancelled",
@@ -433,133 +399,26 @@ mod platform {
                 }
 
                 let sample_buf = sample as CMSampleBufferRef;
-                let is_keyframe = is_sync_sample(sample_buf);
-
-                if is_keyframe && !chunk_samples.is_empty() {
-                    flush_chunk(
-                        chunk_index,
-                        std::mem::take(&mut chunk_samples),
-                        chunk_tx.clone(),
-                    );
-                    chunk_index += 1;
-                }
-
                 let pts = CMSampleBufferGetPresentationTimeStamp(sample_buf);
-                chunk_samples.push(PendingSample {
-                    sample: sample_buf,
-                    pts,
-                    index: next_sample_index,
-                });
+                let index = next_sample_index;
                 next_sample_index = next_sample_index.saturating_add(1);
 
-                if chunk_samples.len() >= max_pending_samples {
-                    flush_chunk(
-                        chunk_index,
-                        std::mem::take(&mut chunk_samples),
-                        chunk_tx.clone(),
-                    );
-                    chunk_index += 1;
-                }
-            }
+                let frame_result = sample_to_frame(sample_buf, pts, index);
+                CFRelease(sample as CFTypeRef);
 
-            if !chunk_samples.is_empty() {
-                flush_chunk(chunk_index, chunk_samples, chunk_tx.clone());
-            }
-            drop(chunk_tx);
-            if drain_ready_chunks(&mut chunk_rx, &mut ordered, &tx, &mut emitted)? {
-                return Ok(());
-            }
-            while let Some((index, frames)) = chunk_rx.blocking_recv() {
-                if handle_chunk(index, frames, &mut ordered, &tx, &mut emitted)? {
-                    return Ok(());
+                match frame_result {
+                    Ok(frame) => {
+                        if tx.blocking_send(Ok(frame)).is_err() {
+                            return Ok(());
+                        }
+                    }
+                    Err(err) => {
+                        return Err(err);
+                    }
                 }
-            }
-            if flush_ordered(&mut ordered, &tx, &mut emitted)? {
-                return Ok(());
             }
         }
         Ok(())
-    }
-
-    fn flush_chunk(
-        chunk_index: usize,
-        samples: Vec<PendingSample>,
-        chunk_tx: mpsc::Sender<(usize, Vec<YPlaneResult<YPlaneFrame>>)>,
-    ) {
-        spawn(move || {
-            let results: Vec<_> = samples
-                .into_par_iter()
-                .map(|sample| unsafe {
-                    let result = sample_to_frame(sample.sample, sample.pts, sample.index);
-                    CFRelease(sample.sample as CFTypeRef);
-                    result
-                })
-                .collect();
-            let _ = chunk_tx.blocking_send((chunk_index, results));
-        });
-    }
-
-    fn drain_ready_chunks(
-        chunk_rx: &mut mpsc::Receiver<(usize, Vec<YPlaneResult<YPlaneFrame>>)>,
-        ordered: &mut OrderedChunks,
-        tx: &mpsc::Sender<YPlaneResult<YPlaneFrame>>,
-        emitted: &mut u64,
-    ) -> YPlaneResult<bool> {
-        loop {
-            match chunk_rx.try_recv() {
-                Ok((index, frames)) => {
-                    if handle_chunk(index, frames, ordered, tx, emitted)? {
-                        return Ok(true);
-                    }
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
-            }
-        }
-        flush_ordered(ordered, tx, emitted)
-    }
-
-    fn handle_chunk(
-        index: usize,
-        frames: Vec<YPlaneResult<YPlaneFrame>>,
-        ordered: &mut OrderedChunks,
-        tx: &mpsc::Sender<YPlaneResult<YPlaneFrame>>,
-        emitted: &mut u64,
-    ) -> YPlaneResult<bool> {
-        ordered.insert(index, frames);
-        flush_ordered(ordered, tx, emitted)
-    }
-
-    fn flush_ordered(
-        ordered: &mut OrderedChunks,
-        tx: &mpsc::Sender<YPlaneResult<YPlaneFrame>>,
-        emitted: &mut u64,
-    ) -> YPlaneResult<bool> {
-        while let Some(frames) = ordered.pop_ready() {
-            for frame in frames {
-                match frame {
-                    Ok(frame) => {
-                        if tx.blocking_send(Ok(frame)).is_err() {
-                            return Ok(true);
-                        }
-                        *emitted = (*emitted).saturating_add(1);
-                    }
-                    Err(err) => {
-                        let _ = tx.blocking_send(Err(err));
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-        Ok(false)
-    }
-
-    fn release_samples(samples: Vec<PendingSample>) {
-        for sample in samples {
-            unsafe {
-                CFRelease(sample.sample as CFTypeRef);
-            }
-        }
     }
 
     fn sample_to_frame(
@@ -608,42 +467,6 @@ mod platform {
             let timestamp = cm_time_to_duration(pts);
             let frame = YPlaneFrame::from_owned(width, height, stride, timestamp, buffer)?;
             Ok(frame.with_frame_index(Some(index)))
-        }
-    }
-
-    struct OrderedChunks {
-        next_index: usize,
-        pending: VecDeque<Option<Vec<YPlaneResult<YPlaneFrame>>>>,
-    }
-
-    impl OrderedChunks {
-        fn new() -> Self {
-            Self {
-                next_index: 0,
-                pending: VecDeque::new(),
-            }
-        }
-
-        fn insert(&mut self, index: usize, frames: Vec<YPlaneResult<YPlaneFrame>>) {
-            if index < self.next_index {
-                return;
-            }
-            let relative = index - self.next_index;
-            if relative >= self.pending.len() {
-                self.pending.resize_with(relative + 1, || None);
-            }
-            self.pending[relative] = Some(frames);
-        }
-
-        fn pop_ready(&mut self) -> Option<Vec<YPlaneResult<YPlaneFrame>>> {
-            if let Some(slot) = self.pending.front_mut() {
-                if let Some(frames) = slot.take() {
-                    self.pending.pop_front();
-                    self.next_index = self.next_index.saturating_add(1);
-                    return Some(frames);
-                }
-            }
-            None
         }
     }
 
@@ -729,29 +552,6 @@ mod platform {
     #[link(name = "AVFoundation", kind = "framework")]
     unsafe extern "C" {
         static AVMediaTypeVideo: CFStringRef;
-    }
-
-    fn is_sync_sample(sample: CMSampleBufferRef) -> bool {
-        unsafe {
-            let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, NO);
-            if attachments.is_null() {
-                return true;
-            }
-            if CFArrayGetCount(attachments) == 0 {
-                return true;
-            }
-            let dict = CFArrayGetValueAtIndex(attachments, 0) as CFDictionaryRef;
-            if dict.is_null() {
-                return true;
-            }
-            let key = kCMSampleAttachmentKey_NotSync;
-            let value = CFDictionaryGetValue(dict, key as *const _);
-            if value.is_null() {
-                true
-            } else {
-                !CFBooleanGetValue(value as CFBooleanRef)
-            }
-        }
     }
 
     fn cm_time_to_duration(time: CMTime) -> Option<Duration> {

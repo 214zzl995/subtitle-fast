@@ -996,8 +996,6 @@ name = "subtitle-fast-sink"
 version = "0.1.0"
 dependencies = [
  "image",
- "serde",
- "serde_json",
  "subtitle-fast-decoder",
  "thiserror 1.0.69",
  "tokio",

@@ -6,7 +6,6 @@ use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::codecs::webp::WebPEncoder;
 use image::{ColorType, ImageEncoder};
-use serde::Serialize;
 use subtitle_fast_decoder::YPlaneFrame;
 use thiserror::Error;
 use tokio::sync::{
@@ -53,9 +52,6 @@ impl FrameSinkConfig {
         if let Some(dir) = dump_dir {
             config.dump = Some(FrameDumpConfig::new(dir, format, samples_per_second));
         }
-        if let Some(path) = std::env::var_os("SUBFAST_DEBUG_DETECTION_PATH") {
-            config.detection.debug_output = Some(PathBuf::from(path));
-        }
         config.detection.samples_per_second = samples_per_second.max(1);
         config
     }
@@ -88,7 +84,6 @@ pub enum ImageOutputFormat {
 #[derive(Clone, Debug)]
 pub struct SubtitleDetectionOptions {
     pub enabled: bool,
-    pub debug_output: Option<PathBuf>,
     pub samples_per_second: u32,
 }
 
@@ -96,7 +91,6 @@ impl Default for SubtitleDetectionOptions {
     fn default() -> Self {
         Self {
             enabled: true,
-            debug_output: None,
             samples_per_second: 7,
         }
     }
@@ -345,9 +339,7 @@ impl SubtitleDetectionOperation {
 
     async fn finalize(&self) {
         let mut state = self.state.lock().await;
-        if let Err(err) = state.finalize() {
-            eprintln!("failed to write subtitle detection debug output: {err}");
-        }
+        let _ = state.finalize();
     }
 }
 
@@ -355,21 +347,15 @@ struct SubtitleDetectionState {
     detector: Option<SubtitlePresenceDetector>,
     detector_dims: Option<(usize, usize, usize)>,
     init_error_logged: bool,
-    debug: Option<DetectionDebug>,
     sampling: SubtitleSamplingState,
 }
 
 impl SubtitleDetectionState {
     fn new(options: SubtitleDetectionOptions) -> Self {
-        let debug = options.debug_output.map(|path| DetectionDebug {
-            path,
-            entries: Vec::new(),
-        });
         Self {
             detector: None,
             detector_dims: None,
             init_error_logged: false,
-            debug,
             sampling: SubtitleSamplingState::new(options.samples_per_second.max(1)),
         }
     }
@@ -396,18 +382,12 @@ impl SubtitleDetectionState {
                         self.init_error_logged = true;
                     }
                     self.detector = None;
-                    if let Some(debug) = self.debug.as_mut() {
-                        debug.record_error(metadata, err.to_string());
-                    }
                     return;
                 }
             }
         }
 
         let Some(detector) = self.detector.as_ref() else {
-            if let Some(debug) = self.debug.as_mut() {
-                debug.record_error(metadata, "detector unavailable".to_string());
-            }
             return;
         };
 
@@ -427,34 +407,6 @@ impl SubtitleDetectionState {
                 message = failure.message
             );
         }
-        self.record_frames(output.flushed);
-    }
-
-    fn record_frames(&mut self, frames: Vec<BufferedFrame>) {
-        let Some(debug) = self.debug.as_mut() else {
-            return;
-        };
-
-        for frame in frames {
-            let metadata = frame.metadata;
-            match frame.decision {
-                FrameDecision::Evaluated(result) => {
-                    debug.record_success(&metadata, &result);
-                }
-                FrameDecision::Assumed(has_subtitle) => {
-                    debug.record_assumption(&metadata, has_subtitle);
-                }
-                FrameDecision::Error(message) => {
-                    debug.record_error(&metadata, message);
-                }
-                FrameDecision::Pending => {
-                    debug.record_error(
-                        &metadata,
-                        "subtitle detection pending without decision".to_string(),
-                    );
-                }
-            }
-        }
     }
 
     fn finalize(&mut self) -> std::io::Result<()> {
@@ -463,10 +415,6 @@ impl SubtitleDetectionState {
             self.handle_sampling_output(output);
         } else {
             self.sampling.reset();
-        }
-
-        if let Some(debug) = self.debug.take() {
-            debug.write_json()?;
         }
         Ok(())
     }
@@ -484,7 +432,7 @@ enum FrameDecision {
     Pending,
     Evaluated(SubtitleDetectionResult),
     Assumed(bool),
-    Error(String),
+    Error,
 }
 
 impl FrameDecision {
@@ -492,7 +440,7 @@ impl FrameDecision {
         match self {
             FrameDecision::Evaluated(result) => Some(result.has_subtitle),
             FrameDecision::Assumed(value) => Some(*value),
-            FrameDecision::Error(_) | FrameDecision::Pending => None,
+            FrameDecision::Error | FrameDecision::Pending => None,
         }
     }
 }
@@ -805,7 +753,7 @@ impl SecondBuffer {
         failures: &mut Vec<DetectionFailure>,
     ) {
         match self.frames[idx].decision {
-            FrameDecision::Evaluated(_) | FrameDecision::Error(_) => return,
+            FrameDecision::Evaluated(_) | FrameDecision::Error => return,
             FrameDecision::Assumed(_) | FrameDecision::Pending => {}
         }
 
@@ -819,7 +767,7 @@ impl SecondBuffer {
                     metadata: self.frames[idx].metadata.clone(),
                     message: message.clone(),
                 });
-                self.frames[idx].decision = FrameDecision::Error(message);
+                self.frames[idx].decision = FrameDecision::Error;
             }
         }
     }
@@ -876,250 +824,6 @@ impl SecondBuffer {
     ) -> Vec<BufferedFrame> {
         self.finalize_frames(detector, failures);
         std::mem::take(&mut self.frames)
-    }
-}
-
-struct DetectionDebug {
-    path: PathBuf,
-    entries: Vec<DetectionDebugEntry>,
-}
-
-impl DetectionDebug {
-    fn record_success(&mut self, metadata: &FrameMetadata, result: &SubtitleDetectionResult) {
-        self.entries
-            .push(DetectionDebugEntry::from_result(metadata, result));
-    }
-
-    fn record_assumption(&mut self, metadata: &FrameMetadata, has_subtitle: bool) {
-        self.entries
-            .push(DetectionDebugEntry::from_assumption(metadata, has_subtitle));
-    }
-
-    fn record_error(&mut self, metadata: &FrameMetadata, error: String) {
-        self.entries
-            .push(DetectionDebugEntry::from_error(metadata, error));
-    }
-
-    fn write_json(self) -> std::io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
-        let json = serde_json::to_string_pretty(&self.entries)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
-        std::fs::write(&self.path, json)
-    }
-}
-
-#[derive(Serialize, Clone)]
-struct DetectionDebugEntry {
-    frame_index: u64,
-    processed_index: u64,
-    timestamp_seconds: Option<f64>,
-    edge_energy_ratio: Option<f32>,
-    run_ratio: Option<f32>,
-    dt_coefficient_of_variation: Option<f32>,
-    cc_density: Option<f32>,
-    banner_score: Option<f32>,
-    score: Option<f32>,
-    has_subtitle: Option<bool>,
-    error: Option<String>,
-    assumed: Option<bool>,
-}
-
-impl DetectionDebugEntry {
-    fn from_result(metadata: &FrameMetadata, result: &SubtitleDetectionResult) -> Self {
-        Self {
-            frame_index: metadata.frame_index,
-            processed_index: metadata.processed_index,
-            timestamp_seconds: metadata.timestamp.map(|ts| ts.as_secs_f64()),
-            edge_energy_ratio: Some(result.edge_energy_ratio),
-            run_ratio: Some(result.run_ratio),
-            dt_coefficient_of_variation: Some(result.dt_coefficient_of_variation),
-            cc_density: Some(result.cc_density),
-            banner_score: Some(result.banner_score),
-            score: Some(result.score),
-            has_subtitle: Some(result.has_subtitle),
-            error: None,
-            assumed: None,
-        }
-    }
-
-    fn from_error(metadata: &FrameMetadata, error: String) -> Self {
-        Self {
-            frame_index: metadata.frame_index,
-            processed_index: metadata.processed_index,
-            timestamp_seconds: metadata.timestamp.map(|ts| ts.as_secs_f64()),
-            edge_energy_ratio: None,
-            run_ratio: None,
-            dt_coefficient_of_variation: None,
-            cc_density: None,
-            banner_score: None,
-            score: None,
-            has_subtitle: None,
-            error: Some(error),
-            assumed: None,
-        }
-    }
-
-    fn from_assumption(metadata: &FrameMetadata, has_subtitle: bool) -> Self {
-        Self {
-            frame_index: metadata.frame_index,
-            processed_index: metadata.processed_index,
-            timestamp_seconds: metadata.timestamp.map(|ts| ts.as_secs_f64()),
-            edge_energy_ratio: None,
-            run_ratio: None,
-            dt_coefficient_of_variation: None,
-            cc_density: None,
-            banner_score: None,
-            score: None,
-            has_subtitle: Some(has_subtitle),
-            error: None,
-            assumed: Some(true),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::time::Duration;
-
-    fn temp_debug_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("subtitle_fast_{name}.json"))
-    }
-
-    fn build_state(samples_per_second: u32, path: PathBuf) -> SubtitleDetectionState {
-        let options = SubtitleDetectionOptions {
-            enabled: true,
-            debug_output: Some(path),
-            samples_per_second,
-        };
-        SubtitleDetectionState::new(options)
-    }
-
-    fn make_subtitle_plane(width: usize, height: usize) -> Vec<u8> {
-        let stride = width;
-        let mut data = vec![24u8; stride * height];
-        let roi_height = (height as f32 * 0.25) as usize;
-        let start_row = height.saturating_sub(roi_height.max(1));
-        for y in start_row..height {
-            for x in (width / 8)..(width - width / 8) {
-                let stripe = ((y - start_row) / 2) % 2;
-                data[y * stride + x] = if stripe == 0 { 235 } else { 16 };
-            }
-        }
-        data
-    }
-
-    fn make_blank_plane(width: usize, height: usize) -> Vec<u8> {
-        vec![32u8; width * height]
-    }
-
-    fn make_frame(
-        plane: Vec<u8>,
-        width: usize,
-        height: usize,
-        timestamp: f64,
-        index: u64,
-    ) -> (YPlaneFrame, FrameMetadata) {
-        let stride = width;
-        let duration = Some(Duration::from_secs_f64(timestamp));
-        let frame = YPlaneFrame::from_owned(width as u32, height as u32, stride, duration, plane)
-            .unwrap()
-            .with_frame_index(Some(index));
-        let metadata = FrameMetadata {
-            frame_index: index,
-            processed_index: index,
-            timestamp: duration,
-        };
-        (frame, metadata)
-    }
-
-    #[test]
-    fn sampling_assumes_between_matching_samples() {
-        let path = temp_debug_path("assume");
-        let mut state = build_state(2, path.clone());
-        let width = 256usize;
-        let height = 144usize;
-
-        let subtitle_plane = make_subtitle_plane(width, height);
-        let detector =
-            SubtitlePresenceDetector::new(SubtitleDetectionConfig::for_frame(width, height, width))
-                .unwrap();
-        assert!(detector.detect(&subtitle_plane).unwrap().has_subtitle);
-
-        let (frame0, meta0) = make_frame(subtitle_plane.clone(), width, height, 0.0, 0);
-        let (frame1, meta1) = make_frame(subtitle_plane.clone(), width, height, 0.25, 1);
-        let (frame2, meta2) = make_frame(subtitle_plane.clone(), width, height, 0.6, 2);
-        let (frame3, meta3) = make_frame(make_blank_plane(width, height), width, height, 1.0, 3);
-
-        state.process_frame(&frame0, &meta0);
-        state.process_frame(&frame1, &meta1);
-        state.process_frame(&frame2, &meta2);
-        state.process_frame(&frame3, &meta3);
-
-        let entries = state
-            .debug
-            .as_ref()
-            .expect("debug entries available")
-            .entries
-            .clone();
-        let assumed = entries
-            .iter()
-            .find(|entry| entry.frame_index == 1)
-            .expect("frame 1 entry");
-        assert_eq!(assumed.has_subtitle, Some(true));
-        assert_eq!(assumed.assumed, Some(true));
-
-        state.finalize().unwrap();
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn sampling_detects_transition_between_samples() {
-        let path = temp_debug_path("transition");
-        let mut state = build_state(2, path.clone());
-        let width = 256usize;
-        let height = 144usize;
-
-        let subtitle_plane = make_subtitle_plane(width, height);
-        let blank_plane = make_blank_plane(width, height);
-
-        let detector =
-            SubtitlePresenceDetector::new(SubtitleDetectionConfig::for_frame(width, height, width))
-                .unwrap();
-        assert!(detector.detect(&subtitle_plane).unwrap().has_subtitle);
-        assert!(!detector.detect(&blank_plane).unwrap().has_subtitle);
-
-        let (frame0, meta0) = make_frame(subtitle_plane.clone(), width, height, 0.0, 0);
-        let (frame1, meta1) = make_frame(blank_plane.clone(), width, height, 0.3, 1);
-        let (frame2, meta2) = make_frame(blank_plane.clone(), width, height, 0.6, 2);
-        let (frame3, meta3) = make_frame(subtitle_plane.clone(), width, height, 1.0, 3);
-
-        state.process_frame(&frame0, &meta0);
-        state.process_frame(&frame1, &meta1);
-        state.process_frame(&frame2, &meta2);
-        state.process_frame(&frame3, &meta3);
-
-        let entries = state
-            .debug
-            .as_ref()
-            .expect("debug entries available")
-            .entries
-            .clone();
-        let transition = entries
-            .iter()
-            .find(|entry| entry.frame_index == 1)
-            .expect("frame 1 entry");
-        assert_eq!(transition.has_subtitle, Some(false));
-        assert!(transition.assumed.is_none());
-
-        state.finalize().unwrap();
-        let _ = fs::remove_file(path);
     }
 }
 
