@@ -1,4 +1,6 @@
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,6 +31,7 @@ pub struct FrameSinkConfig {
     pub max_concurrency: usize,
     pub dump: Option<FrameDumpConfig>,
     pub detection: SubtitleDetectionOptions,
+    pub progress_callback: Option<FrameSinkProgressCallback>,
 }
 
 impl Default for FrameSinkConfig {
@@ -38,6 +41,7 @@ impl Default for FrameSinkConfig {
             max_concurrency: DEFAULT_MAX_CONCURRENCY,
             dump: None,
             detection: SubtitleDetectionOptions::default(),
+            progress_callback: None,
         }
     }
 }
@@ -54,6 +58,15 @@ impl FrameSinkConfig {
         }
         config.detection.samples_per_second = samples_per_second.max(1);
         config
+    }
+
+    pub fn with_progress_callback(mut self, callback: FrameSinkProgressCallback) -> Self {
+        self.progress_callback = Some(callback);
+        self
+    }
+
+    pub fn set_progress_callback(&mut self, callback: FrameSinkProgressCallback) {
+        self.progress_callback = Some(callback);
     }
 }
 
@@ -103,6 +116,57 @@ pub struct FrameMetadata {
     pub timestamp: Option<Duration>,
 }
 
+#[derive(Clone, Debug)]
+pub struct FrameSinkProgressEvent {
+    pub completed: u64,
+    pub metadata: FrameMetadata,
+}
+
+#[derive(Clone)]
+pub struct FrameSinkProgressCallback {
+    inner: Arc<dyn Fn(FrameSinkProgressEvent) + Send + Sync>,
+}
+
+impl FrameSinkProgressCallback {
+    pub fn new<F>(callback: F) -> Self
+    where
+        F: Fn(FrameSinkProgressEvent) + Send + Sync + 'static,
+    {
+        Self {
+            inner: Arc::new(callback),
+        }
+    }
+
+    pub fn from_arc(callback: Arc<dyn Fn(FrameSinkProgressEvent) + Send + Sync>) -> Self {
+        Self { inner: callback }
+    }
+
+    pub fn call(&self, event: FrameSinkProgressEvent) {
+        (self.inner)(event);
+    }
+}
+
+impl fmt::Debug for FrameSinkProgressCallback {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("FrameSinkProgressCallback").finish()
+    }
+}
+
+impl<F> From<F> for FrameSinkProgressCallback
+where
+    F: Fn(FrameSinkProgressEvent) + Send + Sync + 'static,
+{
+    fn from(callback: F) -> Self {
+        Self::new(callback)
+    }
+}
+
+impl From<Arc<dyn Fn(FrameSinkProgressEvent) + Send + Sync>> for FrameSinkProgressCallback {
+    fn from(callback: Arc<dyn Fn(FrameSinkProgressEvent) + Send + Sync>) -> Self {
+        Self::from_arc(callback)
+    }
+}
+
 pub struct FrameSink {
     sender: Sender<Job>,
     worker: JoinHandle<()>,
@@ -140,6 +204,7 @@ impl FrameSink {
 
                         let _permit = permit;
                         let Job { frame, metadata } = job;
+                        let progress = operations.progress.clone();
                         if let Some(dump) = operations.dump.as_ref() {
                             if let Err(err) = dump.process(&frame, &metadata).await {
                                 eprintln!("frame sink dump error: {err}");
@@ -147,6 +212,9 @@ impl FrameSink {
                         }
                         if let Some(detection) = operations.detection.as_ref() {
                             detection.process(&frame, &metadata).await;
+                        }
+                        if let Some(progress) = progress {
+                            progress.frame_completed(&metadata);
                         }
                     });
                 }
@@ -183,6 +251,7 @@ impl FrameSink {
 struct ProcessingOperations {
     dump: Option<Arc<FrameDumpOperation>>,
     detection: Option<Arc<SubtitleDetectionOperation>>,
+    progress: Option<FrameSinkProgressReporter>,
 }
 
 impl ProcessingOperations {
@@ -195,7 +264,35 @@ impl ProcessingOperations {
         } else {
             None
         };
-        Self { dump, detection }
+        let progress = config.progress_callback.map(FrameSinkProgressReporter::new);
+        Self {
+            dump,
+            detection,
+            progress,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct FrameSinkProgressReporter {
+    callback: FrameSinkProgressCallback,
+    completed: Arc<AtomicU64>,
+}
+
+impl FrameSinkProgressReporter {
+    fn new(callback: FrameSinkProgressCallback) -> Self {
+        Self {
+            callback,
+            completed: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn frame_completed(&self, metadata: &FrameMetadata) {
+        let completed = self.completed.fetch_add(1, Ordering::SeqCst) + 1;
+        self.callback.call(FrameSinkProgressEvent {
+            completed,
+            metadata: metadata.clone(),
+        });
     }
 }
 

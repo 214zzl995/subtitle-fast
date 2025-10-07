@@ -8,9 +8,13 @@ mod progress;
 
 use clap::{CommandFactory, Parser};
 use cli::{CliArgs, DumpFormat};
+use indicatif::MultiProgress;
 use progress::{ProgressEvent, finalize_success, start_progress};
 use subtitle_fast_decoder::{Backend, Configuration, DynYPlaneProvider, YPlaneError};
-use subtitle_fast_sink::{FrameMetadata, FrameSink, FrameSinkConfig, ImageOutputFormat};
+use subtitle_fast_sink::{
+    FrameMetadata, FrameSink, FrameSinkConfig, FrameSinkProgressCallback, FrameSinkProgressEvent,
+    ImageOutputFormat,
+};
 use tokio_stream::StreamExt;
 
 fn usage() {
@@ -142,16 +146,41 @@ async fn run_pipeline(
     let mut stream = provider.into_stream();
 
     let mut processed: u64 = 0;
-    let started = Instant::now();
+    let decode_started = Instant::now();
+    let sink_started = Instant::now();
 
-    let sink_config = FrameSinkConfig::from_outputs(
+    let multi = MultiProgress::new();
+
+    let (decode_bar, decode_progress_tx, decode_progress_task) =
+        start_progress("decoder", total_frames, decode_started, Some(&multi));
+    let (sink_bar, sink_progress_tx, sink_progress_task) =
+        start_progress("receiver", total_frames, sink_started, Some(&multi));
+
+    let mut sink_config = FrameSinkConfig::from_outputs(
         dump_dir,
         map_dump_format(dump_format),
         detection_samples_per_second,
     );
+    let sink_progress_sender = sink_progress_tx.clone();
+    sink_config.set_progress_callback(FrameSinkProgressCallback::new(
+        move |event: FrameSinkProgressEvent| {
+            let progress_event = ProgressEvent {
+                index: event.completed,
+                timestamp: event.metadata.timestamp,
+            };
+            match sink_progress_sender.try_send(progress_event) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(progress_event)) => {
+                    let sender = sink_progress_sender.clone();
+                    tokio::spawn(async move {
+                        let _ = sender.send(progress_event).await;
+                    });
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
+            }
+        },
+    ));
     let frame_sink = FrameSink::new(sink_config);
-
-    let (progress_bar, progress_tx, progress_task) = start_progress(total_frames, started);
 
     let mut failure: Option<YPlaneError> = None;
 
@@ -175,9 +204,9 @@ async fn run_pipeline(
                     index: processed,
                     timestamp,
                 };
-                if let Err(err) = progress_tx.try_send(event) {
+                if let Err(err) = decode_progress_tx.try_send(event) {
                     let event = err.into_inner();
-                    if progress_tx.send(event).await.is_err() {
+                    if decode_progress_tx.send(event).await.is_err() {
                         break;
                     }
                 }
@@ -189,19 +218,29 @@ async fn run_pipeline(
         }
     }
 
-    drop(progress_tx);
-    let summary = progress_task.await.expect("progress task panicked");
+    frame_sink.shutdown().await;
+
+    drop(decode_progress_tx);
+    drop(sink_progress_tx);
+    let decode_summary = decode_progress_task
+        .await
+        .expect("decoder progress task panicked");
+    let sink_summary = sink_progress_task
+        .await
+        .expect("receiver progress task panicked");
 
     if let Some(err) = failure {
-        let processed = summary.processed;
-        progress_bar.abandon_with_message(format!("failed after {processed} frames"));
-        frame_sink.shutdown().await;
+        let processed = decode_summary.processed;
+        decode_bar.abandon_with_message(format!("failed after {processed} frames"));
+        sink_bar.abandon_with_message(format!(
+            "completed {} frames before failure",
+            sink_summary.processed
+        ));
         return Err((err, processed));
     }
 
-    frame_sink.shutdown().await;
-
-    finalize_success(&progress_bar, &summary, total_frames);
+    finalize_success(&decode_bar, &decode_summary, total_frames);
+    finalize_success(&sink_bar, &sink_summary, total_frames);
 
     Ok(())
 }

@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -17,14 +17,17 @@ pub struct ProgressSummary {
 }
 
 pub fn start_progress(
+    label: impl Into<String>,
     total_frames: Option<u64>,
     started: Instant,
+    multi: Option<&MultiProgress>,
 ) -> (
     ProgressBar,
     mpsc::Sender<ProgressEvent>,
     JoinHandle<ProgressSummary>,
 ) {
-    let progress_bar = create_progress_bar(total_frames);
+    let label = label.into();
+    let progress_bar = create_progress_bar(&label, total_frames, multi);
     progress_bar.enable_steady_tick(Duration::from_millis(100));
 
     let capacity = progress_channel_capacity(total_frames);
@@ -62,27 +65,41 @@ pub fn finalize_success(bar: &ProgressBar, summary: &ProgressSummary, total_fram
     }
 }
 
-fn create_progress_bar(total_frames: Option<u64>) -> ProgressBar {
+fn create_progress_bar(
+    label: &str,
+    total_frames: Option<u64>,
+    multi: Option<&MultiProgress>,
+) -> ProgressBar {
     match total_frames {
         Some(total) => {
             let bar = ProgressBar::new(total);
             bar.set_style(
                 ProgressStyle::with_template(
-                    "{bar:40.cyan/blue} {percent:>3}% {pos}/{len} frames [{elapsed_precise}<{eta_precise}] speed {msg}",
+                    "{prefix:<10} {bar:40.cyan/blue} {percent:>3}% {pos}/{len} frames [{elapsed_precise}<{eta_precise}] speed {msg}",
                 )
                 .unwrap(),
             );
+            let bar = match multi {
+                Some(multi) => multi.add(bar),
+                None => bar,
+            };
+            bar.set_prefix(label.to_string());
             bar
         }
         None => {
             let spinner = ProgressBar::new_spinner();
             spinner.set_style(
                 ProgressStyle::with_template(
-                    "{spinner:.cyan.bold} [{elapsed_precise}] frames {pos} • speed {msg}",
+                    "{prefix:<10} {spinner:.cyan.bold} [{elapsed_precise}] frames {pos} • speed {msg}",
                 )
                 .unwrap()
                 .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
             );
+            let spinner = match multi {
+                Some(multi) => multi.add(spinner),
+                None => spinner,
+            };
+            spinner.set_prefix(label.to_string());
             spinner
         }
     }
