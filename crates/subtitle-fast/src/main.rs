@@ -11,8 +11,7 @@ use cli::{CliArgs, DumpFormat};
 use progress::{ProgressEvent, finalize_success, start_progress};
 use subtitle_fast_decoder::{Backend, Configuration, DynYPlaneProvider, YPlaneError};
 use subtitle_fast_sink::{
-    FrameMetadata, FrameSink, FrameSinkConfig, FrameSinkProgressCallback, FrameSinkProgressEvent,
-    ImageOutputFormat,
+    FrameMetadata, FrameSink, FrameSinkConfig, FrameSinkError, ImageOutputFormat,
 };
 use tokio_stream::StreamExt;
 
@@ -150,33 +149,27 @@ async fn run_pipeline(
     let (sink_bar, sink_progress_tx, sink_progress_task) =
         start_progress("processing", total_frames, sink_started);
 
-    let mut sink_config = FrameSinkConfig::from_outputs(
+    let sink_config = FrameSinkConfig::from_outputs(
         dump_dir,
         map_dump_format(dump_format),
         detection_samples_per_second,
     );
 
+    let (frame_sink, mut sink_progress_rx) = FrameSink::new(sink_config);
     let sink_progress_sender = sink_progress_tx.clone();
-
-    sink_config.set_progress_callback(FrameSinkProgressCallback::new(
-        move |event: FrameSinkProgressEvent| {
+    let progress_forward = tokio::spawn(async move {
+        let mut completed = 0u64;
+        while let Some(metadata) = sink_progress_rx.recv().await {
+            completed = completed.saturating_add(1);
             let progress_event = ProgressEvent {
-                index: event.completed,
-                timestamp: event.metadata.timestamp,
+                index: completed,
+                timestamp: metadata.timestamp,
             };
-            match sink_progress_sender.try_send(progress_event) {
-                Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Full(progress_event)) => {
-                    let sender = sink_progress_sender.clone();
-                    tokio::spawn(async move {
-                        let _ = sender.send(progress_event).await;
-                    });
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
+            if sink_progress_sender.send(progress_event).await.is_err() {
+                break;
             }
-        },
-    ));
-    let frame_sink = FrameSink::new(sink_config);
+        }
+    });
 
     let mut failure: Option<YPlaneError> = None;
 
@@ -194,8 +187,11 @@ async fn run_pipeline(
                     processed_index: processed,
                     timestamp,
                 };
-                if !frame_sink.push(frame, metadata).await {
-                    failure = Some(YPlaneError::configuration("frame sink unavailable"));
+                if let Err(err) = frame_sink.submit(frame, metadata).await {
+                    let reason = match err {
+                        FrameSinkError::Stopped => "frame sink unavailable",
+                    };
+                    failure = Some(YPlaneError::configuration(reason));
                     break;
                 }
             }
@@ -206,9 +202,14 @@ async fn run_pipeline(
         }
     }
 
-    frame_sink.shutdown().await;
+    if let Err(err) = frame_sink.shutdown().await {
+        if failure.is_none() {
+            failure = Some(YPlaneError::configuration(err.to_string()));
+        }
+    }
 
     drop(sink_progress_tx);
+    let _ = progress_forward.await;
     let sink_summary = sink_progress_task.await.expect("progress task panicked");
 
     if let Some(err) = failure {
@@ -248,5 +249,6 @@ fn map_dump_format(format: DumpFormat) -> ImageOutputFormat {
         DumpFormat::Jpeg => ImageOutputFormat::Jpeg { quality: 90 },
         DumpFormat::Png => ImageOutputFormat::Png,
         DumpFormat::Webp => ImageOutputFormat::Webp,
+        DumpFormat::Yuv => ImageOutputFormat::Yuv,
     }
 }

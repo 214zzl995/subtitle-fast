@@ -7,6 +7,7 @@ pub enum DumpFormat {
     Jpeg,
     Png,
     Webp,
+    Yuv,
 }
 
 #[derive(Debug, Parser)]
