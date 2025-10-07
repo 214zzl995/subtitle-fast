@@ -10,11 +10,8 @@ use image::codecs::webp::WebPEncoder;
 use image::{ColorType, ImageEncoder};
 use subtitle_fast_decoder::YPlaneFrame;
 use thiserror::Error;
-use tokio::sync::{
-    mpsc::{self, Sender},
-    Mutex, Semaphore,
-};
-use tokio::task::{self, JoinHandle, JoinSet};
+use tokio::sync::{Mutex, Semaphore};
+use tokio::task::{self, JoinSet};
 
 pub mod subtitle_detection;
 
@@ -168,83 +165,78 @@ impl From<Arc<dyn Fn(FrameSinkProgressEvent) + Send + Sync>> for FrameSinkProgre
 }
 
 pub struct FrameSink {
-    sender: Sender<Job>,
-    worker: JoinHandle<()>,
-}
-
-struct Job {
-    frame: YPlaneFrame,
-    metadata: FrameMetadata,
+    operations: Arc<ProcessingOperations>,
+    in_flight: Arc<Semaphore>,
+    workers: Arc<Semaphore>,
+    tasks: Arc<Mutex<JoinSet<()>>>,
 }
 
 impl FrameSink {
     pub fn new(config: FrameSinkConfig) -> Self {
         let capacity = config.channel_capacity.max(1);
         let concurrency = config.max_concurrency.max(1);
-        let (tx, mut rx) = mpsc::channel::<Job>(capacity);
         let operations = Arc::new(ProcessingOperations::new(config));
-        let semaphore = Arc::new(Semaphore::new(concurrency));
+        let in_flight = Arc::new(Semaphore::new(capacity));
+        let workers = Arc::new(Semaphore::new(concurrency));
+        let tasks = Arc::new(Mutex::new(JoinSet::new()));
 
-        let worker = tokio::spawn({
-            let operations = Arc::clone(&operations);
-            let semaphore = Arc::clone(&semaphore);
-            async move {
-                let mut tasks = JoinSet::new();
-                while let Some(job) = rx.recv().await {
-                    let operations = Arc::clone(&operations);
-                    let semaphore = Arc::clone(&semaphore);
-                    tasks.spawn(async move {
-                        let permit = match semaphore.acquire_owned().await {
-                            Ok(permit) => permit,
-                            Err(err) => {
-                                eprintln!("frame sink semaphore error: {err}");
-                                return;
-                            }
-                        };
-
-                        let _permit = permit;
-                        let Job { frame, metadata } = job;
-                        let progress = operations.progress.clone();
-                        if let Some(dump) = operations.dump.as_ref() {
-                            if let Err(err) = dump.process(&frame, &metadata).await {
-                                eprintln!("frame sink dump error: {err}");
-                            }
-                        }
-                        if let Some(detection) = operations.detection.as_ref() {
-                            detection.process(&frame, &metadata).await;
-                        }
-                        if let Some(progress) = progress {
-                            progress.frame_completed(&metadata);
-                        }
-                    });
-                }
-
-                while let Some(result) = tasks.join_next().await {
-                    if let Err(err) = result {
-                        if err.is_cancelled() {
-                            continue;
-                        }
-                        eprintln!("frame sink join error: {err}");
-                    }
-                }
-
-                if let Some(detection) = operations.detection.as_ref() {
-                    detection.finalize().await;
-                }
-            }
-        });
-
-        Self { sender: tx, worker }
+        Self {
+            operations,
+            in_flight,
+            workers,
+            tasks,
+        }
     }
 
-    pub fn push(&self, frame: YPlaneFrame, metadata: FrameMetadata) -> bool {
-        self.sender.try_send(Job { frame, metadata }).is_ok()
+    pub async fn push(&self, frame: YPlaneFrame, metadata: FrameMetadata) -> bool {
+        let permit = match Arc::clone(&self.in_flight).acquire_owned().await {
+            Ok(permit) => permit,
+            Err(err) => {
+                eprintln!("frame sink capacity semaphore error: {err}");
+                return false;
+            }
+        };
+
+        let operations = Arc::clone(&self.operations);
+        let workers = Arc::clone(&self.workers);
+
+        let mut tasks = self.tasks.lock().await;
+        tasks.spawn(async move {
+            let worker_permit = match workers.acquire_owned().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    eprintln!("frame sink worker semaphore error: {err}");
+                    drop(permit);
+                    return;
+                }
+            };
+
+            let _worker_permit = worker_permit;
+            operations.process_frame(frame, metadata).await;
+            drop(permit);
+        });
+        true
     }
 
     pub async fn shutdown(self) {
-        let FrameSink { sender, worker } = self;
-        drop(sender);
-        let _ = worker.await;
+        let FrameSink {
+            operations, tasks, ..
+        } = self;
+
+        let mut join_set = {
+            let mut guard = tasks.lock().await;
+            std::mem::take(&mut *guard)
+        };
+
+        while let Some(result) = join_set.join_next().await {
+            if let Err(err) = result {
+                if !err.is_cancelled() {
+                    eprintln!("frame sink join error: {err}");
+                }
+            }
+        }
+
+        operations.finalize().await;
     }
 }
 
@@ -269,6 +261,28 @@ impl ProcessingOperations {
             dump,
             detection,
             progress,
+        }
+    }
+
+    async fn process_frame(&self, frame: YPlaneFrame, metadata: FrameMetadata) {
+        if let Some(dump) = self.dump.as_ref() {
+            if let Err(err) = dump.process(&frame, &metadata).await {
+                eprintln!("frame sink dump error: {err}");
+            }
+        }
+
+        if let Some(detection) = self.detection.as_ref() {
+            detection.process(&frame, &metadata).await;
+        }
+
+        if let Some(progress) = self.progress.as_ref() {
+            progress.frame_completed(&metadata);
+        }
+    }
+
+    async fn finalize(&self) {
+        if let Some(detection) = self.detection.as_ref() {
+            detection.finalize().await;
         }
     }
 }

@@ -8,7 +8,6 @@ mod progress;
 
 use clap::{CommandFactory, Parser};
 use cli::{CliArgs, DumpFormat};
-use indicatif::MultiProgress;
 use progress::{ProgressEvent, finalize_success, start_progress};
 use subtitle_fast_decoder::{Backend, Configuration, DynYPlaneProvider, YPlaneError};
 use subtitle_fast_sink::{
@@ -146,15 +145,10 @@ async fn run_pipeline(
     let mut stream = provider.into_stream();
 
     let mut processed: u64 = 0;
-    let decode_started = Instant::now();
     let sink_started = Instant::now();
 
-    let multi = MultiProgress::new();
-
-    let (decode_bar, decode_progress_tx, decode_progress_task) =
-        start_progress("decoder", total_frames, decode_started, Some(&multi));
     let (sink_bar, sink_progress_tx, sink_progress_task) =
-        start_progress("receiver", total_frames, sink_started, Some(&multi));
+        start_progress("processing", total_frames, sink_started);
 
     let mut sink_config = FrameSinkConfig::from_outputs(
         dump_dir,
@@ -162,6 +156,7 @@ async fn run_pipeline(
         detection_samples_per_second,
     );
     let sink_progress_sender = sink_progress_tx.clone();
+    
     sink_config.set_progress_callback(FrameSinkProgressCallback::new(
         move |event: FrameSinkProgressEvent| {
             let progress_event = ProgressEvent {
@@ -198,17 +193,9 @@ async fn run_pipeline(
                     processed_index: processed,
                     timestamp,
                 };
-                let _ = frame_sink.push(frame, metadata);
-
-                let event = ProgressEvent {
-                    index: processed,
-                    timestamp,
-                };
-                if let Err(err) = decode_progress_tx.try_send(event) {
-                    let event = err.into_inner();
-                    if decode_progress_tx.send(event).await.is_err() {
-                        break;
-                    }
+                if !frame_sink.push(frame, metadata).await {
+                    failure = Some(YPlaneError::configuration("frame sink unavailable"));
+                    break;
                 }
             }
             Err(err) => {
@@ -220,26 +207,17 @@ async fn run_pipeline(
 
     frame_sink.shutdown().await;
 
-    drop(decode_progress_tx);
     drop(sink_progress_tx);
-    let decode_summary = decode_progress_task
-        .await
-        .expect("decoder progress task panicked");
-    let sink_summary = sink_progress_task
-        .await
-        .expect("receiver progress task panicked");
+    let sink_summary = sink_progress_task.await.expect("progress task panicked");
 
     if let Some(err) = failure {
-        let processed = decode_summary.processed;
-        decode_bar.abandon_with_message(format!("failed after {processed} frames"));
         sink_bar.abandon_with_message(format!(
-            "completed {} frames before failure",
+            "failed after decoding {processed} frames; processed {} frames",
             sink_summary.processed
         ));
         return Err((err, processed));
     }
 
-    finalize_success(&decode_bar, &decode_summary, total_frames);
     finalize_success(&sink_bar, &sink_summary, total_frames);
 
     Ok(())

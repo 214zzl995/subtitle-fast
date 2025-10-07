@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -20,14 +20,13 @@ pub fn start_progress(
     label: impl Into<String>,
     total_frames: Option<u64>,
     started: Instant,
-    multi: Option<&MultiProgress>,
 ) -> (
     ProgressBar,
     mpsc::Sender<ProgressEvent>,
     JoinHandle<ProgressSummary>,
 ) {
     let label = label.into();
-    let progress_bar = create_progress_bar(&label, total_frames, multi);
+    let progress_bar = create_progress_bar(&label, total_frames);
     progress_bar.enable_steady_tick(Duration::from_millis(100));
 
     let capacity = progress_channel_capacity(total_frames);
@@ -65,11 +64,7 @@ pub fn finalize_success(bar: &ProgressBar, summary: &ProgressSummary, total_fram
     }
 }
 
-fn create_progress_bar(
-    label: &str,
-    total_frames: Option<u64>,
-    multi: Option<&MultiProgress>,
-) -> ProgressBar {
+fn create_progress_bar(label: &str, total_frames: Option<u64>) -> ProgressBar {
     match total_frames {
         Some(total) => {
             let bar = ProgressBar::new(total);
@@ -79,10 +74,6 @@ fn create_progress_bar(
                 )
                 .unwrap(),
             );
-            let bar = match multi {
-                Some(multi) => multi.add(bar),
-                None => bar,
-            };
             bar.set_prefix(label.to_string());
             bar
         }
@@ -95,10 +86,6 @@ fn create_progress_bar(
                 .unwrap()
                 .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
             );
-            let spinner = match multi {
-                Some(multi) => multi.add(spinner),
-                None => spinner,
-            };
             spinner.set_prefix(label.to_string());
             spinner
         }
