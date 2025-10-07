@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -281,6 +282,12 @@ impl ProcessingOperations {
     }
 
     async fn finalize(&self) {
+        if let Some(dump) = self.dump.as_ref() {
+            if let Err(err) = dump.finalize().await {
+                eprintln!("frame sink dump finalize error: {err}");
+            }
+        }
+
         if let Some(detection) = self.detection.as_ref() {
             detection.finalize().await;
         }
@@ -313,7 +320,7 @@ impl FrameSinkProgressReporter {
 struct FrameDumpOperation {
     directory: Arc<PathBuf>,
     format: ImageOutputFormat,
-    sampler: Mutex<FrameDumpSampler>,
+    state: Mutex<FrameDumpState>,
 }
 
 impl FrameDumpOperation {
@@ -321,7 +328,7 @@ impl FrameDumpOperation {
         Self {
             directory: Arc::new(config.directory),
             format: config.format,
-            sampler: Mutex::new(FrameDumpSampler::new(config.samples_per_second)),
+            state: Mutex::new(FrameDumpState::new(config.samples_per_second)),
         }
     }
 
@@ -330,17 +337,99 @@ impl FrameDumpOperation {
         frame: &YPlaneFrame,
         metadata: &FrameMetadata,
     ) -> Result<(), WriteFrameError> {
-        let should_write = {
-            let mut sampler = self.sampler.lock().await;
-            sampler.should_write(frame, metadata)
+        let ready = {
+            let mut state = self.state.lock().await;
+            state.enqueue_frame(frame.clone(), metadata.clone())
         };
 
-        if !should_write {
-            return Ok(());
-        }
-
-        write_frame(frame, metadata.frame_index, &self.directory, self.format).await
+        self.write_batch(ready).await
     }
+
+    async fn finalize(&self) -> Result<(), WriteFrameError> {
+        let remaining = {
+            let mut state = self.state.lock().await;
+            state.drain_pending()
+        };
+
+        self.write_batch(remaining).await
+    }
+
+    async fn write_batch(&self, frames: Vec<QueuedDumpFrame>) -> Result<(), WriteFrameError> {
+        for frame in frames {
+            write_frame(
+                &frame.frame,
+                frame.metadata.frame_index,
+                &self.directory,
+                self.format,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+}
+
+struct FrameDumpState {
+    sampler: FrameDumpSampler,
+    pending: BTreeMap<u64, QueuedDumpFrame>,
+    next_processed_index: u64,
+}
+
+impl FrameDumpState {
+    fn new(samples_per_second: u32) -> Self {
+        Self {
+            sampler: FrameDumpSampler::new(samples_per_second),
+            pending: BTreeMap::new(),
+            next_processed_index: 1,
+        }
+    }
+
+    fn enqueue_frame(
+        &mut self,
+        frame: YPlaneFrame,
+        metadata: FrameMetadata,
+    ) -> Vec<QueuedDumpFrame> {
+        let index = metadata.processed_index;
+        self.pending
+            .insert(index, QueuedDumpFrame { frame, metadata });
+        self.collect_ready()
+    }
+
+    fn drain_pending(&mut self) -> Vec<QueuedDumpFrame> {
+        let mut drained = Vec::new();
+        while !self.pending.is_empty() {
+            let ready = self.collect_ready();
+            if ready.is_empty() {
+                if let Some(&next_index) = self.pending.keys().next() {
+                    self.next_processed_index = next_index;
+                }
+            } else {
+                drained.extend(ready);
+            }
+        }
+        drained
+    }
+
+    fn collect_ready(&mut self) -> Vec<QueuedDumpFrame> {
+        let mut ready = Vec::new();
+        loop {
+            let index = self.next_processed_index;
+            match self.pending.remove(&index) {
+                Some(frame) => {
+                    self.next_processed_index = self.next_processed_index.saturating_add(1);
+                    if self.sampler.should_write(&frame.frame, &frame.metadata) {
+                        ready.push(frame);
+                    }
+                }
+                None => break,
+            }
+        }
+        ready
+    }
+}
+
+struct QueuedDumpFrame {
+    frame: YPlaneFrame,
+    metadata: FrameMetadata,
 }
 
 struct FrameDumpSampler {

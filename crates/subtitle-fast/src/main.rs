@@ -156,7 +156,7 @@ async fn run_pipeline(
         detection_samples_per_second,
     );
     let sink_progress_sender = sink_progress_tx.clone();
-    
+
     sink_config.set_progress_callback(FrameSinkProgressCallback::new(
         move |event: FrameSinkProgressEvent| {
             let progress_event = ProgressEvent {
