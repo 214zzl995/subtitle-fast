@@ -1,6 +1,13 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum DumpFormat {
+    Jpeg,
+    Png,
+    Webp,
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -13,13 +20,17 @@ pub struct CliArgs {
     #[arg(short = 'b', long = "backend")]
     pub backend: Option<String>,
 
-    /// Output directory for writing decoded frames as JPEG files
+    /// Output directory for writing sampled frames as image files
     #[arg(long = "dump-dir")]
     pub dump_dir: Option<PathBuf>,
 
     /// Print the list of available decoding backends
     #[arg(long = "list-backends")]
     pub list_backends: bool,
+
+    /// Image format for dumped frames when --dump-dir is set
+    #[arg(long = "dump-format", value_enum, default_value_t = DumpFormat::Jpeg)]
+    pub dump_format: DumpFormat,
 
     /// Subtitle detection samples per second
     #[arg(

@@ -3,7 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use image::codecs::jpeg::JpegEncoder;
-use image::ColorType;
+use image::codecs::png::PngEncoder;
+use image::codecs::webp::WebPEncoder;
+use image::{ColorType, ImageEncoder};
 use serde::Serialize;
 use subtitle_fast_decoder::YPlaneFrame;
 use thiserror::Error;
@@ -26,7 +28,7 @@ const DEFAULT_MAX_CONCURRENCY: usize = 8;
 pub struct FrameSinkConfig {
     pub channel_capacity: usize,
     pub max_concurrency: usize,
-    pub jpeg: Option<JpegConfig>,
+    pub dump: Option<FrameDumpConfig>,
     pub detection: SubtitleDetectionOptions,
 }
 
@@ -35,17 +37,21 @@ impl Default for FrameSinkConfig {
         Self {
             channel_capacity: DEFAULT_CHANNEL_CAPACITY,
             max_concurrency: DEFAULT_MAX_CONCURRENCY,
-            jpeg: None,
+            dump: None,
             detection: SubtitleDetectionOptions::default(),
         }
     }
 }
 
 impl FrameSinkConfig {
-    pub fn from_outputs(dump_dir: Option<PathBuf>, samples_per_second: u32) -> Self {
+    pub fn from_outputs(
+        dump_dir: Option<PathBuf>,
+        format: ImageOutputFormat,
+        samples_per_second: u32,
+    ) -> Self {
         let mut config = Self::default();
         if let Some(dir) = dump_dir {
-            config.jpeg = Some(JpegConfig::new(dir));
+            config.dump = Some(FrameDumpConfig::new(dir, format, samples_per_second));
         }
         if let Some(path) = std::env::var_os("SUBFAST_DEBUG_DETECTION_PATH") {
             config.detection.debug_output = Some(PathBuf::from(path));
@@ -56,18 +62,27 @@ impl FrameSinkConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct JpegConfig {
+pub struct FrameDumpConfig {
     pub directory: PathBuf,
-    pub quality: u8,
+    pub format: ImageOutputFormat,
+    pub samples_per_second: u32,
 }
 
-impl JpegConfig {
-    pub fn new(directory: PathBuf) -> Self {
+impl FrameDumpConfig {
+    pub fn new(directory: PathBuf, format: ImageOutputFormat, samples_per_second: u32) -> Self {
         Self {
             directory,
-            quality: 90,
+            format,
+            samples_per_second: samples_per_second.max(1),
         }
     }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum ImageOutputFormat {
+    Jpeg { quality: u8 },
+    Png,
+    Webp,
 }
 
 #[derive(Clone, Debug)]
@@ -131,9 +146,9 @@ impl FrameSink {
 
                         let _permit = permit;
                         let Job { frame, metadata } = job;
-                        if let Some(jpeg) = operations.jpeg.as_ref() {
-                            if let Err(err) = jpeg.process(&frame, &metadata).await {
-                                eprintln!("frame sink jpeg error: {err}");
+                        if let Some(dump) = operations.dump.as_ref() {
+                            if let Err(err) = dump.process(&frame, &metadata).await {
+                                eprintln!("frame sink dump error: {err}");
                             }
                         }
                         if let Some(detection) = operations.detection.as_ref() {
@@ -172,34 +187,36 @@ impl FrameSink {
 }
 
 struct ProcessingOperations {
-    jpeg: Option<Arc<JpegOperation>>,
+    dump: Option<Arc<FrameDumpOperation>>,
     detection: Option<Arc<SubtitleDetectionOperation>>,
 }
 
 impl ProcessingOperations {
     fn new(config: FrameSinkConfig) -> Self {
-        let jpeg = config
-            .jpeg
-            .map(|jpeg_cfg| Arc::new(JpegOperation::new(jpeg_cfg.directory, jpeg_cfg.quality)));
+        let dump = config
+            .dump
+            .map(|cfg| Arc::new(FrameDumpOperation::new(cfg)));
         let detection = if config.detection.enabled {
             Some(Arc::new(SubtitleDetectionOperation::new(config.detection)))
         } else {
             None
         };
-        Self { jpeg, detection }
+        Self { dump, detection }
     }
 }
 
-struct JpegOperation {
+struct FrameDumpOperation {
     directory: Arc<PathBuf>,
-    quality: u8,
+    format: ImageOutputFormat,
+    sampler: Mutex<FrameDumpSampler>,
 }
 
-impl JpegOperation {
-    fn new(directory: PathBuf, quality: u8) -> Self {
+impl FrameDumpOperation {
+    fn new(config: FrameDumpConfig) -> Self {
         Self {
-            directory: Arc::new(directory),
-            quality,
+            directory: Arc::new(config.directory),
+            format: config.format,
+            sampler: Mutex::new(FrameDumpSampler::new(config.samples_per_second)),
         }
     }
 
@@ -208,7 +225,105 @@ impl JpegOperation {
         frame: &YPlaneFrame,
         metadata: &FrameMetadata,
     ) -> Result<(), WriteFrameError> {
-        write_frame(frame, metadata.frame_index, &self.directory, self.quality).await
+        let should_write = {
+            let mut sampler = self.sampler.lock().await;
+            sampler.should_write(frame, metadata)
+        };
+
+        if !should_write {
+            return Ok(());
+        }
+
+        write_frame(frame, metadata.frame_index, &self.directory, self.format).await
+    }
+}
+
+struct FrameDumpSampler {
+    samples_per_second: u32,
+    current: Option<SamplerSecond>,
+}
+
+impl FrameDumpSampler {
+    fn new(samples_per_second: u32) -> Self {
+        Self {
+            samples_per_second: samples_per_second.max(1),
+            current: None,
+        }
+    }
+
+    fn should_write(&mut self, frame: &YPlaneFrame, metadata: &FrameMetadata) -> bool {
+        let (second_index, elapsed) = self.resolve_second(frame, metadata);
+
+        if self.current.as_ref().map(|second| second.index) != Some(second_index) {
+            self.current = Some(SamplerSecond::new(second_index, self.samples_per_second));
+        }
+
+        let Some(current) = self.current.as_mut() else {
+            return false;
+        };
+
+        current.consume(elapsed)
+    }
+
+    fn resolve_second(&self, frame: &YPlaneFrame, metadata: &FrameMetadata) -> (u64, f64) {
+        if let Some(timestamp) = metadata.timestamp.or_else(|| frame.timestamp()) {
+            let second_index = timestamp.as_secs();
+            let elapsed = timestamp
+                .checked_sub(Duration::from_secs(second_index))
+                .unwrap_or_else(|| Duration::from_secs(0))
+                .as_secs_f64();
+            return (second_index, elapsed);
+        }
+
+        let samples = self.samples_per_second.max(1) as u64;
+        let processed = metadata.processed_index.saturating_sub(1);
+        let second_index = processed / samples;
+        let offset = processed.saturating_sub(second_index * samples);
+        let elapsed = offset as f64 / self.samples_per_second.max(1) as f64;
+        (second_index, elapsed)
+    }
+}
+
+struct SamplerSecond {
+    index: u64,
+    targets: Vec<f64>,
+    next_target_idx: usize,
+}
+
+impl SamplerSecond {
+    fn new(index: u64, samples_per_second: u32) -> Self {
+        let slots = samples_per_second.max(1) as usize;
+        let mut targets = Vec::with_capacity(slots);
+        for i in 0..slots {
+            if i == 0 {
+                targets.push(0.0);
+            } else {
+                targets.push(i as f64 / samples_per_second as f64);
+            }
+        }
+        Self {
+            index,
+            targets,
+            next_target_idx: 0,
+        }
+    }
+
+    fn consume(&mut self, elapsed: f64) -> bool {
+        if self.targets.is_empty() {
+            return false;
+        }
+
+        let mut should_write = false;
+        let epsilon = 1e-6f64;
+
+        while self.next_target_idx < self.targets.len()
+            && elapsed + epsilon >= self.targets[self.next_target_idx]
+        {
+            should_write = true;
+            self.next_target_idx += 1;
+        }
+
+        should_write
     }
 }
 
@@ -1012,7 +1127,7 @@ async fn write_frame(
     frame: &YPlaneFrame,
     index: u64,
     directory: &Path,
-    quality: u8,
+    format: ImageOutputFormat,
 ) -> Result<(), WriteFrameError> {
     let width = frame.width() as usize;
     let height = frame.height() as usize;
@@ -1044,12 +1159,25 @@ async fn write_frame(
     }
 
     let mut encoded = Vec::new();
-    {
-        let mut encoder = JpegEncoder::new_with_quality(&mut encoded, quality);
-        encoder.encode(&buffer, frame.width(), frame.height(), ColorType::L8)?;
-    }
+    let extension = match format {
+        ImageOutputFormat::Jpeg { quality } => {
+            let mut encoder = JpegEncoder::new_with_quality(&mut encoded, quality);
+            encoder.encode(&buffer, frame.width(), frame.height(), ColorType::L8)?;
+            "jpg"
+        }
+        ImageOutputFormat::Png => {
+            let encoder = PngEncoder::new(&mut encoded);
+            encoder.write_image(&buffer, frame.width(), frame.height(), ColorType::L8)?;
+            "png"
+        }
+        ImageOutputFormat::Webp => {
+            let encoder = WebPEncoder::new_lossless(&mut encoded);
+            encoder.encode(&buffer, frame.width(), frame.height(), ColorType::L8)?;
+            "webp"
+        }
+    };
 
-    let filename = format!("frame_{index}.jpg");
+    let filename = format!("frame_{index}.{extension}");
     let path = directory.join(filename);
     task::spawn_blocking(move || std::fs::write(path, encoded))
         .await

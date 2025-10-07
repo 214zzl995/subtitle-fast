@@ -7,10 +7,10 @@ mod cli;
 mod progress;
 
 use clap::{CommandFactory, Parser};
-use cli::CliArgs;
+use cli::{CliArgs, DumpFormat};
 use progress::{ProgressEvent, finalize_success, start_progress};
 use subtitle_fast_decoder::{Backend, Configuration, DynYPlaneProvider, YPlaneError};
-use subtitle_fast_sink::{FrameMetadata, FrameSink, FrameSinkConfig};
+use subtitle_fast_sink::{FrameMetadata, FrameSink, FrameSinkConfig, ImageOutputFormat};
 use tokio_stream::StreamExt;
 
 fn usage() {
@@ -26,6 +26,7 @@ async fn main() -> Result<(), YPlaneError> {
         backend,
         dump_dir,
         list_backends,
+        dump_format,
         detection_samples_per_second,
         input,
     } = CliArgs::parse();
@@ -98,7 +99,14 @@ async fn main() -> Result<(), YPlaneError> {
             }
         };
 
-        match run_pipeline(provider, dump_dir.clone(), detection_samples_per_second).await {
+        match run_pipeline(
+            provider,
+            dump_dir.clone(),
+            dump_format,
+            detection_samples_per_second,
+        )
+        .await
+        {
             Ok(()) => return Ok(()),
             Err((err, processed)) => {
                 if processed == 0 && !backend_locked {
@@ -127,6 +135,7 @@ fn parse_backend(value: &str) -> Result<Backend, YPlaneError> {
 async fn run_pipeline(
     provider: DynYPlaneProvider,
     dump_dir: Option<PathBuf>,
+    dump_format: DumpFormat,
     detection_samples_per_second: u32,
 ) -> Result<(), (YPlaneError, u64)> {
     let total_frames = provider.total_frames();
@@ -135,7 +144,11 @@ async fn run_pipeline(
     let mut processed: u64 = 0;
     let started = Instant::now();
 
-    let sink_config = FrameSinkConfig::from_outputs(dump_dir, detection_samples_per_second);
+    let sink_config = FrameSinkConfig::from_outputs(
+        dump_dir,
+        map_dump_format(dump_format),
+        detection_samples_per_second,
+    );
     let frame_sink = FrameSink::new(sink_config);
 
     let (progress_bar, progress_tx, progress_task) = start_progress(total_frames, started);
@@ -209,5 +222,13 @@ fn display_available_backends() {
         println!("available backends: (none compiled)");
     } else {
         println!("available backends: {}", names.join(", "));
+    }
+}
+
+fn map_dump_format(format: DumpFormat) -> ImageOutputFormat {
+    match format {
+        DumpFormat::Jpeg => ImageOutputFormat::Jpeg { quality: 90 },
+        DumpFormat::Png => ImageOutputFormat::Png,
+        DumpFormat::Webp => ImageOutputFormat::Webp,
     }
 }
