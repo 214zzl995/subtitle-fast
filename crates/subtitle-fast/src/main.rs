@@ -155,6 +155,7 @@ async fn run_pipeline(
         map_dump_format(dump_format),
         detection_samples_per_second,
     );
+
     let sink_progress_sender = sink_progress_tx.clone();
 
     sink_config.set_progress_callback(FrameSinkProgressCallback::new(

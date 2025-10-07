@@ -11,7 +11,7 @@ use image::codecs::webp::WebPEncoder;
 use image::{ColorType, ImageEncoder};
 use subtitle_fast_decoder::YPlaneFrame;
 use thiserror::Error;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task::{self, JoinSet};
 
 pub mod subtitle_detection;
@@ -21,7 +21,7 @@ use subtitle_detection::{
 };
 
 const DEFAULT_CHANNEL_CAPACITY: usize = 64;
-const DEFAULT_MAX_CONCURRENCY: usize = 8;
+const DEFAULT_MAX_CONCURRENCY: usize = 16;
 
 #[derive(Clone, Debug)]
 pub struct FrameSinkConfig {
@@ -166,10 +166,8 @@ impl From<Arc<dyn Fn(FrameSinkProgressEvent) + Send + Sync>> for FrameSinkProgre
 }
 
 pub struct FrameSink {
-    operations: Arc<ProcessingOperations>,
-    in_flight: Arc<Semaphore>,
-    workers: Arc<Semaphore>,
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    sender: mpsc::Sender<Job>,
+    worker: tokio::task::JoinHandle<()>,
 }
 
 impl FrameSink {
@@ -177,68 +175,64 @@ impl FrameSink {
         let capacity = config.channel_capacity.max(1);
         let concurrency = config.max_concurrency.max(1);
         let operations = Arc::new(ProcessingOperations::new(config));
-        let in_flight = Arc::new(Semaphore::new(capacity));
-        let workers = Arc::new(Semaphore::new(concurrency));
-        let tasks = Arc::new(Mutex::new(JoinSet::new()));
+        let (sender, mut rx) = mpsc::channel::<Job>(capacity);
+        let semaphore = Arc::new(Semaphore::new(concurrency));
+        let worker_operations = Arc::clone(&operations);
+        let worker_semaphore = Arc::clone(&semaphore);
 
-        Self {
-            operations,
-            in_flight,
-            workers,
-            tasks,
-        }
+        let worker = tokio::spawn(async move {
+            let operations = worker_operations;
+            let semaphore = worker_semaphore;
+            let mut tasks = JoinSet::new();
+
+            while let Some(job) = rx.recv().await {
+                let permit = match semaphore.clone().acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(err) => {
+                        eprintln!("frame sink semaphore error: {err}");
+                        break;
+                    }
+                };
+
+                let operations = Arc::clone(&operations);
+                tasks.spawn(async move {
+                    let Job { frame, metadata } = job;
+                    let _permit = permit;
+                    operations.process_frame(frame, metadata).await;
+                });
+            }
+
+            while let Some(result) = tasks.join_next().await {
+                if let Err(err) = result {
+                    if !err.is_cancelled() {
+                        eprintln!("frame sink join error: {err}");
+                    }
+                }
+            }
+
+            operations.finalize().await;
+        });
+
+        Self { sender, worker }
     }
 
     pub async fn push(&self, frame: YPlaneFrame, metadata: FrameMetadata) -> bool {
-        let permit = match Arc::clone(&self.in_flight).acquire_owned().await {
-            Ok(permit) => permit,
-            Err(err) => {
-                eprintln!("frame sink capacity semaphore error: {err}");
-                return false;
-            }
-        };
-
-        let operations = Arc::clone(&self.operations);
-        let workers = Arc::clone(&self.workers);
-
-        let mut tasks = self.tasks.lock().await;
-        tasks.spawn(async move {
-            let worker_permit = match workers.acquire_owned().await {
-                Ok(permit) => permit,
-                Err(err) => {
-                    eprintln!("frame sink worker semaphore error: {err}");
-                    drop(permit);
-                    return;
-                }
-            };
-
-            let _worker_permit = worker_permit;
-            operations.process_frame(frame, metadata).await;
-            drop(permit);
-        });
-        true
+        self.sender.send(Job { frame, metadata }).await.is_ok()
     }
 
     pub async fn shutdown(self) {
-        let FrameSink {
-            operations, tasks, ..
-        } = self;
-
-        let mut join_set = {
-            let mut guard = tasks.lock().await;
-            std::mem::take(&mut *guard)
-        };
-
-        while let Some(result) = join_set.join_next().await {
-            if let Err(err) = result {
-                if !err.is_cancelled() {
-                    eprintln!("frame sink join error: {err}");
-                }
+        drop(self.sender);
+        if let Err(err) = self.worker.await {
+            if !err.is_cancelled() {
+                eprintln!("frame sink worker task error: {err}");
             }
         }
-
-        operations.finalize().await;
     }
+}
+
+struct Job {
+    frame: YPlaneFrame,
+    metadata: FrameMetadata,
 }
 
 struct ProcessingOperations {
