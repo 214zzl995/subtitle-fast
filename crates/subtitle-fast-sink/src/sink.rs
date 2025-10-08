@@ -3,6 +3,8 @@ use std::sync::Arc;
 use crate::config::{FrameMetadata, FrameSinkConfig};
 use crate::detection::SubtitleDetectionOperation;
 use crate::dump::FrameDumpOperation;
+use crate::subtitle_detection::preflight_detection;
+use crate::subtitle_detection::SubtitleDetectionError;
 use subtitle_fast_decoder::YPlaneFrame;
 use thiserror::Error;
 use tokio::sync::{mpsc, Semaphore};
@@ -16,10 +18,19 @@ pub struct FrameSink {
 }
 
 impl FrameSink {
-    pub fn new(config: FrameSinkConfig) -> (Self, FrameSinkProgress) {
+    pub fn new(
+        config: FrameSinkConfig,
+    ) -> Result<(Self, FrameSinkProgress), SubtitleDetectionError> {
         let capacity = config.channel_capacity.max(1);
         let concurrency = config.max_concurrency.max(1);
         let (progress_tx, progress_rx) = mpsc::unbounded_channel();
+        let detection_opts = config.detection.clone();
+        if detection_opts.enabled {
+            preflight_detection(
+                detection_opts.detector,
+                detection_opts.onnx_model_path.as_deref(),
+            )?;
+        }
         let operations = Arc::new(ProcessingOperations::new(config, progress_tx));
         let (sender, mut rx) = mpsc::channel::<Job>(capacity);
         let semaphore = Arc::new(Semaphore::new(concurrency));
@@ -59,7 +70,7 @@ impl FrameSink {
             operations.finalize().await;
         });
 
-        (Self { sender, worker }, progress_rx)
+        Ok((Self { sender, worker }, progress_rx))
     }
 
     pub async fn submit(

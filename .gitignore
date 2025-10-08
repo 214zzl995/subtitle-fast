@@ -2,3 +2,5 @@
 Command.md
 debug.json
 /dump
+subtitle_detection_output.json
+config.toml

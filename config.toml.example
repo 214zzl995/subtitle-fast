@@ -1,0 +1,18 @@
+# Default configuration for subtitle-fast.
+# Input video path must still be provided on the command line.
+# Every CLI flag overrides the corresponding setting here.
+# Decoding backend to force (optional). Supported values:
+#   mock | ffmpeg | videotoolbox | openh264
+# backend = "ffmpeg"
+# Directory to store dumped frames when enabled.
+# dump_dir = "/path/to/output"
+# Image format for dumped frames when dump_dir is set.
+# Valid values: jpeg | png | webp | yuv
+dump_format = "jpeg"
+# Subtitle detection sampling frequency (frames per second). Minimum: 1.
+detection_samples_per_second = 7
+# Subtitle detection backend preference.
+# Valid values: auto | onnx | vision
+detection_backend = "auto"
+# Path or URI (file://, http://, https://) for the ONNX subtitle model.
+onnx_model = "/path/to/model.onnx"

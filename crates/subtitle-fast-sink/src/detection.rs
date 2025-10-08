@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::config::{FrameMetadata, SubtitleDetectionOptions};
 use crate::subtitle_detection::{
-    SubtitleDetectionConfig, SubtitleDetectionResult, SubtitlePresenceDetector,
+    build_detector, SubtitleDetectionConfig, SubtitleDetectionResult, SubtitleDetector,
 };
 use subtitle_fast_decoder::YPlaneFrame;
 use tokio::sync::Mutex;
@@ -30,19 +30,22 @@ impl SubtitleDetectionOperation {
 }
 
 struct SubtitleDetectionState {
-    detector: Option<SubtitlePresenceDetector>,
+    detector: Option<Box<dyn SubtitleDetector>>,
     detector_dims: Option<(usize, usize, usize)>,
     init_error_logged: bool,
     sampling: SubtitleSamplingState,
+    options: SubtitleDetectionOptions,
 }
 
 impl SubtitleDetectionState {
     fn new(options: SubtitleDetectionOptions) -> Self {
+        let samples_per_second = options.samples_per_second.max(1);
         Self {
             detector: None,
             detector_dims: None,
             init_error_logged: false,
-            sampling: SubtitleSamplingState::new(options.samples_per_second.max(1)),
+            sampling: SubtitleSamplingState::new(samples_per_second),
+            options,
         }
     }
 
@@ -55,9 +58,13 @@ impl SubtitleDetectionState {
         if self.detector_dims != Some(dims) {
             self.detector_dims = Some(dims);
             self.sampling.reset();
-            match SubtitlePresenceDetector::new(SubtitleDetectionConfig::for_frame(
-                dims.0, dims.1, dims.2,
-            )) {
+            let mut detector_config = SubtitleDetectionConfig::for_frame(dims.0, dims.1, dims.2);
+            detector_config.dump_json = self.options.dump_json;
+            detector_config.model_path = self.options.onnx_model_path.clone();
+            if let Some(roi) = self.options.roi_override {
+                detector_config.roi = roi;
+            }
+            match build_detector(self.options.detector, detector_config) {
                 Ok(detector) => {
                     self.detector = Some(detector);
                     self.init_error_logged = false;
@@ -81,7 +88,7 @@ impl SubtitleDetectionState {
         let metadata_clone = metadata.clone();
         let output = self
             .sampling
-            .ingest_frame(frame_clone, metadata_clone, detector);
+            .ingest_frame(frame_clone, metadata_clone, detector.as_ref());
         self.handle_sampling_output(output);
     }
 
@@ -97,7 +104,7 @@ impl SubtitleDetectionState {
 
     fn finalize(&mut self) -> std::io::Result<()> {
         if let Some(detector) = self.detector.as_ref() {
-            let output = self.sampling.finalize(detector);
+            let output = self.sampling.finalize(detector.as_ref());
             self.handle_sampling_output(output);
         } else {
             self.sampling.reset();
@@ -176,7 +183,7 @@ impl SubtitleSamplingState {
         &mut self,
         frame: YPlaneFrame,
         metadata: FrameMetadata,
-        detector: &SubtitlePresenceDetector,
+        detector: &dyn SubtitleDetector,
     ) -> SamplingOutput {
         let mut output = SamplingOutput::new();
 
@@ -208,7 +215,7 @@ impl SubtitleSamplingState {
         output
     }
 
-    fn finalize(&mut self, detector: &SubtitlePresenceDetector) -> SamplingOutput {
+    fn finalize(&mut self, detector: &dyn SubtitleDetector) -> SamplingOutput {
         let mut output = SamplingOutput::new();
         if let Some(buffer) = self.current_second.take() {
             let mut buffer = buffer;
@@ -269,7 +276,7 @@ impl SecondBuffer {
         &mut self,
         frame: YPlaneFrame,
         metadata: FrameMetadata,
-        detector: &SubtitlePresenceDetector,
+        detector: &dyn SubtitleDetector,
         failures: &mut Vec<DetectionFailure>,
     ) {
         let entry = BufferedFrame {
@@ -285,7 +292,7 @@ impl SecondBuffer {
     fn assign_samples(
         &mut self,
         frame_idx: usize,
-        detector: &SubtitlePresenceDetector,
+        detector: &dyn SubtitleDetector,
         failures: &mut Vec<DetectionFailure>,
     ) {
         if self.sample_targets.is_empty() {
@@ -313,7 +320,7 @@ impl SecondBuffer {
     fn mark_sample(
         &mut self,
         frame_idx: usize,
-        detector: &SubtitlePresenceDetector,
+        detector: &dyn SubtitleDetector,
         failures: &mut Vec<DetectionFailure>,
     ) {
         self.ensure_result(frame_idx, detector, failures);
@@ -339,7 +346,7 @@ impl SecondBuffer {
         &mut self,
         prev_idx: usize,
         curr_idx: usize,
-        detector: &SubtitlePresenceDetector,
+        detector: &dyn SubtitleDetector,
         failures: &mut Vec<DetectionFailure>,
     ) {
         if curr_idx <= prev_idx {
@@ -374,7 +381,7 @@ impl SecondBuffer {
         curr_idx: usize,
         prev_label: bool,
         curr_label: bool,
-        detector: &SubtitlePresenceDetector,
+        detector: &dyn SubtitleDetector,
         failures: &mut Vec<DetectionFailure>,
     ) {
         if curr_idx <= prev_idx + 1 {
@@ -424,7 +431,7 @@ impl SecondBuffer {
         &mut self,
         start: usize,
         end: usize,
-        detector: &SubtitlePresenceDetector,
+        detector: &dyn SubtitleDetector,
         failures: &mut Vec<DetectionFailure>,
     ) {
         for idx in start..end {
@@ -435,7 +442,7 @@ impl SecondBuffer {
     fn ensure_result(
         &mut self,
         idx: usize,
-        detector: &SubtitlePresenceDetector,
+        detector: &dyn SubtitleDetector,
         failures: &mut Vec<DetectionFailure>,
     ) {
         match self.frames[idx].decision {
@@ -443,7 +450,7 @@ impl SecondBuffer {
             FrameDecision::Assumed(_) | FrameDecision::Pending => {}
         }
 
-        match detector.detect(self.frames[idx].frame.data()) {
+        match detector.detect(self.frames[idx].frame.data(), &self.frames[idx].metadata) {
             Ok(result) => {
                 self.frames[idx].decision = FrameDecision::Evaluated(result);
             }
@@ -460,7 +467,7 @@ impl SecondBuffer {
 
     fn finalize_frames(
         &mut self,
-        detector: &SubtitlePresenceDetector,
+        detector: &dyn SubtitleDetector,
         failures: &mut Vec<DetectionFailure>,
     ) {
         if self.frames.is_empty() {
@@ -505,7 +512,7 @@ impl SecondBuffer {
 
     fn into_frames(
         &mut self,
-        detector: &SubtitlePresenceDetector,
+        detector: &dyn SubtitleDetector,
         failures: &mut Vec<DetectionFailure>,
     ) -> Vec<BufferedFrame> {
         self.finalize_frames(detector, failures);

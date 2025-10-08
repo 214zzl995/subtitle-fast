@@ -4,14 +4,20 @@ use std::str::FromStr;
 use std::time::Instant;
 
 mod cli;
+mod model;
 mod progress;
+mod settings;
 
-use clap::{CommandFactory, Parser};
-use cli::{CliArgs, DumpFormat};
+use clap::CommandFactory;
+use cli::{CliArgs, DetectionBackend, DumpFormat, parse_cli};
+use model::{ModelError, resolve_model_path};
 use progress::{ProgressEvent, finalize_success, start_progress};
+use settings::{ConfigError, resolve_settings};
 use subtitle_fast_decoder::{Backend, Configuration, DynYPlaneProvider, YPlaneError};
+use subtitle_fast_sink::subtitle_detection::SubtitleDetectionError;
 use subtitle_fast_sink::{
     FrameMetadata, FrameSink, FrameSinkConfig, FrameSinkError, ImageOutputFormat,
+    SubtitleDetectorKind,
 };
 use tokio_stream::StreamExt;
 
@@ -24,21 +30,14 @@ fn usage() {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), YPlaneError> {
-    let CliArgs {
-        backend,
-        dump_dir,
-        list_backends,
-        dump_format,
-        detection_samples_per_second,
-        input,
-    } = CliArgs::parse();
+    let (cli_args, cli_sources) = parse_cli();
 
-    if list_backends {
+    if cli_args.list_backends {
         display_available_backends();
         return Ok(());
     }
 
-    let input = match input {
+    let input = match cli_args.input.clone() {
         Some(path) => path,
         None => {
             usage();
@@ -46,14 +45,27 @@ async fn main() -> Result<(), YPlaneError> {
         }
     };
 
-    if let Some(dir) = dump_dir.as_ref() {
+    let settings = resolve_settings(&cli_args, &cli_sources).map_err(map_config_error)?;
+
+    if let Some(dir) = settings.dump_dir.as_ref() {
         fs::create_dir_all(dir)?;
     }
 
+    let resolved_model_path = resolve_model_path(
+        settings.onnx_model.as_deref(),
+        settings.onnx_model_from_cli,
+        settings.config_dir.as_deref(),
+    )
+    .await
+    .map_err(map_model_error)?;
+
+    let detection_kind = map_detection_backend(settings.detection_backend);
+
     let env_backend_present = std::env::var("SUBFAST_BACKEND").is_ok();
     let mut config = Configuration::from_env().unwrap_or_default();
-    let backend_override = match backend {
-        Some(name) => Some(parse_backend(&name)?),
+
+    let backend_override = match settings.backend.as_ref() {
+        Some(name) => Some(parse_backend(name)?),
         None => None,
     };
     let backend_locked = backend_override.is_some() || env_backend_present;
@@ -103,9 +115,11 @@ async fn main() -> Result<(), YPlaneError> {
 
         match run_pipeline(
             provider,
-            dump_dir.clone(),
-            dump_format,
-            detection_samples_per_second,
+            settings.dump_dir.clone(),
+            settings.dump_format,
+            settings.detection_samples_per_second,
+            detection_kind,
+            resolved_model_path.clone(),
         )
         .await
         {
@@ -139,6 +153,8 @@ async fn run_pipeline(
     dump_dir: Option<PathBuf>,
     dump_format: DumpFormat,
     detection_samples_per_second: u32,
+    detection_backend: SubtitleDetectorKind,
+    onnx_model_path: Option<PathBuf>,
 ) -> Result<(), (YPlaneError, u64)> {
     let total_frames = provider.total_frames();
     let mut stream = provider.into_stream();
@@ -149,13 +165,18 @@ async fn run_pipeline(
     let (sink_bar, sink_progress_tx, sink_progress_task) =
         start_progress("processing", total_frames, sink_started);
 
-    let sink_config = FrameSinkConfig::from_outputs(
+    let mut sink_config = FrameSinkConfig::from_outputs(
         dump_dir,
         map_dump_format(dump_format),
         detection_samples_per_second,
     );
+    sink_config.detection.detector = detection_backend;
+    sink_config.detection.onnx_model_path = onnx_model_path;
 
-    let (frame_sink, mut sink_progress_rx) = FrameSink::new(sink_config);
+    let (frame_sink, mut sink_progress_rx) = match FrameSink::new(sink_config) {
+        Ok(result) => result,
+        Err(err) => panic_with_detection_error(err),
+    };
     let sink_progress_sender = sink_progress_tx.clone();
     let progress_forward = tokio::spawn(async move {
         let mut completed = 0u64;
@@ -225,6 +246,14 @@ async fn run_pipeline(
     Ok(())
 }
 
+fn map_detection_backend(backend: DetectionBackend) -> SubtitleDetectorKind {
+    match backend {
+        DetectionBackend::Auto => SubtitleDetectorKind::Auto,
+        DetectionBackend::Onnx => SubtitleDetectorKind::OnnxPpocr,
+        DetectionBackend::Vision => SubtitleDetectorKind::MacVision,
+    }
+}
+
 fn select_next_backend(available: &[Backend], tried: &[Backend]) -> Option<Backend> {
     available
         .iter()
@@ -251,4 +280,30 @@ fn map_dump_format(format: DumpFormat) -> ImageOutputFormat {
         DumpFormat::Webp => ImageOutputFormat::Webp,
         DumpFormat::Yuv => ImageOutputFormat::Yuv,
     }
+}
+
+fn panic_with_detection_error(err: SubtitleDetectionError) -> ! {
+    match err {
+        SubtitleDetectionError::Environment(_)
+        | SubtitleDetectionError::Session(_)
+        | SubtitleDetectionError::ModelNotFound { .. }
+        | SubtitleDetectionError::Input(_)
+        | SubtitleDetectionError::Inference(_)
+        | SubtitleDetectionError::InvalidOutputShape
+        | SubtitleDetectionError::RuntimeSchemaConflict { .. } => panic!(
+            "failed to initialize the ONNX subtitle detector: {err}\n\
+             Install the ONNX Runtime 1.16.x shared libraries and ensure the dynamic library \
+             directory is visible to the application (for example via ORT_DYLIB_PATH or your \
+             system's library path). Documentation: https://onnxruntime.ai/docs/install/"
+        ),
+        _ => panic!("failed to initialize the subtitle detector: {err}"),
+    }
+}
+
+fn map_config_error(err: ConfigError) -> YPlaneError {
+    YPlaneError::configuration(err.to_string())
+}
+
+fn map_model_error(err: ModelError) -> YPlaneError {
+    YPlaneError::configuration(err.to_string())
 }

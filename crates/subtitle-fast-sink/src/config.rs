@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::subtitle_detection::{RoiConfig, SubtitleDetectorKind};
+
 const DEFAULT_CHANNEL_CAPACITY: usize = 64;
 const DEFAULT_MAX_CONCURRENCY: usize = 16;
 
@@ -67,13 +69,26 @@ pub enum ImageOutputFormat {
 pub struct SubtitleDetectionOptions {
     pub enabled: bool,
     pub samples_per_second: u32,
+    pub detector: SubtitleDetectorKind,
+    pub onnx_model_path: Option<PathBuf>,
+    pub roi_override: Option<RoiConfig>,
+    pub dump_json: bool,
 }
 
 impl Default for SubtitleDetectionOptions {
     fn default() -> Self {
+        let detector = if cfg!(target_os = "macos") {
+            SubtitleDetectorKind::MacVision
+        } else {
+            SubtitleDetectorKind::OnnxPpocr
+        };
         Self {
             enabled: true,
             samples_per_second: 7,
+            detector,
+            onnx_model_path: None,
+            roi_override: None,
+            dump_json: true,
         }
     }
 }
