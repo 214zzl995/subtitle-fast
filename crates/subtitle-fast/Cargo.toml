@@ -19,7 +19,7 @@ reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 subtitle-fast-decoder = { path = "../subtitle-fast-decoder", default-features = false }
-subtitle-fast-sink = { path = "../subtitle-fast-sink" }
+subtitle-fast-sink = { path = "../subtitle-fast-sink"}
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "signal"] }
 tokio-stream = "0.1"
 toml = "0.8"

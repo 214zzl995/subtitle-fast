@@ -10,12 +10,21 @@ detector-onnx = ["dep:ndarray", "dep:once_cell", "dep:ort"]
 detector-vision = []
 
 [dependencies]
-image = { version = "0.24", default-features = false, features = ["jpeg", "png", "webp-encoder"] }
+image = { version = "0.24", default-features = false, features = [
+    "jpeg",
+    "png",
+    "webp-encoder",
+] }
+
 subtitle-fast-decoder = { path = "../subtitle-fast-decoder", default-features = false }
 tokio = { version = "1", features = ["rt", "sync", "fs"] }
 thiserror = "1"
-ort = { version = "1.16.3", default-features = false, features = ["load-dynamic"], optional = true }
-ndarray = { version = "0.15", default-features = false, features = ["std"], optional = true }
+ort = { version = "1.16.3", optional = true }
+
+ndarray = { version = "0.15", default-features = false, features = [
+    "std",
+], optional = true }
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 once_cell = { version = "1.19", optional = true }

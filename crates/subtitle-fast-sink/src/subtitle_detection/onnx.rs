@@ -18,7 +18,6 @@ use super::{
 
 const MODEL_INPUT_WIDTH: usize = 640;
 const MODEL_INPUT_HEIGHT: usize = 640;
-const MODEL_FILE: &str = "../../model/ppocr_text_detection.onnx";
 
 #[derive(Debug, Clone, Copy)]
 struct RoiRect {
@@ -41,7 +40,6 @@ struct ModelRegistry {
 
 impl ModelRegistry {
     fn new() -> Result<Self, SubtitleDetectionError> {
-        ensure_runtime_library();
         let environment = Environment::builder()
             .with_name("subtitle-fast-sink")
             .build()
@@ -84,15 +82,10 @@ fn registry() -> Result<&'static ModelRegistry, SubtitleDetectionError> {
     MODEL_REGISTRY.get_or_try_init(ModelRegistry::new)
 }
 
-fn resolve_model_path(path: Option<&Path>) -> PathBuf {
-    match path {
-        Some(path) => path.to_path_buf(),
-        None => default_model_path(),
-    }
-}
-
 pub fn ensure_model_ready(model_path: Option<&Path>) -> Result<(), SubtitleDetectionError> {
-    let path = resolve_model_path(model_path);
+    let path = model_path
+        .map(Path::to_path_buf)
+        .ok_or(SubtitleDetectionError::MissingOnnxModelPath)?;
     let registry = registry()?;
     registry.get(&path)?;
     Ok(())
@@ -121,7 +114,11 @@ impl OnnxPpocrDetector {
             return Err(SubtitleDetectionError::EmptyRoi);
         }
 
-        let model_path = resolve_model_path(config.model_path.as_deref());
+        let model_path = config
+            .model_path
+            .as_ref()
+            .ok_or(SubtitleDetectionError::MissingOnnxModelPath)?
+            .clone();
         let model = registry()?.get(&model_path)?;
 
         Ok(Self { config, model })
@@ -186,12 +183,6 @@ impl SubtitleDetector for OnnxPpocrDetector {
         Ok(result)
     }
 }
-
-fn default_model_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(MODEL_FILE)
-}
-
-fn ensure_runtime_library() {}
 
 fn map_environment_error(err: OrtError) -> SubtitleDetectionError {
     map_schema_conflict(err, SubtitleDetectionError::Environment)

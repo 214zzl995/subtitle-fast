@@ -1,6 +1,8 @@
+use std::env;
+
 #[cfg(target_os = "macos")]
 fn build_vision_bridge() {
-    if std::env::var("CARGO_FEATURE_DETECTOR_VISION").is_err() {
+    if env::var("CARGO_FEATURE_DETECTOR_VISION").is_err() {
         return;
     }
 
@@ -24,4 +26,13 @@ fn build_vision_bridge() {}
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     build_vision_bridge();
+
+    if env::var("CARGO_FEATURE_DETECTOR_ONNX").is_ok()
+        && env::var("CARGO_FEATURE_ONNX_RUNTIME_DYNAMIC").is_ok()
+    {
+        println!(
+            "cargo:warning=Automatic ONNX Runtime download is disabled. \
+             Ensure the shared library is available via ORT_DYLIB_PATH or the system library path."
+        );
+    }
 }

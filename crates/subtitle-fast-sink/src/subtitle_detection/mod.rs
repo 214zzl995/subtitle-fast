@@ -25,6 +25,32 @@ const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[
 #[cfg(not(target_os = "macos"))]
 const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[SubtitleDetectorKind::OnnxPpocr];
 
+fn backend_for_kind(kind: SubtitleDetectorKind) -> Option<&'static dyn DetectorBackend> {
+    match kind {
+        SubtitleDetectorKind::Auto => None,
+        SubtitleDetectorKind::OnnxPpocr => {
+            #[cfg(feature = "detector-onnx")]
+            {
+                return Some(&ONNX_BACKEND);
+            }
+            #[cfg(not(feature = "detector-onnx"))]
+            {
+                return None;
+            }
+        }
+        SubtitleDetectorKind::MacVision => {
+            #[cfg(all(feature = "detector-vision", target_os = "macos"))]
+            {
+                return Some(&VISION_BACKEND);
+            }
+            #[cfg(not(all(feature = "detector-vision", target_os = "macos")))]
+            {
+                return None;
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RoiConfig {
     pub x: f32,
@@ -49,6 +75,72 @@ pub struct SubtitleDetectionResult {
     pub regions: Vec<DetectionRegion>,
 }
 
+trait DetectorBackend {
+    fn kind(&self) -> SubtitleDetectorKind;
+    fn ensure_available(
+        &self,
+        config: &SubtitleDetectionConfig,
+    ) -> Result<(), SubtitleDetectionError>;
+    fn build(
+        &self,
+        config: SubtitleDetectionConfig,
+    ) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError>;
+}
+
+#[cfg(feature = "detector-onnx")]
+struct OnnxBackend;
+
+#[cfg(feature = "detector-onnx")]
+impl DetectorBackend for OnnxBackend {
+    fn kind(&self) -> SubtitleDetectorKind {
+        SubtitleDetectorKind::OnnxPpocr
+    }
+
+    fn ensure_available(
+        &self,
+        config: &SubtitleDetectionConfig,
+    ) -> Result<(), SubtitleDetectionError> {
+        OnnxPpocrDetector::ensure_available(config)
+    }
+
+    fn build(
+        &self,
+        config: SubtitleDetectionConfig,
+    ) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
+        Ok(Box::new(OnnxPpocrDetector::new(config)?))
+    }
+}
+
+#[cfg(feature = "detector-onnx")]
+static ONNX_BACKEND: OnnxBackend = OnnxBackend;
+
+#[cfg(all(feature = "detector-vision", target_os = "macos"))]
+struct VisionBackend;
+
+#[cfg(all(feature = "detector-vision", target_os = "macos"))]
+impl DetectorBackend for VisionBackend {
+    fn kind(&self) -> SubtitleDetectorKind {
+        SubtitleDetectorKind::MacVision
+    }
+
+    fn ensure_available(
+        &self,
+        config: &SubtitleDetectionConfig,
+    ) -> Result<(), SubtitleDetectionError> {
+        VisionTextDetector::ensure_available(config)
+    }
+
+    fn build(
+        &self,
+        config: SubtitleDetectionConfig,
+    ) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
+        Ok(Box::new(VisionTextDetector::new(config)?))
+    }
+}
+
+#[cfg(all(feature = "detector-vision", target_os = "macos"))]
+static VISION_BACKEND: VisionBackend = VisionBackend;
+
 #[derive(Debug, Error)]
 pub enum SubtitleDetectionError {
     #[error("provided plane data length {data_len} is smaller than stride * height ({required})")]
@@ -61,6 +153,8 @@ pub enum SubtitleDetectionError {
     Session(String),
     #[error("model file not found: {path}")]
     ModelNotFound { path: std::path::PathBuf },
+    #[error("no ONNX model path configured; provide --onnx-model or set detection.onnx_model_path in the configuration file")]
+    MissingOnnxModelPath,
     #[error("failed to prepare model input: {0}")]
     Input(String),
     #[error("model inference failed: {0}")]
@@ -206,9 +300,13 @@ pub fn build_detector(
 ) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
     match kind {
         SubtitleDetectorKind::Auto => build_auto(config),
-        SubtitleDetectorKind::OnnxPpocr | SubtitleDetectorKind::MacVision => {
-            ensure_backend_or_panic(kind, &config);
-            instantiate_backend(kind, config)
+        _ => {
+            let backend =
+                backend_for_kind(kind).ok_or_else(|| SubtitleDetectionError::Unsupported {
+                    backend: kind.as_str(),
+                })?;
+            ensure_backend_or_panic(backend, &config);
+            backend.build(config)
         }
     }
 }
@@ -222,9 +320,20 @@ fn build_auto(
 ) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
     let mut last_err: Option<SubtitleDetectionError> = None;
     for &candidate in auto_backend_priority() {
+        let Some(backend) = backend_for_kind(candidate) else {
+            let err = SubtitleDetectionError::Unsupported {
+                backend: candidate.as_str(),
+            };
+            eprintln!(
+                "auto subtitle detector candidate '{}' unavailable: {err}",
+                candidate.as_str()
+            );
+            last_err = Some(err);
+            continue;
+        };
         let candidate_config = config.clone();
-        match ensure_backend_available(candidate, &candidate_config) {
-            Ok(()) => match instantiate_backend(candidate, candidate_config) {
+        match backend.ensure_available(&candidate_config) {
+            Ok(()) => match backend.build(candidate_config) {
                 Ok(detector) => return Ok(detector),
                 Err(err) => {
                     eprintln!(
@@ -248,43 +357,11 @@ fn build_auto(
     }))
 }
 
-fn build_onnx(
-    config: SubtitleDetectionConfig,
-) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
-    #[cfg(feature = "detector-onnx")]
-    {
-        return Ok(Box::new(OnnxPpocrDetector::new(config)?));
-    }
-    #[cfg(not(feature = "detector-onnx"))]
-    {
-        let _ = config;
-        Err(SubtitleDetectionError::Unsupported {
-            backend: SubtitleDetectorKind::OnnxPpocr.as_str(),
-        })
-    }
-}
-
-fn build_vision(
-    config: SubtitleDetectionConfig,
-) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
-    #[cfg(all(feature = "detector-vision", target_os = "macos"))]
-    {
-        return Ok(Box::new(VisionTextDetector::new(config)?));
-    }
-    #[cfg(not(all(feature = "detector-vision", target_os = "macos")))]
-    {
-        let _ = config;
-        Err(SubtitleDetectionError::Unsupported {
-            backend: SubtitleDetectorKind::MacVision.as_str(),
-        })
-    }
-}
-
-fn ensure_backend_or_panic(kind: SubtitleDetectorKind, config: &SubtitleDetectionConfig) {
-    if let Err(err) = ensure_backend_available(kind, config) {
+fn ensure_backend_or_panic(backend: &dyn DetectorBackend, config: &SubtitleDetectionConfig) {
+    if let Err(err) = backend.ensure_available(config) {
         panic!(
             "subtitle detection backend '{}' is not available: {err}",
-            kind.as_str()
+            backend.kind().as_str()
         );
     }
 }
@@ -295,43 +372,11 @@ fn ensure_backend_available(
 ) -> Result<(), SubtitleDetectionError> {
     match kind {
         SubtitleDetectorKind::Auto => Ok(()),
-        SubtitleDetectorKind::OnnxPpocr => {
-            #[cfg(feature = "detector-onnx")]
-            {
-                OnnxPpocrDetector::ensure_available(config)
-            }
-            #[cfg(not(feature = "detector-onnx"))]
-            {
-                let _ = config;
-                Err(SubtitleDetectionError::Unsupported {
-                    backend: SubtitleDetectorKind::OnnxPpocr.as_str(),
-                })
-            }
-        }
-        SubtitleDetectorKind::MacVision => {
-            #[cfg(all(feature = "detector-vision", target_os = "macos"))]
-            {
-                VisionTextDetector::ensure_available(config)
-            }
-            #[cfg(not(all(feature = "detector-vision", target_os = "macos")))]
-            {
-                let _ = config;
-                Err(SubtitleDetectionError::Unsupported {
-                    backend: SubtitleDetectorKind::MacVision.as_str(),
-                })
-            }
-        }
-    }
-}
-
-fn instantiate_backend(
-    kind: SubtitleDetectorKind,
-    config: SubtitleDetectionConfig,
-) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
-    match kind {
-        SubtitleDetectorKind::OnnxPpocr => build_onnx(config),
-        SubtitleDetectorKind::MacVision => build_vision(config),
-        SubtitleDetectorKind::Auto => unreachable!("auto backend cannot be instantiated directly"),
+        _ => backend_for_kind(kind)
+            .ok_or_else(|| SubtitleDetectionError::Unsupported {
+                backend: kind.as_str(),
+            })?
+            .ensure_available(config),
     }
 }
 

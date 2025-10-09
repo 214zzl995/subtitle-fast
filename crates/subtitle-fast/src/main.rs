@@ -14,7 +14,7 @@ use model::{ModelError, resolve_model_path};
 use progress::{ProgressEvent, finalize_success, start_progress};
 use settings::{ConfigError, resolve_settings};
 use subtitle_fast_decoder::{Backend, Configuration, DynYPlaneProvider, YPlaneError};
-use subtitle_fast_sink::subtitle_detection::SubtitleDetectionError;
+use subtitle_fast_sink::subtitle_detection::{SubtitleDetectionError, preflight_detection};
 use subtitle_fast_sink::{
     FrameMetadata, FrameSink, FrameSinkConfig, FrameSinkError, ImageOutputFormat,
     SubtitleDetectorKind,
@@ -159,12 +159,6 @@ async fn run_pipeline(
     let total_frames = provider.total_frames();
     let mut stream = provider.into_stream();
 
-    let mut processed: u64 = 0;
-    let sink_started = Instant::now();
-
-    let (sink_bar, sink_progress_tx, sink_progress_task) =
-        start_progress("processing", total_frames, sink_started);
-
     let mut sink_config = FrameSinkConfig::from_outputs(
         dump_dir,
         map_dump_format(dump_format),
@@ -172,6 +166,19 @@ async fn run_pipeline(
     );
     sink_config.detection.detector = detection_backend;
     sink_config.detection.onnx_model_path = onnx_model_path;
+
+    if sink_config.detection.enabled {
+        let model_path = sink_config.detection.onnx_model_path.as_deref();
+        if let Err(err) = preflight_detection(sink_config.detection.detector, model_path) {
+            panic_with_detection_error(err);
+        }
+    }
+
+    let mut processed: u64 = 0;
+    let sink_started = Instant::now();
+
+    let (sink_bar, sink_progress_tx, sink_progress_task) =
+        start_progress("processing", total_frames, sink_started);
 
     let (frame_sink, mut sink_progress_rx) = match FrameSink::new(sink_config) {
         Ok(result) => result,
