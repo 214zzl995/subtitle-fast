@@ -18,6 +18,8 @@ struct FileConfig {
     detection_samples_per_second: Option<u32>,
     detection_backend: Option<String>,
     onnx_model: Option<String>,
+    detection_luma_target: Option<u8>,
+    detection_luma_delta: Option<u8>,
 }
 
 #[derive(Debug)]
@@ -30,6 +32,8 @@ pub struct EffectiveSettings {
     pub onnx_model: Option<String>,
     pub onnx_model_from_cli: bool,
     pub config_dir: Option<PathBuf>,
+    pub detection_luma_target: Option<u8>,
+    pub detection_luma_delta: Option<u8>,
 }
 
 #[derive(Debug)]
@@ -175,6 +179,8 @@ fn merge(
         detection_samples_per_second: file_detection_sps,
         detection_backend: file_detection_backend,
         onnx_model: file_onnx_model,
+        detection_luma_target: file_luma_target,
+        detection_luma_delta: file_luma_delta,
     } = file;
 
     let mut backend = normalize_string(cli.backend.clone());
@@ -225,6 +231,20 @@ fn merge(
         }
     }
 
+    let mut detection_luma_target = cli.detection_luma_target;
+    if !sources.detection_luma_target_from_cli {
+        if let Some(value) = file_luma_target {
+            detection_luma_target = Some(value);
+        }
+    }
+
+    let mut detection_luma_delta = cli.detection_luma_delta;
+    if !sources.detection_luma_delta_from_cli {
+        if let Some(value) = file_luma_delta {
+            detection_luma_delta = Some(value);
+        }
+    }
+
     Ok(EffectiveSettings {
         backend,
         dump_dir,
@@ -234,6 +254,8 @@ fn merge(
         onnx_model,
         onnx_model_from_cli,
         config_dir,
+        detection_luma_target,
+        detection_luma_delta,
     })
 }
 

@@ -3,10 +3,12 @@ use std::sync::Arc;
 use crate::config::{FrameMetadata, FrameSinkConfig};
 use crate::detection::SubtitleDetectionOperation;
 use crate::dump::FrameDumpOperation;
+use crate::sampler::FrameSampleCoordinator;
+use crate::sampler::SampledFrame;
 use crate::subtitle_detection::SubtitleDetectionError;
 use subtitle_fast_decoder::YPlaneFrame;
 use thiserror::Error;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task::JoinSet;
 
 pub type FrameSinkProgress = mpsc::UnboundedReceiver<FrameMetadata>;
@@ -104,6 +106,7 @@ struct Job {
 struct ProcessingOperations {
     dump: Option<Arc<FrameDumpOperation>>,
     detection: Option<Arc<SubtitleDetectionOperation>>,
+    sampler: Mutex<FrameSampleCoordinator>,
     progress: mpsc::UnboundedSender<FrameMetadata>,
 }
 
@@ -113,6 +116,8 @@ impl ProcessingOperations {
             dump, detection, ..
         } = config;
 
+        let samples_per_second = detection.samples_per_second.max(1);
+        let sampler = FrameSampleCoordinator::new(samples_per_second);
         let dump = dump.map(|cfg| Arc::new(FrameDumpOperation::new(cfg)));
         let detection = if detection.enabled {
             Some(Arc::new(SubtitleDetectionOperation::new(detection)))
@@ -122,25 +127,28 @@ impl ProcessingOperations {
         Self {
             dump,
             detection,
+            sampler: Mutex::new(sampler),
             progress,
         }
     }
 
     async fn process_frame(&self, frame: YPlaneFrame, metadata: FrameMetadata) {
-        if let Some(dump) = self.dump.as_ref() {
-            if let Err(err) = dump.process(&frame, &metadata).await {
-                eprintln!("frame sink dump error: {err}");
-            }
-        }
+        let samples = {
+            let mut sampler = self.sampler.lock().await;
+            sampler.enqueue(frame, metadata)
+        };
 
-        if let Some(detection) = self.detection.as_ref() {
-            detection.process(&frame, &metadata).await;
-        }
-
-        let _ = self.progress.send(metadata);
+        self.process_samples(samples).await;
     }
 
     async fn finalize(&self) {
+        let remaining = {
+            let mut sampler = self.sampler.lock().await;
+            sampler.drain()
+        };
+
+        self.process_samples(remaining).await;
+
         if let Some(dump) = self.dump.as_ref() {
             if let Err(err) = dump.finalize().await {
                 eprintln!("frame sink dump finalize error: {err}");
@@ -149,6 +157,24 @@ impl ProcessingOperations {
 
         if let Some(detection) = self.detection.as_ref() {
             detection.finalize().await;
+        }
+    }
+
+    async fn process_samples(&self, samples: Vec<SampledFrame>) {
+        for sample in samples {
+            let SampledFrame { frame, metadata } = sample;
+
+            if let Some(dump) = self.dump.as_ref() {
+                if let Err(err) = dump.process(&frame, &metadata).await {
+                    eprintln!("frame sink dump error: {err}");
+                }
+            }
+
+            if let Some(detection) = self.detection.as_ref() {
+                detection.process(&frame, &metadata).await;
+            }
+
+            let _ = self.progress.send(metadata);
         }
     }
 }

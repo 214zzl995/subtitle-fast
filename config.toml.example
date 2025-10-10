@@ -12,7 +12,11 @@ dump_format = "jpeg"
 # Subtitle detection sampling frequency (frames per second). Minimum: 1.
 detection_samples_per_second = 7
 # Subtitle detection backend preference.
-# Valid values: auto | onnx | vision
+# Valid values: auto | onnx | vision | luma
 detection_backend = "auto"
+# Target Y-plane brightness (0-255) for the luma-band detector.
+# detection_luma_target = 230
+# Allowed deviation around the target brightness for the luma-band detector.
+# detection_luma_delta = 12
 # Path or URI (file://, http://, https://) for the ONNX subtitle model.
 onnx_model = "/path/to/model.onnx"

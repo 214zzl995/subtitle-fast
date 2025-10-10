@@ -45,6 +45,13 @@ async fn main() -> Result<(), YPlaneError> {
         }
     };
 
+    if !input.exists() {
+        return Err(YPlaneError::configuration(format!(
+            "input file '{}' does not exist",
+            input.display()
+        )));
+    }
+
     let settings = resolve_settings(&cli_args, &cli_sources).map_err(map_config_error)?;
 
     if let Some(dir) = settings.dump_dir.as_ref() {
@@ -120,6 +127,8 @@ async fn main() -> Result<(), YPlaneError> {
             settings.detection_samples_per_second,
             detection_kind,
             resolved_model_path.clone(),
+            settings.detection_luma_target,
+            settings.detection_luma_delta,
         )
         .await
         {
@@ -155,6 +164,8 @@ async fn run_pipeline(
     detection_samples_per_second: u32,
     detection_backend: SubtitleDetectorKind,
     onnx_model_path: Option<PathBuf>,
+    detection_luma_target: Option<u8>,
+    detection_luma_delta: Option<u8>,
 ) -> Result<(), (YPlaneError, u64)> {
     let total_frames = provider.total_frames();
     let mut stream = provider.into_stream();
@@ -166,6 +177,12 @@ async fn run_pipeline(
     );
     sink_config.detection.detector = detection_backend;
     sink_config.detection.onnx_model_path = onnx_model_path;
+    if let Some(value) = detection_luma_target {
+        sink_config.detection.luma_band.target_luma = value;
+    }
+    if let Some(value) = detection_luma_delta {
+        sink_config.detection.luma_band.delta = value;
+    }
 
     if sink_config.detection.enabled {
         let model_path = sink_config.detection.onnx_model_path.as_deref();
@@ -206,12 +223,16 @@ async fn run_pipeline(
             Ok(frame) => {
                 processed = processed.saturating_add(1);
                 let timestamp = frame.timestamp();
-                let frame_index = frame
-                    .frame_index()
-                    .unwrap_or_else(|| processed.saturating_sub(1));
+                let decoder_frame_index = frame.frame_index();
+                let frame_index = match decoder_frame_index {
+                    Some(raw) if processed > 0 && raw == processed => raw.saturating_sub(1),
+                    Some(raw) => raw,
+                    None => processed.saturating_sub(1),
+                };
 
                 let metadata = FrameMetadata {
                     frame_index,
+                    decoder_frame_index,
                     processed_index: processed,
                     timestamp,
                 };
@@ -258,6 +279,7 @@ fn map_detection_backend(backend: DetectionBackend) -> SubtitleDetectorKind {
         DetectionBackend::Auto => SubtitleDetectorKind::Auto,
         DetectionBackend::Onnx => SubtitleDetectorKind::OnnxPpocr,
         DetectionBackend::Vision => SubtitleDetectorKind::MacVision,
+        DetectionBackend::Luma => SubtitleDetectorKind::LumaBand,
     }
 }
 

@@ -4,6 +4,9 @@ use crate::config::FrameMetadata;
 use serde::Serialize;
 use thiserror::Error;
 
+pub mod luma_band;
+pub use luma_band::LumaBandDetector;
+
 #[cfg(feature = "detector-onnx")]
 pub mod onnx;
 #[cfg(feature = "detector-onnx")]
@@ -14,16 +17,23 @@ pub mod vision;
 #[cfg(all(feature = "detector-vision", target_os = "macos"))]
 pub use vision::VisionTextDetector;
 
+pub const DEFAULT_LUMA_TARGET: u8 = 230;
+pub const DEFAULT_LUMA_DELTA: u8 = 12;
+
 const OUTPUT_JSON_PATH: &str = "subtitle_detection_output.jsonl";
 
 #[cfg(target_os = "macos")]
 const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[
     SubtitleDetectorKind::MacVision,
     SubtitleDetectorKind::OnnxPpocr,
+    SubtitleDetectorKind::LumaBand,
 ];
 
 #[cfg(not(target_os = "macos"))]
-const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[SubtitleDetectorKind::OnnxPpocr];
+const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[
+    SubtitleDetectorKind::OnnxPpocr,
+    SubtitleDetectorKind::LumaBand,
+];
 
 fn backend_for_kind(kind: SubtitleDetectorKind) -> Option<&'static dyn DetectorBackend> {
     match kind {
@@ -48,6 +58,7 @@ fn backend_for_kind(kind: SubtitleDetectorKind) -> Option<&'static dyn DetectorB
                 return None;
             }
         }
+        SubtitleDetectorKind::LumaBand => Some(&LUMA_BAND_BACKEND),
     }
 }
 
@@ -73,6 +84,12 @@ pub struct SubtitleDetectionResult {
     pub has_subtitle: bool,
     pub max_score: f32,
     pub regions: Vec<DetectionRegion>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LumaBandConfig {
+    pub target_luma: u8,
+    pub delta: u8,
 }
 
 trait DetectorBackend {
@@ -141,6 +158,30 @@ impl DetectorBackend for VisionBackend {
 #[cfg(all(feature = "detector-vision", target_os = "macos"))]
 static VISION_BACKEND: VisionBackend = VisionBackend;
 
+struct LumaBandBackend;
+
+impl DetectorBackend for LumaBandBackend {
+    fn kind(&self) -> SubtitleDetectorKind {
+        SubtitleDetectorKind::LumaBand
+    }
+
+    fn ensure_available(
+        &self,
+        config: &SubtitleDetectionConfig,
+    ) -> Result<(), SubtitleDetectionError> {
+        LumaBandDetector::ensure_available(config)
+    }
+
+    fn build(
+        &self,
+        config: SubtitleDetectionConfig,
+    ) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
+        Ok(Box::new(LumaBandDetector::new(config)?))
+    }
+}
+
+static LUMA_BAND_BACKEND: LumaBandBackend = LumaBandBackend;
+
 #[derive(Debug, Error)]
 pub enum SubtitleDetectionError {
     #[error("provided plane data length {data_len} is smaller than stride * height ({required})")]
@@ -179,6 +220,7 @@ pub struct SubtitleDetectionConfig {
     pub model_path: Option<PathBuf>,
     pub roi: RoiConfig,
     pub dump_json: bool,
+    pub luma_band: LumaBandConfig,
 }
 
 impl SubtitleDetectionConfig {
@@ -195,6 +237,10 @@ impl SubtitleDetectionConfig {
                 height: 0.30,
             },
             dump_json: true,
+            luma_band: LumaBandConfig {
+                target_luma: DEFAULT_LUMA_TARGET,
+                delta: DEFAULT_LUMA_DELTA,
+            },
         }
     }
 }
@@ -218,6 +264,9 @@ pub fn preflight_detection(
         }
         SubtitleDetectorKind::MacVision => {
             ensure_backend_available(SubtitleDetectorKind::MacVision, &probe_config)
+        }
+        SubtitleDetectorKind::LumaBand => {
+            ensure_backend_available(SubtitleDetectorKind::LumaBand, &probe_config)
         }
     }
 }
@@ -270,6 +319,7 @@ pub enum SubtitleDetectorKind {
     Auto,
     OnnxPpocr,
     MacVision,
+    LumaBand,
 }
 
 impl SubtitleDetectorKind {
@@ -278,6 +328,7 @@ impl SubtitleDetectorKind {
             SubtitleDetectorKind::Auto => "auto",
             SubtitleDetectorKind::OnnxPpocr => "onnx-ppocr",
             SubtitleDetectorKind::MacVision => "macos-vision",
+            SubtitleDetectorKind::LumaBand => "luma",
         }
     }
 }

@@ -16,6 +16,7 @@ pub enum DetectionBackend {
     Auto,
     Onnx,
     Vision,
+    Luma,
 }
 
 #[derive(Debug, Default)]
@@ -24,6 +25,8 @@ pub struct CliSources {
     pub detection_backend_from_cli: bool,
     pub detection_sps_from_cli: bool,
     pub onnx_model_from_cli: bool,
+    pub detection_luma_target_from_cli: bool,
+    pub detection_luma_delta_from_cli: bool,
 }
 
 impl CliSources {
@@ -33,6 +36,8 @@ impl CliSources {
             detection_backend_from_cli: value_from_cli(matches, "detection_backend"),
             detection_sps_from_cli: value_from_cli(matches, "detection_samples_per_second"),
             onnx_model_from_cli: value_from_cli(matches, "onnx_model"),
+            detection_luma_target_from_cli: value_from_cli(matches, "detection_luma_target"),
+            detection_luma_delta_from_cli: value_from_cli(matches, "detection_luma_delta"),
         }
     }
 }
@@ -99,6 +104,22 @@ pub struct CliArgs {
     /// Path or URI to the ONNX subtitle detection model
     #[arg(long = "onnx-model")]
     pub onnx_model: Option<String>,
+
+    /// Target Y-plane brightness used by the luma-band detector (0-255)
+    #[arg(
+        long = "detection-luma-target",
+        id = "detection_luma_target",
+        value_parser = clap::value_parser!(u8)
+    )]
+    pub detection_luma_target: Option<u8>,
+
+    /// Allowed deviation around the target brightness for the luma-band detector (0-255)
+    #[arg(
+        long = "detection-luma-delta",
+        id = "detection_luma_delta",
+        value_parser = clap::value_parser!(u8)
+    )]
+    pub detection_luma_delta: Option<u8>,
 
     /// Input video path
     pub input: Option<PathBuf>,
