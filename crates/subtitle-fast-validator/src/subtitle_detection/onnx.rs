@@ -41,7 +41,7 @@ struct ModelRegistry {
 impl ModelRegistry {
     fn new() -> Result<Self, SubtitleDetectionError> {
         let environment = Environment::builder()
-            .with_name("subtitle-fast-sink")
+            .with_name("subtitle-fast-validator")
             .build()
             .map_err(map_environment_error)?;
         Ok(Self {

@@ -5,27 +5,20 @@ use crate::subtitle_detection::{
     RoiConfig, SubtitleDetectorKind, DEFAULT_LUMA_DELTA, DEFAULT_LUMA_TARGET,
 };
 
-const DEFAULT_CHANNEL_CAPACITY: usize = 64;
-const DEFAULT_MAX_CONCURRENCY: usize = 16;
-
 #[derive(Clone, Debug)]
-pub struct FrameSinkConfig {
-    pub channel_capacity: usize,
-    pub max_concurrency: usize,
+pub struct FrameValidatorConfig {
     pub detection: SubtitleDetectionOptions,
 }
 
-impl Default for FrameSinkConfig {
+impl Default for FrameValidatorConfig {
     fn default() -> Self {
         Self {
-            channel_capacity: DEFAULT_CHANNEL_CAPACITY,
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
             detection: SubtitleDetectionOptions::default(),
         }
     }
 }
 
-impl FrameSinkConfig {
+impl FrameValidatorConfig {
     pub fn from_outputs(
         dump_dir: Option<PathBuf>,
         format: ImageOutputFormat,

@@ -109,7 +109,7 @@ async fn drive_progress(
     let mut last_speed = 0.0f64;
 
     while let Some(event) = rx.recv().await {
-        processed = event.index;
+        processed = processed.max(event.index);
 
         if let Some(total) = total_frames {
             if processed > total {

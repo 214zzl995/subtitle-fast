@@ -1721,7 +1721,7 @@ dependencies = [
  "serde",
  "sha2",
  "subtitle-fast-decoder",
- "subtitle-fast-sink",
+ "subtitle-fast-validator",
  "tokio",
  "tokio-stream",
  "toml",
@@ -1745,7 +1745,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "subtitle-fast-sink"
+name = "subtitle-fast-validator"
 version = "0.1.0"
 dependencies = [
  "cc",
