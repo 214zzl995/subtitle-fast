@@ -1,27 +1,60 @@
 use crate::config::{FrameMetadata, SubtitleDetectionOptions};
+use crate::dump::FrameDumpOperation;
 use crate::subtitle_detection::{
-    build_detector, LumaBandConfig, SubtitleDetectionConfig, SubtitleDetector,
+    build_detector, LumaBandConfig, SubtitleDetectionConfig, SubtitleDetectionError,
+    SubtitleDetector,
 };
 use subtitle_fast_decoder::YPlaneFrame;
 use tokio::sync::Mutex;
 
-pub(crate) struct SubtitleDetectionOperation {
+pub(crate) struct SubtitleDetectionPipeline {
+    dump: Option<FrameDumpOperation>,
     state: Mutex<SubtitleDetectionState>,
+    enabled: bool,
 }
 
-impl SubtitleDetectionOperation {
-    pub fn new(options: SubtitleDetectionOptions) -> Self {
-        Self {
-            state: Mutex::new(SubtitleDetectionState::new(options)),
+impl SubtitleDetectionPipeline {
+    pub fn from_options(mut options: SubtitleDetectionOptions) -> Option<Self> {
+        let dump_cfg = options.frame_dump.take();
+        if !options.enabled && dump_cfg.is_none() {
+            return None;
         }
+
+        let dump = dump_cfg.map(FrameDumpOperation::new);
+        let enabled = options.enabled;
+        Some(Self {
+            dump,
+            enabled,
+            state: Mutex::new(SubtitleDetectionState::new(options)),
+        })
     }
 
     pub async fn process(&self, frame: &YPlaneFrame, metadata: &FrameMetadata) {
+        if let Some(dump) = self.dump.as_ref() {
+            if let Err(err) = dump.process(frame, metadata).await {
+                eprintln!("frame dump error: {err}");
+            }
+        }
+
+        if !self.enabled {
+            return;
+        }
+
         let mut state = self.state.lock().await;
         state.process_frame(frame, metadata);
     }
 
     pub async fn finalize(&self) {
+        if let Some(dump) = self.dump.as_ref() {
+            if let Err(err) = dump.finalize().await {
+                eprintln!("frame dump finalize error: {err}");
+            }
+        }
+
+        if !self.enabled {
+            return;
+        }
+
         let mut state = self.state.lock().await;
         state.finalize();
     }
@@ -45,6 +78,10 @@ impl SubtitleDetectionState {
     }
 
     fn process_frame(&mut self, frame: &YPlaneFrame, metadata: &FrameMetadata) {
+        if !self.options.enabled {
+            return;
+        }
+
         let dims = (
             frame.width() as usize,
             frame.height() as usize,
@@ -69,7 +106,7 @@ impl SubtitleDetectionState {
                 }
                 Err(err) => {
                     if !self.init_error_logged {
-                        eprintln!("subtitle detection initialization failed: {err}");
+                        log_init_failure(self.options.detector, err);
                         self.init_error_logged = true;
                     }
                     self.detector = None;
@@ -91,7 +128,20 @@ impl SubtitleDetectionState {
     }
 
     fn finalize(&mut self) {
+        if !self.options.enabled {
+            return;
+        }
         self.detector = None;
         self.detector_dims = None;
     }
+}
+
+fn log_init_failure(
+    kind: crate::subtitle_detection::SubtitleDetectorKind,
+    err: SubtitleDetectionError,
+) {
+    eprintln!(
+        "subtitle detection initialization failed for backend '{}': {err}",
+        kind.as_str()
+    );
 }

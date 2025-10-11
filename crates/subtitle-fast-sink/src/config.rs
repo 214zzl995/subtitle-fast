@@ -12,7 +12,6 @@ const DEFAULT_MAX_CONCURRENCY: usize = 16;
 pub struct FrameSinkConfig {
     pub channel_capacity: usize,
     pub max_concurrency: usize,
-    pub dump: Option<FrameDumpConfig>,
     pub detection: SubtitleDetectionOptions,
 }
 
@@ -21,7 +20,6 @@ impl Default for FrameSinkConfig {
         Self {
             channel_capacity: DEFAULT_CHANNEL_CAPACITY,
             max_concurrency: DEFAULT_MAX_CONCURRENCY,
-            dump: None,
             detection: SubtitleDetectionOptions::default(),
         }
     }
@@ -34,10 +32,10 @@ impl FrameSinkConfig {
         samples_per_second: u32,
     ) -> Self {
         let mut config = Self::default();
-        if let Some(dir) = dump_dir {
-            config.dump = Some(FrameDumpConfig::new(dir, format, samples_per_second));
-        }
         config.detection.samples_per_second = samples_per_second.max(1);
+        if let Some(dir) = dump_dir {
+            config.detection.frame_dump = Some(FrameDumpConfig::new(dir, format));
+        }
         config
     }
 }
@@ -46,16 +44,11 @@ impl FrameSinkConfig {
 pub struct FrameDumpConfig {
     pub directory: PathBuf,
     pub format: ImageOutputFormat,
-    pub samples_per_second: u32,
 }
 
 impl FrameDumpConfig {
-    pub fn new(directory: PathBuf, format: ImageOutputFormat, samples_per_second: u32) -> Self {
-        Self {
-            directory,
-            format,
-            samples_per_second: samples_per_second.max(1),
-        }
+    pub fn new(directory: PathBuf, format: ImageOutputFormat) -> Self {
+        Self { directory, format }
     }
 }
 
@@ -76,23 +69,20 @@ pub struct SubtitleDetectionOptions {
     pub roi_override: Option<RoiConfig>,
     pub dump_json: bool,
     pub luma_band: LumaBandOptions,
+    pub frame_dump: Option<FrameDumpConfig>,
 }
 
 impl Default for SubtitleDetectionOptions {
     fn default() -> Self {
-        let detector = if cfg!(target_os = "macos") {
-            SubtitleDetectorKind::MacVision
-        } else {
-            SubtitleDetectorKind::OnnxPpocr
-        };
         Self {
             enabled: true,
             samples_per_second: 7,
-            detector,
+            detector: SubtitleDetectorKind::LumaBand,
             onnx_model_path: None,
             roi_override: None,
             dump_json: true,
             luma_band: LumaBandOptions::default(),
+            frame_dump: None,
         }
     }
 }

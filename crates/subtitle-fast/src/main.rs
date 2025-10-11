@@ -100,9 +100,24 @@ async fn main() -> Result<(), YPlaneError> {
             tried.push(attempt_config.backend);
         }
 
-        let provider = match attempt_config.create_provider() {
-            Ok(provider) => provider,
+        let provider_started = Instant::now();
+        let provider_result = attempt_config.create_provider();
+        let provider_elapsed = provider_started.elapsed();
+        let provider = match provider_result {
+            Ok(provider) => {
+                eprintln!(
+                    "initialized decoder backend '{}' in {:.2?}",
+                    attempt_config.backend.as_str(),
+                    provider_elapsed
+                );
+                provider
+            }
             Err(err) => {
+                eprintln!(
+                    "decoder backend '{}' failed to initialize in {:.2?}: {err}",
+                    attempt_config.backend.as_str(),
+                    provider_elapsed
+                );
                 if !backend_locked {
                     if let Some(next_backend) = select_next_backend(&available, &tried) {
                         let failed_backend = attempt_config.backend;
@@ -205,7 +220,7 @@ async fn run_pipeline(
     let progress_forward = tokio::spawn(async move {
         let mut completed = 0u64;
         while let Some(metadata) = sink_progress_rx.recv().await {
-            completed = completed.saturating_add(1);
+            completed = completed.max(metadata.processed_index);
             let progress_event = ProgressEvent {
                 index: completed,
                 timestamp: metadata.timestamp,

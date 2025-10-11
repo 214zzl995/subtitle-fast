@@ -1,5 +1,10 @@
 use std::cmp::{self, Ordering};
 
+#[cfg(target_arch = "aarch64")]
+use std::arch::is_aarch64_feature_detected;
+#[cfg(target_arch = "x86_64")]
+use std::arch::is_x86_feature_detected;
+
 use crate::config::FrameMetadata;
 
 use super::{
@@ -234,19 +239,145 @@ fn compute_roi_rect(
 
 fn threshold_mask(data: &[u8], stride: usize, roi: RoiRect, params: LumaBandConfig) -> Vec<u8> {
     let mut mask = vec![0u8; roi.width * roi.height];
+    if mask.is_empty() {
+        return mask;
+    }
+
     let lo = params.target_luma.saturating_sub(params.delta);
     let hi = params.target_luma.saturating_add(params.delta);
 
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse2") {
+            unsafe {
+                threshold_mask_sse2(data, stride, roi, lo, hi, &mut mask);
+            }
+            return mask;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if is_aarch64_feature_detected!("neon") {
+            unsafe {
+                threshold_mask_neon(data, stride, roi, lo, hi, &mut mask);
+            }
+            return mask;
+        }
+    }
+
+    threshold_mask_scalar(data, stride, roi, lo, hi, &mut mask);
+    mask
+}
+
+fn threshold_mask_scalar(
+    data: &[u8],
+    stride: usize,
+    roi: RoiRect,
+    lo: u8,
+    hi: u8,
+    mask: &mut [u8],
+) {
     for row in 0..roi.height {
         let src_offset = (roi.y + row) * stride + roi.x;
         let dst_offset = row * roi.width;
         let src = &data[src_offset..src_offset + roi.width];
         let dst = &mut mask[dst_offset..dst_offset + roi.width];
-        for (value, out) in src.iter().zip(dst.iter_mut()) {
-            *out = u8::from(*value >= lo && *value <= hi);
+        threshold_mask_scalar_row(src, dst, lo, hi);
+    }
+}
+
+#[inline(always)]
+fn threshold_mask_scalar_row(src: &[u8], dst: &mut [u8], lo: u8, hi: u8) {
+    for (value, out) in src.iter().zip(dst.iter_mut()) {
+        *out = u8::from(*value >= lo && *value <= hi);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn threshold_mask_sse2(
+    data: &[u8],
+    stride: usize,
+    roi: RoiRect,
+    lo: u8,
+    hi: u8,
+    mask: &mut [u8],
+) {
+    use std::arch::x86_64::{
+        __m128i, _mm_and_si128, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_max_epu8, _mm_min_epu8,
+        _mm_set1_epi8, _mm_storeu_si128,
+    };
+
+    let lo_vec = _mm_set1_epi8(lo as i8);
+    let hi_vec = _mm_set1_epi8(hi as i8);
+    let ones = _mm_set1_epi8(1);
+    let width = roi.width;
+
+    for row in 0..roi.height {
+        let src_ptr = data.as_ptr().add((roi.y + row) * stride + roi.x);
+        let dst_ptr = mask.as_mut_ptr().add(row * width);
+
+        let mut x = 0usize;
+        while x + 16 <= width {
+            let pixels = _mm_loadu_si128(src_ptr.add(x) as *const __m128i);
+            let ge_lo = _mm_cmpeq_epi8(pixels, _mm_max_epu8(pixels, lo_vec));
+            let le_hi = _mm_cmpeq_epi8(pixels, _mm_min_epu8(pixels, hi_vec));
+            let mut mask_vec = _mm_and_si128(ge_lo, le_hi);
+            mask_vec = _mm_and_si128(mask_vec, ones);
+            _mm_storeu_si128(dst_ptr.add(x) as *mut __m128i, mask_vec);
+            x += 16;
+        }
+
+        if x < width {
+            let remaining = width - x;
+            let src_tail = std::slice::from_raw_parts(src_ptr.add(x), remaining);
+            let dst_tail = std::slice::from_raw_parts_mut(dst_ptr.add(x), remaining);
+            threshold_mask_scalar_row(src_tail, dst_tail, lo, hi);
         }
     }
-    mask
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn threshold_mask_neon(
+    data: &[u8],
+    stride: usize,
+    roi: RoiRect,
+    lo: u8,
+    hi: u8,
+    mask: &mut [u8],
+) {
+    use std::arch::aarch64::{
+        uint8x16_t, vandq_u8, vceqq_u8, vdupq_n_u8, vld1q_u8, vmaxq_u8, vminq_u8, vst1q_u8,
+    };
+
+    let lo_vec: uint8x16_t = vdupq_n_u8(lo);
+    let hi_vec: uint8x16_t = vdupq_n_u8(hi);
+    let ones: uint8x16_t = vdupq_n_u8(1);
+    let width = roi.width;
+
+    for row in 0..roi.height {
+        let src_ptr = data.as_ptr().add((roi.y + row) * stride + roi.x);
+        let dst_ptr = mask.as_mut_ptr().add(row * width);
+
+        let mut x = 0usize;
+        while x + 16 <= width {
+            let pixels = vld1q_u8(src_ptr.add(x));
+            let ge_lo = vceqq_u8(pixels, vmaxq_u8(pixels, lo_vec));
+            let le_hi = vceqq_u8(pixels, vminq_u8(pixels, hi_vec));
+            let mask_vec = vandq_u8(vandq_u8(ge_lo, le_hi), ones);
+            vst1q_u8(dst_ptr.add(x), mask_vec);
+            x += 16;
+        }
+
+        if x < width {
+            let remaining = width - x;
+            let src_tail = std::slice::from_raw_parts(src_ptr.add(x), remaining);
+            let dst_tail = std::slice::from_raw_parts_mut(dst_ptr.add(x), remaining);
+            threshold_mask_scalar_row(src_tail, dst_tail, lo, hi);
+        }
+    }
 }
 
 fn rlsa_horizontal(mask: &mut [u8], width: usize, height: usize, gap: usize) {

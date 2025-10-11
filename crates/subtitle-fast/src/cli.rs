@@ -96,9 +96,11 @@ pub struct CliArgs {
     pub detection_samples_per_second: u32,
 
     /// Preferred subtitle detection backend
-    #[arg(long = "detection-backend", value_enum)]
-    #[cfg_attr(target_os = "macos", arg(default_value_t = DetectionBackend::Vision))]
-    #[cfg_attr(not(target_os = "macos"), arg(default_value_t = DetectionBackend::Onnx))]
+    #[arg(
+        long = "detection-backend",
+        value_enum,
+        default_value_t = DetectionBackend::Luma
+    )]
     pub detection_backend: DetectionBackend,
 
     /// Path or URI to the ONNX subtitle detection model

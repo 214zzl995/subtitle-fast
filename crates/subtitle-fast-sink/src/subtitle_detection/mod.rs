@@ -23,17 +23,10 @@ pub const DEFAULT_LUMA_DELTA: u8 = 12;
 const OUTPUT_JSON_PATH: &str = "subtitle_detection_output.jsonl";
 
 #[cfg(target_os = "macos")]
-const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[
-    SubtitleDetectorKind::MacVision,
-    SubtitleDetectorKind::OnnxPpocr,
-    SubtitleDetectorKind::LumaBand,
-];
+const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[SubtitleDetectorKind::LumaBand];
 
 #[cfg(not(target_os = "macos"))]
-const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[
-    SubtitleDetectorKind::OnnxPpocr,
-    SubtitleDetectorKind::LumaBand,
-];
+const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[SubtitleDetectorKind::LumaBand];
 
 fn backend_for_kind(kind: SubtitleDetectorKind) -> Option<&'static dyn DetectorBackend> {
     match kind {

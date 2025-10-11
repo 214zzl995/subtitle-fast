@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use crate::config::{FrameMetadata, FrameSinkConfig};
-use crate::detection::SubtitleDetectionOperation;
-use crate::dump::FrameDumpOperation;
+use crate::detection::SubtitleDetectionPipeline;
 use crate::sampler::FrameSampleCoordinator;
 use crate::sampler::SampledFrame;
 use crate::subtitle_detection::SubtitleDetectionError;
@@ -104,28 +103,19 @@ struct Job {
 }
 
 struct ProcessingOperations {
-    dump: Option<Arc<FrameDumpOperation>>,
-    detection: Option<Arc<SubtitleDetectionOperation>>,
+    detection: Option<Arc<SubtitleDetectionPipeline>>,
     sampler: Mutex<FrameSampleCoordinator>,
     progress: mpsc::UnboundedSender<FrameMetadata>,
 }
 
 impl ProcessingOperations {
     fn new(config: FrameSinkConfig, progress: mpsc::UnboundedSender<FrameMetadata>) -> Self {
-        let FrameSinkConfig {
-            dump, detection, ..
-        } = config;
+        let FrameSinkConfig { detection, .. } = config;
 
         let samples_per_second = detection.samples_per_second.max(1);
         let sampler = FrameSampleCoordinator::new(samples_per_second);
-        let dump = dump.map(|cfg| Arc::new(FrameDumpOperation::new(cfg)));
-        let detection = if detection.enabled {
-            Some(Arc::new(SubtitleDetectionOperation::new(detection)))
-        } else {
-            None
-        };
+        let detection = SubtitleDetectionPipeline::from_options(detection).map(Arc::new);
         Self {
-            dump,
             detection,
             sampler: Mutex::new(sampler),
             progress,
@@ -149,12 +139,6 @@ impl ProcessingOperations {
 
         self.process_samples(remaining).await;
 
-        if let Some(dump) = self.dump.as_ref() {
-            if let Err(err) = dump.finalize().await {
-                eprintln!("frame sink dump finalize error: {err}");
-            }
-        }
-
         if let Some(detection) = self.detection.as_ref() {
             detection.finalize().await;
         }
@@ -163,12 +147,6 @@ impl ProcessingOperations {
     async fn process_samples(&self, samples: Vec<SampledFrame>) {
         for sample in samples {
             let SampledFrame { frame, metadata } = sample;
-
-            if let Some(dump) = self.dump.as_ref() {
-                if let Err(err) = dump.process(&frame, &metadata).await {
-                    eprintln!("frame sink dump error: {err}");
-                }
-            }
 
             if let Some(detection) = self.detection.as_ref() {
                 detection.process(&frame, &metadata).await;
