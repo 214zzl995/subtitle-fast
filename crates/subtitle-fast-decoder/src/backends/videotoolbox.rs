@@ -81,17 +81,24 @@ mod platform {
     }
 
     fn probe_total_frames(path: &Path) -> YPlaneResult<Option<u64>> {
-        if let Some(total) = probe_total_frames_mp4(path)? {
-            return Ok(Some(total));
+        match probe_total_frames_videotoolbox(path) {
+            Ok(result) => Ok(result),
+            Err(vt_err) => match probe_total_frames_mp4(path) {
+                Ok(Some(value)) => Ok(Some(value)),
+                Ok(None) => Err(vt_err),
+                Err(mp4_err) => Err(YPlaneError::backend_failure(
+                    "videotoolbox",
+                    format!("{vt_err}; mp4 fallback failed: {mp4_err}"),
+                )),
+            },
         }
-        probe_total_frames_videotoolbox(path)
     }
 
     fn probe_total_frames_mp4(path: &Path) -> YPlaneResult<Option<u64>> {
         let file = File::open(path)?;
         let size = file.metadata()?.len();
         let reader = BufReader::new(file);
-        let mut reader = match Mp4Reader::read_header(reader, size) {
+        let reader = match Mp4Reader::read_header(reader, size) {
             Ok(reader) => reader,
             Err(_) => return Ok(None),
         };
@@ -116,24 +123,7 @@ mod platform {
             return Ok(None);
         }
 
-        let mut available: u64 = 0;
-        for sample_id in 1..=count {
-            let sample = reader.read_sample(track_id, sample_id).map_err(|err| {
-                YPlaneError::backend_failure(
-                    "videotoolbox",
-                    format!("failed to read MP4 sample {sample_id}: {err}"),
-                )
-            })?;
-            if sample.is_some() {
-                available = available.saturating_add(1);
-            }
-        }
-
-        if available == 0 {
-            Ok(None)
-        } else {
-            Ok(Some(available))
-        }
+        Ok(Some(count as u64))
     }
 
     fn probe_total_frames_videotoolbox(path: &Path) -> YPlaneResult<Option<u64>> {
