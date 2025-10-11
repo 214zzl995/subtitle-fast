@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -21,7 +21,7 @@ use subtitle_fast_validator::{
 
 const VALIDATOR_CHANNEL_CAPACITY: usize = 64;
 const VALIDATOR_MAX_CONCURRENCY: usize = 16;
-const DETECTION_OUTPUT_PATH: &str = "subtitle_detection_output.jsonl";
+const DETECTION_OUTPUT_FILENAME: &str = "subtitle_detection_output.jsonl";
 
 #[derive(Clone)]
 pub struct PipelineConfig {
@@ -167,8 +167,10 @@ pub async fn run_pipeline(
         None => Vec::new(),
     };
 
-    if detection_enabled {
-        if let Err(err) = write_detection_results(&mut detection_records) {
+    if detection_enabled || dump_enabled {
+        if let Err(err) =
+            write_detection_results(&mut detection_records, pipeline.dump_dir.as_deref())
+        {
             eprintln!("failed to write detection results: {err}");
         }
     }
@@ -254,9 +256,15 @@ async fn collect_detection_results(
     records
 }
 
-fn write_detection_results(records: &mut Vec<DetectionRecord>) -> std::io::Result<()> {
+fn write_detection_results(
+    records: &mut Vec<DetectionRecord>,
+    dump_dir: Option<&Path>,
+) -> std::io::Result<()> {
     records.sort_by_key(|record| record.frame_index);
-    let mut file = File::create(DETECTION_OUTPUT_PATH)?;
+    let output_path = dump_dir
+        .map(|dir| dir.join(DETECTION_OUTPUT_FILENAME))
+        .unwrap_or_else(|| PathBuf::from(DETECTION_OUTPUT_FILENAME));
+    let mut file = File::create(&output_path)?;
     for record in records.iter() {
         let line = serde_json::to_string(&serde_json::json!({
             "frame_index": record.frame_index,

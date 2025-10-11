@@ -34,20 +34,18 @@ impl SubtitleDetectionPipeline {
         frame: &YPlaneFrame,
         metadata: &FrameMetadata,
     ) -> Option<SubtitleDetectionResult> {
+        let detection = if self.enabled {
+            let mut state = self.state.lock().await;
+            state.process_frame(frame, metadata)
+        } else {
+            None
+        };
+
         if let Some(dump) = self.dump.as_ref() {
-            if let Err(err) = dump.process(frame, metadata).await {
+            if let Err(err) = dump.process(frame, metadata, detection.as_ref()).await {
                 eprintln!("frame dump error: {err}");
             }
         }
-
-        if !self.enabled {
-            return None;
-        }
-
-        let detection = {
-            let mut state = self.state.lock().await;
-            state.process_frame(frame, metadata)
-        };
 
         detection
     }

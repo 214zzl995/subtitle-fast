@@ -196,10 +196,10 @@ fn compute_roi_rect(
     frame_height: usize,
     roi: RoiConfig,
 ) -> Result<RoiRect, SubtitleDetectionError> {
-    let start_x = (roi.x * frame_width as f32).round() as isize;
-    let start_y = (roi.y * frame_height as f32).round() as isize;
-    let end_x = ((roi.x + roi.width) * frame_width as f32).round() as isize;
-    let end_y = ((roi.y + roi.height) * frame_height as f32).round() as isize;
+    let start_x = (roi.x * frame_width as f32).floor() as isize;
+    let start_y = (roi.y * frame_height as f32).floor() as isize;
+    let end_x = ((roi.x + roi.width) * frame_width as f32).ceil() as isize;
+    let end_y = ((roi.y + roi.height) * frame_height as f32).ceil() as isize;
 
     let start_x = start_x.clamp(0, frame_width as isize);
     let start_y = start_y.clamp(0, frame_height as isize);
