@@ -2,15 +2,13 @@
 name = "subtitle-fast-decoder"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [features]
 default = []
 backend-ffmpeg = ["dep:ffmpeg-next"]
 backend-videotoolbox = [
-    "dep:core-foundation",
-    "dep:core-foundation-sys",
     "dep:mp4",
-    "dep:objc",
     "dep:rayon",
 ]
 backend-openh264 = ["dep:openh264", "dep:mp4", "dep:rayon"]
@@ -25,7 +23,7 @@ tokio-stream = "0.1"
 ffmpeg-next = { version = "8", optional = true }
 openh264 = { version = "0.9", optional = true }
 mp4 = { version = "0.14", optional = true }
-core-foundation = { version = "0.10", optional = true }
-core-foundation-sys = { version = "0.8", optional = true }
-objc = { version = "0.2", optional = true }
 rayon = { version = "1.10", optional = true }
+
+[build-dependencies]
+cc = "1"
