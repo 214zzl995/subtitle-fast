@@ -2,7 +2,7 @@ use crate::config::{FrameMetadata, SubtitleDetectionOptions};
 use crate::dump::FrameDumpOperation;
 use crate::subtitle_detection::{
     build_detector, LumaBandConfig, SubtitleDetectionConfig, SubtitleDetectionError,
-    SubtitleDetector,
+    SubtitleDetectionResult, SubtitleDetector,
 };
 use subtitle_fast_decoder::YPlaneFrame;
 use tokio::sync::Mutex;
@@ -29,7 +29,11 @@ impl SubtitleDetectionPipeline {
         })
     }
 
-    pub async fn process(&self, frame: &YPlaneFrame, metadata: &FrameMetadata) {
+    pub async fn process(
+        &self,
+        frame: &YPlaneFrame,
+        metadata: &FrameMetadata,
+    ) -> Option<SubtitleDetectionResult> {
         if let Some(dump) = self.dump.as_ref() {
             if let Err(err) = dump.process(frame, metadata).await {
                 eprintln!("frame dump error: {err}");
@@ -37,11 +41,15 @@ impl SubtitleDetectionPipeline {
         }
 
         if !self.enabled {
-            return;
+            return None;
         }
 
-        let mut state = self.state.lock().await;
-        state.process_frame(frame, metadata);
+        let detection = {
+            let mut state = self.state.lock().await;
+            state.process_frame(frame, metadata)
+        };
+
+        detection
     }
 
     pub async fn finalize(&self) {
@@ -77,9 +85,13 @@ impl SubtitleDetectionState {
         }
     }
 
-    fn process_frame(&mut self, frame: &YPlaneFrame, metadata: &FrameMetadata) {
+    fn process_frame(
+        &mut self,
+        frame: &YPlaneFrame,
+        metadata: &FrameMetadata,
+    ) -> Option<SubtitleDetectionResult> {
         if !self.options.enabled {
-            return;
+            return None;
         }
 
         let dims = (
@@ -90,7 +102,6 @@ impl SubtitleDetectionState {
         if self.detector_dims != Some(dims) {
             self.detector_dims = Some(dims);
             let mut detector_config = SubtitleDetectionConfig::for_frame(dims.0, dims.1, dims.2);
-            detector_config.dump_json = self.options.dump_json;
             detector_config.model_path = self.options.onnx_model_path.clone();
             detector_config.luma_band = LumaBandConfig {
                 target_luma: self.options.luma_band.target_luma,
@@ -110,20 +121,24 @@ impl SubtitleDetectionState {
                         self.init_error_logged = true;
                     }
                     self.detector = None;
-                    return;
+                    return None;
                 }
             }
         }
 
         let Some(detector) = self.detector.as_ref() else {
-            return;
+            return None;
         };
 
-        if let Err(err) = detector.detect(frame.data(), metadata) {
-            eprintln!(
-                "subtitle detection failed for frame {}: {}",
-                metadata.frame_index, err
-            );
+        match detector.detect(frame.data(), metadata) {
+            Ok(result) => Some(result),
+            Err(err) => {
+                eprintln!(
+                    "subtitle detection failed for frame {}: {}",
+                    metadata.frame_index, err
+                );
+                None
+            }
         }
     }
 

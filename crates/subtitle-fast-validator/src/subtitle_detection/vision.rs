@@ -4,8 +4,8 @@ use std::slice;
 use crate::config::FrameMetadata;
 
 use super::{
-    append_json_result, DetectionRegion, RoiConfig, SubtitleDetectionConfig,
-    SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector,
+    DetectionRegion, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
+    SubtitleDetectionResult, SubtitleDetector,
 };
 
 #[derive(Debug, Clone)]
@@ -129,7 +129,7 @@ impl SubtitleDetector for VisionTextDetector {
     fn detect(
         &self,
         y_plane: &[u8],
-        metadata: &FrameMetadata,
+        _metadata: &FrameMetadata,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
         if y_plane.len() < self.required_bytes {
             return Err(SubtitleDetectionError::InsufficientData {
@@ -175,15 +175,6 @@ impl SubtitleDetector for VisionTextDetector {
             max_score,
             regions,
         };
-
-        if self.config.dump_json {
-            if let Err(err) = append_json_result(metadata, &result) {
-                eprintln!(
-                    "failed to append subtitle detection json for frame {}: {}",
-                    metadata.frame_index, err
-                );
-            }
-        }
 
         Ok(result)
     }

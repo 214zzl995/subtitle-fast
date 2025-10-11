@@ -24,13 +24,11 @@ impl FrameDumpOperation {
         frame: &YPlaneFrame,
         metadata: &FrameMetadata,
     ) -> Result<(), WriteFrameError> {
-        write_frame(
-            frame,
-            metadata.frame_index,
-            self.directory.as_ref(),
-            self.format,
-        )
-        .await
+        let frame_index = frame
+            .frame_index()
+            .or(metadata.decoder_frame_index)
+            .unwrap_or(metadata.frame_index);
+        write_frame(frame, frame_index, self.directory.as_ref(), self.format).await
     }
 
     pub async fn finalize(&self) -> Result<(), WriteFrameError> {

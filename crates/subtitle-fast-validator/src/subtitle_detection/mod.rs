@@ -20,8 +20,6 @@ pub use vision::VisionTextDetector;
 pub const DEFAULT_LUMA_TARGET: u8 = 230;
 pub const DEFAULT_LUMA_DELTA: u8 = 12;
 
-const OUTPUT_JSON_PATH: &str = "subtitle_detection_output.jsonl";
-
 #[cfg(target_os = "macos")]
 const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[SubtitleDetectorKind::LumaBand];
 
@@ -212,7 +210,6 @@ pub struct SubtitleDetectionConfig {
     pub stride: usize,
     pub model_path: Option<PathBuf>,
     pub roi: RoiConfig,
-    pub dump_json: bool,
     pub luma_band: LumaBandConfig,
 }
 
@@ -229,7 +226,6 @@ impl SubtitleDetectionConfig {
                 width: 0.90,
                 height: 0.30,
             },
-            dump_json: true,
             luma_band: LumaBandConfig {
                 target_luma: DEFAULT_LUMA_TARGET,
                 delta: DEFAULT_LUMA_DELTA,
@@ -274,7 +270,6 @@ fn log_onnx_preflight(path: Option<&Path>) {
 
 fn build_probe_config(model_path: Option<&Path>) -> SubtitleDetectionConfig {
     let mut config = SubtitleDetectionConfig::for_frame(640, 360, 640);
-    config.dump_json = false;
     if let Some(path) = model_path {
         config.model_path = Some(path.to_path_buf());
     }
@@ -422,26 +417,4 @@ fn ensure_backend_available(
             })?
             .ensure_available(config),
     }
-}
-
-pub fn append_json_result(
-    metadata: &FrameMetadata,
-    result: &SubtitleDetectionResult,
-) -> std::io::Result<()> {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(OUTPUT_JSON_PATH)?;
-    let line = serde_json::to_string(&serde_json::json!({
-        "frame_index": metadata.frame_index,
-        "has_subtitle": result.has_subtitle,
-        "max_score": result.max_score,
-        "regions": result.regions,
-    }))?;
-    file.write_all(line.as_bytes())?;
-    file.write_all(b"\n")?;
-    Ok(())
 }

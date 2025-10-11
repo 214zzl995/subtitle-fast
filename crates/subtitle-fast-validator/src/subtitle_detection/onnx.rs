@@ -12,8 +12,8 @@ use ort::value::Value;
 use crate::config::FrameMetadata;
 
 use super::{
-    append_json_result, DetectionRegion, RoiConfig, SubtitleDetectionConfig,
-    SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector,
+    DetectionRegion, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
+    SubtitleDetectionResult, SubtitleDetector,
 };
 
 const MODEL_INPUT_WIDTH: usize = 640;
@@ -133,7 +133,7 @@ impl SubtitleDetector for OnnxPpocrDetector {
     fn detect(
         &self,
         y_plane: &[u8],
-        metadata: &FrameMetadata,
+        _metadata: &FrameMetadata,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
         let required = self
             .config
@@ -170,15 +170,6 @@ impl SubtitleDetector for OnnxPpocrDetector {
             max_score,
             regions,
         };
-
-        if self.config.dump_json {
-            if let Err(err) = append_json_result(metadata, &result) {
-                eprintln!(
-                    "failed to append subtitle detection json for frame {}: {}",
-                    metadata.frame_index, err
-                );
-            }
-        }
 
         Ok(result)
     }

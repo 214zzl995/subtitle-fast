@@ -3,7 +3,6 @@ pub mod subtitle_detection;
 mod config;
 mod detection;
 mod dump;
-mod sampler;
 mod validator;
 
 pub use config::{

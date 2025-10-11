@@ -8,8 +8,8 @@ use std::arch::is_x86_feature_detected;
 use crate::config::FrameMetadata;
 
 use super::{
-    append_json_result, DetectionRegion, LumaBandConfig, RoiConfig, SubtitleDetectionConfig,
-    SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector,
+    DetectionRegion, LumaBandConfig, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
+    SubtitleDetectionResult, SubtitleDetector,
 };
 
 const RLSA_H_GAP: usize = 18;
@@ -47,18 +47,6 @@ impl LumaBandDetector {
             required_len,
         })
     }
-
-    fn maybe_dump(&self, metadata: &FrameMetadata, result: &SubtitleDetectionResult) {
-        if !self.config.dump_json {
-            return;
-        }
-        if let Err(err) = append_json_result(metadata, result) {
-            eprintln!(
-                "failed to append subtitle detection json for frame {}: {}",
-                metadata.frame_index, err
-            );
-        }
-    }
 }
 
 impl SubtitleDetector for LumaBandDetector {
@@ -71,7 +59,7 @@ impl SubtitleDetector for LumaBandDetector {
     fn detect(
         &self,
         y_plane: &[u8],
-        metadata: &FrameMetadata,
+        _metadata: &FrameMetadata,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
         if y_plane.len() < self.required_len {
             return Err(SubtitleDetectionError::InsufficientData {
@@ -86,7 +74,6 @@ impl SubtitleDetector for LumaBandDetector {
                 max_score: 0.0,
                 regions: Vec::new(),
             };
-            self.maybe_dump(metadata, &result);
             return Ok(result);
         }
 
@@ -102,7 +89,6 @@ impl SubtitleDetector for LumaBandDetector {
                 max_score: 0.0,
                 regions: Vec::new(),
             };
-            self.maybe_dump(metadata, &result);
             return Ok(result);
         }
 
@@ -158,7 +144,6 @@ impl SubtitleDetector for LumaBandDetector {
                 max_score: 0.0,
                 regions: Vec::new(),
             };
-            self.maybe_dump(metadata, &result);
             return Ok(result);
         }
 
@@ -169,7 +154,6 @@ impl SubtitleDetector for LumaBandDetector {
                 max_score: 0.0,
                 regions: Vec::new(),
             };
-            self.maybe_dump(metadata, &result);
             return Ok(result);
         }
 
@@ -193,7 +177,6 @@ impl SubtitleDetector for LumaBandDetector {
             max_score,
             regions,
         };
-        self.maybe_dump(metadata, &result);
         Ok(result)
     }
 }
