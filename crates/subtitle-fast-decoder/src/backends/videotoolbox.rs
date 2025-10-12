@@ -56,15 +56,19 @@ mod platform {
         fn videotoolbox_string_free(ptr: *mut c_char);
     }
 
-    const RESULT_CHANNEL_CAPACITY: usize = 16;
+    const DEFAULT_CHANNEL_CAPACITY: usize = 16;
 
     pub struct VideoToolboxProvider {
         input: PathBuf,
         total_frames: Option<u64>,
+        channel_capacity: usize,
     }
 
     impl VideoToolboxProvider {
-        pub fn open<P: AsRef<Path>>(path: P) -> YPlaneResult<Self> {
+        pub fn open<P: AsRef<Path>>(
+            path: P,
+            channel_capacity: Option<usize>,
+        ) -> YPlaneResult<Self> {
             let path = path.as_ref();
             if !path.exists() {
                 return Err(YPlaneError::Io(std::io::Error::new(
@@ -73,9 +77,11 @@ mod platform {
                 )));
             }
             let total_frames = probe_total_frames(path)?;
+            let capacity = channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
             Ok(Self {
                 input: path.to_path_buf(),
                 total_frames,
+                channel_capacity: capacity,
             })
         }
     }
@@ -173,7 +179,8 @@ mod platform {
 
         fn into_stream(self: Box<Self>) -> YPlaneStream {
             let path = self.input.clone();
-            spawn_stream_from_channel(RESULT_CHANNEL_CAPACITY, move |tx| {
+            let capacity = self.channel_capacity;
+            spawn_stream_from_channel(capacity, move |tx| {
                 if let Err(err) = decode_videotoolbox(path.clone(), tx.clone()) {
                     let _ = tx.blocking_send(Err(err));
                 }
@@ -269,8 +276,12 @@ mod platform {
         true
     }
 
-    pub fn boxed_videotoolbox<P: AsRef<Path>>(path: P) -> YPlaneResult<DynYPlaneProvider> {
-        VideoToolboxProvider::open(path).map(|provider| Box::new(provider) as DynYPlaneProvider)
+    pub fn boxed_videotoolbox<P: AsRef<Path>>(
+        path: P,
+        channel_capacity: Option<usize>,
+    ) -> YPlaneResult<DynYPlaneProvider> {
+        VideoToolboxProvider::open(path, channel_capacity)
+            .map(|provider| Box::new(provider) as DynYPlaneProvider)
     }
 }
 
@@ -293,7 +304,10 @@ mod platform {
         }
     }
 
-    pub fn boxed_videotoolbox<P: AsRef<Path>>(_path: P) -> YPlaneResult<DynYPlaneProvider> {
+    pub fn boxed_videotoolbox<P: AsRef<Path>>(
+        _path: P,
+        _channel_capacity: Option<usize>,
+    ) -> YPlaneResult<DynYPlaneProvider> {
         Err(YPlaneError::unsupported("videotoolbox"))
     }
 }

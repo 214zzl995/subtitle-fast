@@ -1,5 +1,6 @@
 use std::env;
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -115,6 +116,7 @@ fn ffmpeg_runtime_available() -> bool {
 pub struct Configuration {
     pub backend: Backend,
     pub input: Option<PathBuf>,
+    pub channel_capacity: Option<NonZeroUsize>,
 }
 
 impl Default for Configuration {
@@ -126,6 +128,7 @@ impl Default for Configuration {
         Self {
             backend,
             input: None,
+            channel_capacity: None,
         }
     }
 }
@@ -139,6 +142,19 @@ impl Configuration {
         if let Ok(path) = env::var("SUBFAST_INPUT") {
             config.input = Some(PathBuf::from(path));
         }
+        if let Ok(capacity) = env::var("SUBFAST_CHANNEL_CAPACITY") {
+            let parsed: usize = capacity.parse().map_err(|_| {
+                YPlaneError::configuration(format!(
+                    "failed to parse SUBFAST_CHANNEL_CAPACITY='{capacity}' as a positive integer"
+                ))
+            })?;
+            let Some(value) = NonZeroUsize::new(parsed) else {
+                return Err(YPlaneError::configuration(
+                    "SUBFAST_CHANNEL_CAPACITY must be greater than zero",
+                ));
+            };
+            config.channel_capacity = Some(value);
+        }
         Ok(config)
     }
 
@@ -147,12 +163,14 @@ impl Configuration {
     }
 
     pub fn create_provider(&self) -> YPlaneResult<DynYPlaneProvider> {
+        let channel_capacity = self.channel_capacity.map(NonZeroUsize::get);
+
         match self.backend {
             Backend::Mock => {
                 if !github_ci_active() {
                     return Err(YPlaneError::unsupported("mock"));
                 }
-                return crate::backends::mock::boxed_mock(self.input.clone());
+                return crate::backends::mock::boxed_mock(self.input.clone(), channel_capacity);
             }
             Backend::Ffmpeg => {
                 #[cfg(feature = "backend-ffmpeg")]
@@ -160,7 +178,7 @@ impl Configuration {
                     let path = self.input.clone().ok_or_else(|| {
                         YPlaneError::configuration("FFmpeg backend requires SUBFAST_INPUT")
                     })?;
-                    return crate::backends::ffmpeg::boxed_ffmpeg(path);
+                    return crate::backends::ffmpeg::boxed_ffmpeg(path, channel_capacity);
                 }
                 #[cfg(not(feature = "backend-ffmpeg"))]
                 {
@@ -175,7 +193,10 @@ impl Configuration {
                             "VideoToolbox backend requires SUBFAST_INPUT to be set",
                         )
                     })?;
-                    return crate::backends::videotoolbox::boxed_videotoolbox(path);
+                    return crate::backends::videotoolbox::boxed_videotoolbox(
+                        path,
+                        channel_capacity,
+                    );
                 }
                 #[cfg(not(feature = "backend-videotoolbox"))]
                 {
@@ -190,7 +211,7 @@ impl Configuration {
                             "OpenH264 backend requires SUBFAST_INPUT to be set",
                         )
                     })?;
-                    return crate::backends::openh264::boxed_openh264(path);
+                    return crate::backends::openh264::boxed_openh264(path, channel_capacity);
                 }
                 #[cfg(not(feature = "backend-openh264"))]
                 {

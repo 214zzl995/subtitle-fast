@@ -20,6 +20,7 @@ struct FileConfig {
     onnx_model: Option<String>,
     detection_luma_target: Option<u8>,
     detection_luma_delta: Option<u8>,
+    decoder_channel_capacity: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -34,6 +35,7 @@ pub struct EffectiveSettings {
     pub config_dir: Option<PathBuf>,
     pub detection_luma_target: Option<u8>,
     pub detection_luma_delta: Option<u8>,
+    pub decoder_channel_capacity: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -181,6 +183,7 @@ fn merge(
         onnx_model: file_onnx_model,
         detection_luma_target: file_luma_target,
         detection_luma_delta: file_luma_delta,
+        decoder_channel_capacity: file_decoder_channel_capacity,
     } = file;
 
     let mut backend = normalize_string(cli.backend.clone());
@@ -245,6 +248,27 @@ fn merge(
         }
     }
 
+    let mut decoder_channel_capacity = cli.decoder_channel_capacity;
+    if let Some(0) = decoder_channel_capacity {
+        return Err(ConfigError::InvalidValue {
+            path: None,
+            field: "decoder_channel_capacity",
+            value: "0".to_string(),
+        });
+    }
+    if !sources.decoder_channel_capacity_from_cli {
+        if let Some(value) = file_decoder_channel_capacity {
+            if value == 0 {
+                return Err(ConfigError::InvalidValue {
+                    path: config_path,
+                    field: "decoder_channel_capacity",
+                    value: value.to_string(),
+                });
+            }
+            decoder_channel_capacity = Some(value);
+        }
+    }
+
     Ok(EffectiveSettings {
         backend,
         dump_dir,
@@ -256,6 +280,7 @@ fn merge(
         config_dir,
         detection_luma_target,
         detection_luma_delta,
+        decoder_channel_capacity,
     })
 }
 

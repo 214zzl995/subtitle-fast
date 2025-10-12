@@ -22,14 +22,16 @@ use tokio::sync::mpsc::{self, Sender, error::TryRecvError};
 
 const BACKEND_NAME: &str = "openh264";
 const CHUNK_RESULT_CAPACITY: usize = 64;
+const DEFAULT_CHANNEL_CAPACITY: usize = 32;
 
 pub struct OpenH264Provider {
     input: PathBuf,
     total_frames: Option<u64>,
+    channel_capacity: usize,
 }
 
 impl OpenH264Provider {
-    pub fn open<P: AsRef<Path>>(path: P) -> YPlaneResult<Self> {
+    pub fn open<P: AsRef<Path>>(path: P, channel_capacity: Option<usize>) -> YPlaneResult<Self> {
         let path = path.as_ref();
         if !path.exists() {
             return Err(YPlaneError::Io(std::io::Error::new(
@@ -38,9 +40,11 @@ impl OpenH264Provider {
             )));
         }
         let total_frames = probe_total_frames(path)?;
+        let capacity = channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
         Ok(Self {
             input: path.to_path_buf(),
             total_frames,
+            channel_capacity: capacity,
         })
     }
 
@@ -66,7 +70,8 @@ impl YPlaneStreamProvider for OpenH264Provider {
 
     fn into_stream(self: Box<Self>) -> YPlaneStream {
         let provider = *self;
-        spawn_stream_from_channel(32, move |tx| {
+        let capacity = provider.channel_capacity;
+        spawn_stream_from_channel(capacity, move |tx| {
             if let Err(err) = provider.decode_loop(tx.clone()) {
                 let _ = tx.blocking_send(Err(err));
             }
@@ -575,8 +580,11 @@ impl Mp4BitstreamConverter {
     }
 }
 
-pub fn boxed_openh264<P: AsRef<Path>>(path: P) -> YPlaneResult<DynYPlaneProvider> {
-    Ok(Box::new(OpenH264Provider::open(path)?))
+pub fn boxed_openh264<P: AsRef<Path>>(
+    path: P,
+    channel_capacity: Option<usize>,
+) -> YPlaneResult<DynYPlaneProvider> {
+    Ok(Box::new(OpenH264Provider::open(path, channel_capacity)?))
 }
 
 #[cfg(test)]
@@ -585,7 +593,7 @@ mod tests {
 
     #[test]
     fn missing_file_returns_error() {
-        let result = OpenH264Provider::open("/tmp/nonexistent-file.mp4");
+        let result = OpenH264Provider::open("/tmp/nonexistent-file.mp4", None);
         assert!(result.is_err());
     }
 }

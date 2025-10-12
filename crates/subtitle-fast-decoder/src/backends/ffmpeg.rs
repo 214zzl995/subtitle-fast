@@ -15,6 +15,7 @@ use tokio::sync::mpsc::Sender;
 const BACKEND_NAME: &str = "ffmpeg";
 const FILTER_SPEC: &str =
     "crop=iw:ih*0.125:0:ih*0.875,scale=256:-2:flags=fast_bilinear,format=nv12";
+const DEFAULT_CHANNEL_CAPACITY: usize = 8;
 
 struct VideoFilterPipeline {
     _graph: ffmpeg::filter::Graph,
@@ -179,7 +180,7 @@ pub struct FfmpegProvider {
 }
 
 impl FfmpegProvider {
-    pub fn open<P: AsRef<Path>>(path: P) -> YPlaneResult<Self> {
+    pub fn open<P: AsRef<Path>>(path: P, channel_capacity: Option<usize>) -> YPlaneResult<Self> {
         let path = path.as_ref();
         if !path.exists() {
             return Err(YPlaneError::Io(std::io::Error::new(
@@ -190,9 +191,10 @@ impl FfmpegProvider {
         ffmpeg::init()
             .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
         let total_frames = probe_total_frames(path)?;
+        let capacity = channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
         Ok(Self {
             input: path.to_path_buf(),
-            channel_capacity: 8,
+            channel_capacity: capacity,
             total_frames,
         })
     }
@@ -416,8 +418,11 @@ fn estimate_stream_total_frames(stream: &ffmpeg::format::stream::Stream) -> Opti
     }
 }
 
-pub fn boxed_ffmpeg<P: AsRef<Path>>(path: P) -> YPlaneResult<DynYPlaneProvider> {
-    Ok(Box::new(FfmpegProvider::open(path)?))
+pub fn boxed_ffmpeg<P: AsRef<Path>>(
+    path: P,
+    channel_capacity: Option<usize>,
+) -> YPlaneResult<DynYPlaneProvider> {
+    Ok(Box::new(FfmpegProvider::open(path, channel_capacity)?))
 }
 
 #[cfg(test)]
@@ -426,7 +431,7 @@ mod tests {
 
     #[test]
     fn missing_file_returns_error() {
-        let result = FfmpegProvider::open("/tmp/nonexistent-file.mp4");
+        let result = FfmpegProvider::open("/tmp/nonexistent-file.mp4", None);
         assert!(result.is_err());
     }
 }

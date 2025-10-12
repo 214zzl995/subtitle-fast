@@ -27,6 +27,7 @@ pub struct CliSources {
     pub onnx_model_from_cli: bool,
     pub detection_luma_target_from_cli: bool,
     pub detection_luma_delta_from_cli: bool,
+    pub decoder_channel_capacity_from_cli: bool,
 }
 
 impl CliSources {
@@ -38,6 +39,7 @@ impl CliSources {
             onnx_model_from_cli: value_from_cli(matches, "onnx_model"),
             detection_luma_target_from_cli: value_from_cli(matches, "detection_luma_target"),
             detection_luma_delta_from_cli: value_from_cli(matches, "detection_luma_delta"),
+            decoder_channel_capacity_from_cli: value_from_cli(matches, "decoder_channel_capacity"),
         }
     }
 }
@@ -122,6 +124,14 @@ pub struct CliArgs {
         value_parser = clap::value_parser!(u8)
     )]
     pub detection_luma_delta: Option<u8>,
+
+    /// Decoder frame queue capacity before applying backpressure
+    #[arg(
+        long = "decoder-channel-capacity",
+        id = "decoder_channel_capacity",
+        value_parser = clap::value_parser!(usize)
+    )]
+    pub decoder_channel_capacity: Option<usize>,
 
     /// Input video path
     pub input: Option<PathBuf>,

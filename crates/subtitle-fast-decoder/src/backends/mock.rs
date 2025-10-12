@@ -16,10 +16,14 @@ pub struct MockProvider {
     stride: usize,
     frame_count: usize,
     frame_interval: Duration,
+    channel_capacity: usize,
 }
 
 impl MockProvider {
-    pub fn open(input: Option<PathBuf>) -> Self {
+    const DEFAULT_CHANNEL_CAPACITY: usize = 8;
+
+    pub fn open(input: Option<PathBuf>, channel_capacity: Option<usize>) -> Self {
+        let capacity = channel_capacity.unwrap_or(Self::DEFAULT_CHANNEL_CAPACITY);
         Self {
             _input: input,
             width: 640,
@@ -27,6 +31,7 @@ impl MockProvider {
             stride: 640,
             frame_count: 120,
             frame_interval: Duration::from_millis(4),
+            channel_capacity: capacity.max(1),
         }
     }
 
@@ -60,14 +65,18 @@ impl YPlaneStreamProvider for MockProvider {
 
     fn into_stream(self: Box<Self>) -> YPlaneStream {
         let provider = *self;
-        spawn_stream_from_channel(8, move |tx| {
+        let capacity = provider.channel_capacity;
+        spawn_stream_from_channel(capacity, move |tx| {
             provider.emit_frames(tx);
         })
     }
 }
 
-pub fn boxed_mock(path: Option<PathBuf>) -> YPlaneResult<DynYPlaneProvider> {
-    Ok(Box::new(MockProvider::open(path)))
+pub fn boxed_mock(
+    path: Option<PathBuf>,
+    channel_capacity: Option<usize>,
+) -> YPlaneResult<DynYPlaneProvider> {
+    Ok(Box::new(MockProvider::open(path, channel_capacity)))
 }
 
 #[cfg(test)]
@@ -77,7 +86,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn mock_backend_emits_frames() {
-        let provider = boxed_mock(None).unwrap();
+        let provider = boxed_mock(None, None).unwrap();
         let total = provider.total_frames();
         let mut stream = provider.into_stream();
         assert_eq!(total, Some(120));

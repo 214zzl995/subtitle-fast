@@ -12,6 +12,7 @@ use model::{ModelError, resolve_model_path};
 use pipeline::PipelineConfig;
 use settings::{ConfigError, resolve_settings};
 use std::fs;
+use std::num::NonZeroUsize;
 use subtitle_fast_decoder::YPlaneError;
 
 #[tokio::main(flavor = "multi_thread")]
@@ -72,6 +73,11 @@ async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, YPlaneError> 
         config.backend = backend_value;
     }
     config.input = Some(input);
+    if let Some(capacity) = settings.decoder_channel_capacity {
+        if let Some(non_zero) = NonZeroUsize::new(capacity) {
+            config.channel_capacity = Some(non_zero);
+        }
+    }
 
     Ok(Some(ExecutionPlan {
         config,

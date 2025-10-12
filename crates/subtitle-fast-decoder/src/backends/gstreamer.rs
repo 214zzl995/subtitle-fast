@@ -17,6 +17,7 @@ use crate::core::{
 };
 
 const BACKEND_NAME: &str = "gstreamer";
+const DEFAULT_CHANNEL_CAPACITY: usize = 8;
 
 pub struct GStreamerProvider {
     input: PathBuf,
@@ -24,7 +25,7 @@ pub struct GStreamerProvider {
 }
 
 impl GStreamerProvider {
-    pub fn open<P: AsRef<Path>>(path: P) -> YPlaneResult<Self> {
+    pub fn open<P: AsRef<Path>>(path: P, channel_capacity: Option<usize>) -> YPlaneResult<Self> {
         let path = path.as_ref();
         if !path.exists() {
             return Err(YPlaneError::Io(std::io::Error::new(
@@ -32,9 +33,10 @@ impl GStreamerProvider {
                 format!("input file {} does not exist", path.display()),
             )));
         }
+        let capacity = channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
         Ok(Self {
             input: path.to_path_buf(),
-            channel_capacity: 8,
+            channel_capacity: capacity,
         })
     }
 
@@ -57,10 +59,11 @@ impl GStreamerProvider {
         let caps = gst::Caps::builder("video/x-raw")
             .field("format", &"I420")
             .build();
+        let max_buffers = self.channel_capacity.min(u32::MAX as usize) as u32;
         let appsink = gst_app::AppSink::builder()
             .caps(&caps)
             .drop(true)
-            .max_buffers(8)
+            .max_buffers(max_buffers)
             .sync(false)
             .build();
 
@@ -185,8 +188,11 @@ fn backend_error(message: impl Into<String>) -> YPlaneError {
     YPlaneError::backend_failure(BACKEND_NAME, message)
 }
 
-pub fn boxed_gstreamer<P: AsRef<Path>>(path: P) -> YPlaneResult<DynYPlaneProvider> {
-    Ok(Box::new(GStreamerProvider::open(path)?))
+pub fn boxed_gstreamer<P: AsRef<Path>>(
+    path: P,
+    channel_capacity: Option<usize>,
+) -> YPlaneResult<DynYPlaneProvider> {
+    Ok(Box::new(GStreamerProvider::open(path, channel_capacity)?))
 }
 
 #[cfg(test)]
