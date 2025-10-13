@@ -15,6 +15,7 @@ pub enum Backend {
     Ffmpeg,
     VideoToolbox,
     OpenH264,
+    Mft,
 }
 
 impl FromStr for Backend {
@@ -26,6 +27,7 @@ impl FromStr for Backend {
             "ffmpeg" => Ok(Backend::Ffmpeg),
             "videotoolbox" => Ok(Backend::VideoToolbox),
             "openh264" => Ok(Backend::OpenH264),
+            "mft" => Ok(Backend::Mft),
             other => Err(YPlaneError::configuration(format!(
                 "unknown backend '{other}'"
             ))),
@@ -40,6 +42,7 @@ impl Backend {
             Backend::Ffmpeg => "ffmpeg",
             Backend::VideoToolbox => "videotoolbox",
             Backend::OpenH264 => "openh264",
+            Backend::Mft => "mft",
         }
     }
 }
@@ -79,6 +82,10 @@ fn append_platform_backends(backends: &mut Vec<Backend>) {
 
 #[cfg(not(target_os = "macos"))]
 fn append_platform_backends(backends: &mut Vec<Backend>) {
+    #[cfg(all(feature = "backend-mft", target_os = "windows"))]
+    {
+        backends.push(Backend::Mft);
+    }
     #[cfg(feature = "backend-ffmpeg")]
     {
         if ffmpeg_runtime_available() {
@@ -218,6 +225,19 @@ impl Configuration {
                     return Err(YPlaneError::unsupported("openh264"));
                 }
             }
+            Backend::Mft => {
+                #[cfg(all(feature = "backend-mft", target_os = "windows"))]
+                {
+                    let path = self.input.clone().ok_or_else(|| {
+                        YPlaneError::configuration("MFT backend requires SUBFAST_INPUT to be set")
+                    })?;
+                    return crate::backends::mft::boxed_mft(path, channel_capacity);
+                }
+                #[cfg(not(all(feature = "backend-mft", target_os = "windows")))]
+                {
+                    return Err(YPlaneError::unsupported("mft"));
+                }
+            }
         }
     }
 }
@@ -225,6 +245,8 @@ impl Configuration {
 fn default_backend() -> Backend {
     if github_ci_active() {
         Backend::Mock
+    } else if cfg!(all(target_os = "windows", feature = "backend-mft")) {
+        Backend::Mft
     } else {
         Backend::Ffmpeg
     }

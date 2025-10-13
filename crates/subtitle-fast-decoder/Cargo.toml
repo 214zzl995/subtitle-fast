@@ -12,6 +12,7 @@ backend-videotoolbox = [
     "dep:rayon",
 ]
 backend-openh264 = ["dep:openh264", "dep:mp4", "dep:rayon"]
+backend-mft = []
 
 [dependencies]
 futures-core = "0.3"

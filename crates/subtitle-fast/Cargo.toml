@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["backend-videotoolbox","backend-ffmpeg","backend-openh264"]
+default = ["backend-videotoolbox","backend-ffmpeg","backend-openh264","backend-mft"]
 backend-ffmpeg = ["subtitle-fast-decoder/backend-ffmpeg"]
 backend-videotoolbox = ["subtitle-fast-decoder/backend-videotoolbox"]
 backend-openh264 = ["subtitle-fast-decoder/backend-openh264"]
+backend-mft = ["subtitle-fast-decoder/backend-mft"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
