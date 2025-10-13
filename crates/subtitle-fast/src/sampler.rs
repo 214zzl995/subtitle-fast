@@ -79,15 +79,11 @@ impl SampledFrame {
 
 pub struct FrameSampler {
     samples_per_second: u32,
-    history_seconds: f64,
 }
 
 impl FrameSampler {
-    pub fn new(samples_per_second: u32, history_seconds: f32) -> Self {
-        Self {
-            samples_per_second,
-            history_seconds: normalize_history_seconds(f64::from(history_seconds)),
-        }
+    pub fn new(samples_per_second: u32) -> Self {
+        Self { samples_per_second }
     }
 }
 
@@ -108,13 +104,12 @@ impl PipelineStage<YPlaneResult<YPlaneFrame>> for FrameSampler {
         } = input;
 
         let samples_per_second = self.samples_per_second;
-        let history_seconds = self.history_seconds;
         let (tx, rx) = mpsc::channel::<SamplerResult>(SAMPLER_CHANNEL_CAPACITY);
         let (completion_tx, mut completion_rx) = mpsc::channel::<PoolEntry>(MAX_POOL_CAPACITY);
 
         tokio::spawn(async move {
             let mut upstream = stream;
-            let mut worker = SamplerWorker::new(samples_per_second, history_seconds, completion_tx);
+            let mut worker = SamplerWorker::new(samples_per_second, completion_tx);
 
             loop {
                 tokio::select! {
@@ -167,22 +162,12 @@ struct SamplerWorker {
 }
 
 impl SamplerWorker {
-    fn new(
-        samples_per_second: u32,
-        history_seconds: f64,
-        completion_tx: mpsc::Sender<PoolEntry>,
-    ) -> Self {
-        let history_seconds = normalize_history_seconds(history_seconds);
-        let initial_capacity = capacity_from_fps(
-            DEFAULT_POOL_CAPACITY as f64,
-            history_seconds,
-            DEFAULT_POOL_CAPACITY,
-        );
+    fn new(samples_per_second: u32, completion_tx: mpsc::Sender<PoolEntry>) -> Self {
         Self {
             processed: 0,
-            pool: SamplerPool::new(initial_capacity),
+            pool: SamplerPool::new(DEFAULT_POOL_CAPACITY),
             schedule: SampleSchedule::new(samples_per_second),
-            fps: FpsEstimator::new(history_seconds),
+            fps: FpsEstimator::new(),
             completion_tx,
         }
     }
@@ -357,21 +342,21 @@ impl SampleSchedule {
 struct FpsEstimator {
     last: Option<FpsObservation>,
     estimate: Option<f64>,
-    history_seconds: f64,
 }
 
 impl FpsEstimator {
-    fn new(history_seconds: f64) -> Self {
+    fn new() -> Self {
         Self {
             last: None,
             estimate: None,
-            history_seconds: normalize_history_seconds(history_seconds),
         }
     }
 
     fn observe(&mut self, frame_index: u64, timestamp: Option<Duration>) -> Option<usize> {
         let Some(ts) = timestamp else {
-            return self.estimate_capacity();
+            return self
+                .estimate
+                .map(|fps| capacity_from_fps(fps, DEFAULT_POOL_CAPACITY));
         };
 
         if let Some(previous) = self.last {
@@ -395,12 +380,8 @@ impl FpsEstimator {
             timestamp: ts,
         });
 
-        self.estimate_capacity()
-    }
-
-    fn estimate_capacity(&self) -> Option<usize> {
         self.estimate
-            .map(|fps| capacity_from_fps(fps, self.history_seconds, DEFAULT_POOL_CAPACITY))
+            .map(|fps| capacity_from_fps(fps, DEFAULT_POOL_CAPACITY))
     }
 }
 
@@ -477,23 +458,11 @@ impl HistoryRecord {
     }
 }
 
-fn capacity_from_fps(fps: f64, history_seconds: f64, fallback: usize) -> usize {
-    let seconds = normalize_history_seconds(history_seconds);
+fn capacity_from_fps(fps: f64, fallback: usize) -> usize {
     if fps.is_finite() && fps > 0.0 {
-        return clamp_capacity(fps * seconds);
-    }
-    clamp_capacity(fallback as f64 * seconds)
-}
-
-fn clamp_capacity(value: f64) -> usize {
-    let bounded = value.clamp(1.0, MAX_POOL_CAPACITY as f64);
-    bounded.ceil() as usize
-}
-
-fn normalize_history_seconds(seconds: f64) -> f64 {
-    if seconds.is_finite() && seconds > 0.0 {
-        seconds
+        let bounded = fps.clamp(1.0, MAX_POOL_CAPACITY as f64).ceil();
+        bounded as usize
     } else {
-        1.0
+        fallback
     }
 }

@@ -24,7 +24,6 @@ pub struct CliSources {
     pub dump_format_from_cli: bool,
     pub detection_backend_from_cli: bool,
     pub detection_sps_from_cli: bool,
-    pub sampler_history_seconds_from_cli: bool,
     pub onnx_model_from_cli: bool,
     pub detection_luma_target_from_cli: bool,
     pub detection_luma_delta_from_cli: bool,
@@ -37,7 +36,6 @@ impl CliSources {
             dump_format_from_cli: value_from_cli(matches, "dump_format"),
             detection_backend_from_cli: value_from_cli(matches, "detection_backend"),
             detection_sps_from_cli: value_from_cli(matches, "detection_samples_per_second"),
-            sampler_history_seconds_from_cli: value_from_cli(matches, "sampler_history_seconds"),
             onnx_model_from_cli: value_from_cli(matches, "onnx_model"),
             detection_luma_target_from_cli: value_from_cli(matches, "detection_luma_target"),
             detection_luma_delta_from_cli: value_from_cli(matches, "detection_luma_delta"),
@@ -50,19 +48,6 @@ fn value_from_cli(matches: &ArgMatches, id: &str) -> bool {
     matches
         .value_source(id)
         .is_some_and(|source| matches!(source, ValueSource::CommandLine))
-}
-
-fn parse_history_seconds(value: &str) -> Result<f32, String> {
-    let parsed: f32 = value
-        .parse()
-        .map_err(|err| format!("invalid sampler history seconds '{}': {}", value, err))?;
-    if parsed <= 0.0 {
-        return Err(format!(
-            "sampler history seconds must be greater than zero, got {}",
-            value
-        ));
-    }
-    Ok(parsed)
 }
 
 pub fn parse_cli() -> (CliArgs, CliSources) {
@@ -111,16 +96,6 @@ pub struct CliArgs {
         value_parser = clap::value_parser!(u32).range(1..)
     )]
     pub detection_samples_per_second: u32,
-
-    /// Seconds of frame history to keep in the sampler pool
-    #[arg(
-        long = "sampler-history-seconds",
-        alias = "sampler-history",
-        id = "sampler_history_seconds",
-        default_value_t = 1.0,
-        value_parser = parse_history_seconds
-    )]
-    pub sampler_history_seconds: f32,
 
     /// Preferred subtitle detection backend
     #[arg(
