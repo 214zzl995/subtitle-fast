@@ -2,7 +2,7 @@
 # Input video path must still be provided on the command line.
 # Every CLI flag overrides the corresponding setting here.
 # Decoding backend to force (optional). Supported values:
-#   mock | ffmpeg | videotoolbox | openh264
+#   mock | ffmpeg | videotoolbox | openh264 | mft
 # backend = "ffmpeg"
 # Directory to store dumped frames when enabled.
 # dump_dir = "/path/to/output"
