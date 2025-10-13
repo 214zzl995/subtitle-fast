@@ -4,11 +4,20 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["backend-videotoolbox","backend-ffmpeg","backend-openh264","backend-mft"]
+default = [
+    "backend-videotoolbox",
+    "backend-ffmpeg",
+    "backend-openh264",
+    "backend-mft",
+    "detector-onnx",
+    "detector-vision",
+]
 backend-ffmpeg = ["subtitle-fast-decoder/backend-ffmpeg"]
 backend-videotoolbox = ["subtitle-fast-decoder/backend-videotoolbox"]
 backend-openh264 = ["subtitle-fast-decoder/backend-openh264"]
 backend-mft = ["subtitle-fast-decoder/backend-mft"]
+detector-onnx = ["subtitle-fast-validator/detector-onnx"]
+detector-vision = ["subtitle-fast-validator/detector-vision"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -21,7 +30,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 subtitle-fast-decoder = { path = "../subtitle-fast-decoder", default-features = false }
-subtitle-fast-validator = { path = "../subtitle-fast-validator" }
+subtitle-fast-validator = { path = "../subtitle-fast-validator", default-features = false }
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "signal"] }
 tokio-stream = "0.1"
 toml = "0.8"

@@ -10,6 +10,8 @@ mod stage;
 
 use backend::ExecutionPlan;
 use clap::CommandFactory;
+#[cfg(feature = "detector-onnx")]
+use cli::DetectionBackend;
 use cli::{CliArgs, CliSources, parse_cli};
 use model::{ModelError, resolve_model_path};
 use pipeline::PipelineConfig;
@@ -55,13 +57,21 @@ async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, YPlaneError> 
         fs::create_dir_all(dir)?;
     }
 
-    let resolved_model_path = resolve_model_path(
-        settings.onnx_model.as_deref(),
-        settings.onnx_model_from_cli,
-        settings.config_dir.as_deref(),
-    )
-    .await
-    .map_err(map_model_error)?;
+    #[cfg(feature = "detector-onnx")]
+    let resolved_model_path = if matches!(settings.detection_backend, DetectionBackend::Onnx) {
+        resolve_model_path(
+            settings.onnx_model.as_deref(),
+            settings.onnx_model_from_cli,
+            settings.config_dir.as_deref(),
+        )
+        .await
+        .map_err(map_model_error)?
+    } else {
+        None
+    };
+
+    #[cfg(not(feature = "detector-onnx"))]
+    let resolved_model_path: Option<std::path::PathBuf> = None;
 
     let pipeline = PipelineConfig::from_settings(&settings, resolved_model_path);
 

@@ -114,11 +114,6 @@ fn ffmpeg_runtime_available() -> bool {
     })
 }
 
-#[cfg(not(feature = "backend-ffmpeg"))]
-fn ffmpeg_runtime_available() -> bool {
-    false
-}
-
 #[derive(Debug, Clone)]
 pub struct Configuration {
     pub backend: Backend,
