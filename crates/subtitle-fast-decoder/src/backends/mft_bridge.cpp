@@ -7,8 +7,11 @@
 #include <mfobjects.h>
 #include <mfreadwrite.h>
 #include <mferror.h>
+#include <mftransform.h>
 #include <propvarutil.h>
 #include <combaseapi.h>
+#include <d3d11.h>
+#include <dxgi.h>
 
 #include <cmath>
 #include <cstdint>
@@ -191,6 +194,87 @@ struct FrameLock {
     }
 };
 
+struct D3D11Environment {
+    ID3D11Device* device = nullptr;
+    ID3D11DeviceContext* context = nullptr;
+    ID3D11Multithread* multithread = nullptr;
+    IMFDXGIDeviceManager* manager = nullptr;
+    UINT reset_token = 0;
+
+    ~D3D11Environment() {
+        reset();
+    }
+
+    void reset() {
+        safe_release(&manager);
+        safe_release(&multithread);
+        safe_release(&context);
+        safe_release(&device);
+        reset_token = 0;
+    }
+
+    bool initialize(std::string& error) {
+        reset();
+
+        static const D3D_FEATURE_LEVEL features[] = {
+            D3D_FEATURE_LEVEL_11_1,
+            D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_10_1,
+            D3D_FEATURE_LEVEL_10_0,
+        };
+        static const D3D_DRIVER_TYPE drivers[] = {
+            D3D_DRIVER_TYPE_HARDWARE,
+            D3D_DRIVER_TYPE_WARP,
+            D3D_DRIVER_TYPE_REFERENCE,
+        };
+
+        HRESULT hr = E_FAIL;
+        for (D3D_DRIVER_TYPE driver : drivers) {
+            hr = D3D11CreateDevice(
+                nullptr,
+                driver,
+                nullptr,
+                D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                features,
+                static_cast<UINT>(std::size(features)),
+                D3D11_SDK_VERSION,
+                &device,
+                nullptr,
+                &context
+            );
+            if (SUCCEEDED(hr)) {
+                break;
+            }
+        }
+        if (FAILED(hr)) {
+            error = format_hresult("D3D11CreateDevice", hr);
+            reset();
+            return false;
+        }
+
+        hr = device->QueryInterface(__uuidof(ID3D11Multithread), reinterpret_cast<void**>(&multithread));
+        if (SUCCEEDED(hr) && multithread) {
+            multithread->SetMultithreadProtected(TRUE);
+        }
+
+        hr = MFCreateDXGIDeviceManager(&reset_token, &manager);
+        if (FAILED(hr)) {
+            error = format_hresult("MFCreateDXGIDeviceManager", hr);
+            reset();
+            return false;
+        }
+
+        hr = manager->ResetDevice(device, reset_token);
+        if (FAILED(hr)) {
+            error = format_hresult("IMFDXGIDeviceManager::ResetDevice", hr);
+            reset();
+            return false;
+        }
+
+        return true;
+    }
+};
+
 } // namespace
 
 extern "C" {
@@ -240,14 +324,27 @@ bool mft_probe_total_frames(const char* path, CMftProbeResult* result) {
         return false;
     }
 
+    D3D11Environment d3d;
+    std::string d3d_error;
+    if (!d3d.initialize(d3d_error)) {
+        set_error(&result->error, d3d_error);
+        return false;
+    }
+
     IMFAttributes* attributes = nullptr;
-    HRESULT hr = MFCreateAttributes(&attributes, 1);
+    HRESULT hr = MFCreateAttributes(&attributes, 2);
     if (FAILED(hr)) {
         set_error(&result->error, format_hresult("MFCreateAttributes", hr));
         safe_release(&attributes);
         return false;
     }
     attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+    hr = attributes->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, d3d.manager);
+    if (FAILED(hr)) {
+        set_error(&result->error, format_hresult("SetUnknown(D3D_MANAGER)", hr));
+        safe_release(&attributes);
+        return false;
+    }
 
     IMFSourceReader* reader = nullptr;
     hr = MFCreateSourceReaderFromURL(wide_path.c_str(), attributes, &reader);
@@ -350,8 +447,15 @@ bool mft_decode(
         return false;
     }
 
+    D3D11Environment d3d;
+    std::string d3d_error;
+    if (!d3d.initialize(d3d_error)) {
+        set_error(out_error, d3d_error);
+        return false;
+    }
+
     IMFAttributes* attributes = nullptr;
-    HRESULT hr = MFCreateAttributes(&attributes, 2);
+    HRESULT hr = MFCreateAttributes(&attributes, 3);
     if (FAILED(hr)) {
         set_error(out_error, format_hresult("MFCreateAttributes", hr));
         safe_release(&attributes);
@@ -359,6 +463,12 @@ bool mft_decode(
     }
     attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
     attributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
+    hr = attributes->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, d3d.manager);
+    if (FAILED(hr)) {
+        set_error(out_error, format_hresult("SetUnknown(D3D_MANAGER)", hr));
+        safe_release(&attributes);
+        return false;
+    }
 
     IMFSourceReader* reader = nullptr;
     hr = MFCreateSourceReaderFromURL(wide_path.c_str(), attributes, &reader);

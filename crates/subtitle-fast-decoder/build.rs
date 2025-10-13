@@ -39,7 +39,7 @@ fn build_mft_bridge() {
     build.flag_if_supported("-std=c++17");
     build.compile("mft_bridge");
 
-    for lib in ["mfplat", "mf", "mfreadwrite", "mfuuid", "ole32"] {
+    for lib in ["mfplat", "mf", "mfreadwrite", "mfuuid", "ole32", "d3d11", "dxgi"] {
         println!("cargo:rustc-link-lib={lib}");
     }
 }
