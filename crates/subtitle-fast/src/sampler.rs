@@ -13,8 +13,6 @@ const DEFAULT_POOL_CAPACITY: usize = 24;
 const MAX_POOL_CAPACITY: usize = 240;
 const EPSILON: f64 = 1e-6;
 
-type ProgressCallback = Arc<dyn Fn(u64) + Send + Sync>;
-
 pub type SamplerResult = Result<SampledFrame, YPlaneError>;
 
 #[derive(Debug, Clone, Copy)]
@@ -81,14 +79,12 @@ impl SampledFrame {
 
 pub struct FrameSampler {
     samples_per_second: u32,
-    progress_callback: Option<ProgressCallback>,
 }
 
 impl FrameSampler {
     pub fn new(samples_per_second: u32) -> Self {
         Self {
-            samples_per_second: samples_per_second.max(1),
-            progress_callback: None,
+            samples_per_second,
         }
     }
 }
@@ -100,16 +96,10 @@ impl PipelineStage<YPlaneResult<YPlaneFrame>> for FrameSampler {
         "frame_sampler"
     }
 
-    fn set_progress_callback(&mut self, callback: Option<ProgressCallback>) {
-        self.progress_callback = callback;
-    }
-
     fn apply(
         self: Box<Self>,
         input: StageInput<YPlaneResult<YPlaneFrame>>,
     ) -> StageOutput<Self::Output> {
-        let progress_callback = self.progress_callback.clone();
-
         let StageInput {
             stream,
             total_frames,
@@ -132,7 +122,7 @@ impl PipelineStage<YPlaneResult<YPlaneFrame>> for FrameSampler {
                     maybe_item = upstream.next() => {
                         match maybe_item {
                             Some(Ok(frame)) => {
-                                if worker.handle_frame(frame, &tx, progress_callback.as_ref()).await.is_err() {
+                                if worker.handle_frame(frame, &tx).await.is_err() {
                                     break;
                                 }
                             }
@@ -188,14 +178,9 @@ impl SamplerWorker {
         &mut self,
         frame: YPlaneFrame,
         tx: &mpsc::Sender<SamplerResult>,
-        callback: Option<&ProgressCallback>,
     ) -> Result<(), ()> {
         self.processed = self.processed.saturating_add(1);
         let processed_index = self.processed;
-
-        if let Some(cb) = callback {
-            cb(self.processed);
-        }
 
         let frame_index = frame
             .frame_index()
@@ -232,6 +217,8 @@ impl SamplerWorker {
                 }
             }
         }
+
+        println!("sampler pool size: {}", self.pool.len());
 
         Ok(())
     }
@@ -282,6 +269,10 @@ impl SamplerPool {
             self.entries.pop_front();
         }
     }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 struct SampleSchedule {
@@ -293,7 +284,7 @@ struct SampleSchedule {
 
 impl SampleSchedule {
     fn new(samples_per_second: u32) -> Self {
-        let samples = samples_per_second.max(1);
+        let samples = samples_per_second;
         let mut targets = Vec::with_capacity(samples as usize);
         for i in 0..samples {
             let target = if i == 0 {
@@ -341,11 +332,11 @@ impl SampleSchedule {
             return (second_index, fractional);
         }
 
-        let samples = self.samples_per_second.max(1) as u64;
+        let samples = self.samples_per_second as u64;
         let processed = processed_index.saturating_sub(1);
         let second_index = processed / samples;
         let offset = processed.saturating_sub(second_index * samples);
-        let elapsed = offset as f64 / self.samples_per_second.max(1) as f64;
+        let elapsed = offset as f64 / self.samples_per_second as f64;
         (second_index, elapsed)
     }
 }

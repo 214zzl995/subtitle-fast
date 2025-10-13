@@ -1,5 +1,4 @@
 use std::pin::Pin;
-use std::sync::Arc;
 
 use futures_util::Stream;
 
@@ -18,8 +17,6 @@ pub trait PipelineStage<I>: Send + 'static {
 
     #[allow(dead_code)]
     fn name(&self) -> &'static str;
-
-    fn set_progress_callback(&mut self, _callback: Option<Arc<dyn Fn(u64) + Send + Sync>>) {}
 
     fn apply(self: Box<Self>, input: StageInput<I>) -> StageOutput<Self::Output>;
 }

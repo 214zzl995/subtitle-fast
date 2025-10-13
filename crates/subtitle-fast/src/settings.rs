@@ -212,7 +212,7 @@ fn merge(
     let mut detection_samples_per_second = cli.detection_samples_per_second;
     if !sources.detection_sps_from_cli {
         if let Some(value) = file_detection_sps {
-            if value == 0 {
+            if value < 1 {
                 return Err(ConfigError::InvalidValue {
                     path: config_path,
                     field: "detection_samples_per_second",
