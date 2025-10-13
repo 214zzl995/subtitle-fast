@@ -1,8 +1,7 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::config::{FrameDumpConfig, ImageOutputFormat};
+use crate::config::{FrameDumpConfig, FrameMetadata, ImageOutputFormat};
 use crate::subtitle_detection::{DetectionRegion, SubtitleDetectionResult};
 use subtitle_fast_decoder::YPlaneFrame;
 use thiserror::Error;
@@ -11,7 +10,6 @@ use tokio::task;
 pub(crate) struct FrameDumpOperation {
     directory: Arc<PathBuf>,
     format: ImageOutputFormat,
-    fallback_index: AtomicU64,
 }
 
 impl FrameDumpOperation {
@@ -19,19 +17,19 @@ impl FrameDumpOperation {
         Self {
             directory: Arc::from(config.directory),
             format: config.format,
-            fallback_index: AtomicU64::new(0),
         }
     }
 
     pub async fn process(
         &self,
         frame: &YPlaneFrame,
-        detection: &SubtitleDetectionResult,
+        metadata: &FrameMetadata,
+        detection: Option<&SubtitleDetectionResult>,
     ) -> Result<(), WriteFrameError> {
         let frame_index = frame
             .frame_index()
-            .unwrap_or_else(|| self.fallback_index.fetch_add(1, Ordering::Relaxed));
-
+            .or(metadata.decoder_frame_index)
+            .unwrap_or(metadata.frame_index);
         write_frame(
             frame,
             frame_index,
@@ -52,7 +50,7 @@ async fn write_frame(
     index: u64,
     directory: &Path,
     format: ImageOutputFormat,
-    detection: &SubtitleDetectionResult,
+    detection: Option<&SubtitleDetectionResult>,
 ) -> Result<(), WriteFrameError> {
     use image::codecs::jpeg::JpegEncoder;
     use image::codecs::png::PngEncoder;
@@ -88,7 +86,9 @@ async fn write_frame(
         dest_row.copy_from_slice(&data[start..end]);
     }
 
-    let rects = regions_to_rects(&detection.regions, width, height);
+    let rects = detection
+        .map(|result| regions_to_rects(&result.regions, width, height))
+        .unwrap_or_default();
 
     if matches!(&format, ImageOutputFormat::Yuv) {
         if !rects.is_empty() {

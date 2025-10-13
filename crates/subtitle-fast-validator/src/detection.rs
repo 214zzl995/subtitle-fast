@@ -1,4 +1,4 @@
-use crate::config::SubtitleDetectionOptions;
+use crate::config::{FrameMetadata, SubtitleDetectionOptions};
 use crate::dump::FrameDumpOperation;
 use crate::subtitle_detection::{
     build_detector, LumaBandConfig, SubtitleDetectionConfig, SubtitleDetectionError,
@@ -34,50 +34,53 @@ impl SubtitleDetectionPipeline {
     pub async fn process(
         &self,
         frame: &YPlaneFrame,
-    ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
-        let mut result = if self.enabled {
+        metadata: &FrameMetadata,
+    ) -> Option<SubtitleDetectionResult> {
+        let mut detection = if self.enabled {
             let mut state = self.state.lock().await;
-            state.process_frame(frame)?
+            state.process_frame(frame, metadata)
         } else {
-            SubtitleDetectionResult::empty()
+            None
         };
 
-        inflate_regions(
-            &mut result,
-            frame.width() as usize,
-            frame.height() as usize,
-            REGION_MARGIN_PX,
-        );
-
-        if let Some(dump) = self.dump.as_ref() {
-            dump.process(frame, &result)
-                .await
-                .map_err(SubtitleDetectionError::from)?;
+        if let Some(result) = detection.as_mut() {
+            inflate_regions(
+                result,
+                frame.width() as usize,
+                frame.height() as usize,
+                REGION_MARGIN_PX,
+            );
         }
 
-        Ok(result)
+        if let Some(dump) = self.dump.as_ref() {
+            if let Err(err) = dump.process(frame, metadata, detection.as_ref()).await {
+                eprintln!("frame dump error: {err}");
+            }
+        }
+
+        detection
     }
 
-    pub async fn finalize(&self) -> Result<(), SubtitleDetectionError> {
+    pub async fn finalize(&self) {
         if let Some(dump) = self.dump.as_ref() {
-            dump.finalize()
-                .await
-                .map_err(SubtitleDetectionError::from)?;
+            if let Err(err) = dump.finalize().await {
+                eprintln!("frame dump finalize error: {err}");
+            }
         }
 
         if !self.enabled {
-            return Ok(());
+            return;
         }
 
         let mut state = self.state.lock().await;
         state.finalize();
-        Ok(())
     }
 }
 
 struct SubtitleDetectionState {
     detector: Option<Box<dyn SubtitleDetector>>,
     detector_dims: Option<(usize, usize, usize)>,
+    init_error_logged: bool,
     options: SubtitleDetectionOptions,
 }
 
@@ -86,6 +89,7 @@ impl SubtitleDetectionState {
         Self {
             detector: None,
             detector_dims: None,
+            init_error_logged: false,
             options,
         }
     }
@@ -93,9 +97,10 @@ impl SubtitleDetectionState {
     fn process_frame(
         &mut self,
         frame: &YPlaneFrame,
-    ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
+        metadata: &FrameMetadata,
+    ) -> Option<SubtitleDetectionResult> {
         if !self.options.enabled {
-            return Ok(SubtitleDetectionResult::empty());
+            return None;
         }
 
         let dims = (
@@ -103,31 +108,53 @@ impl SubtitleDetectionState {
             frame.height() as usize,
             frame.stride(),
         );
-
         if self.detector_dims != Some(dims) {
+            self.detector_dims = Some(dims);
             let mut detector_config = SubtitleDetectionConfig::for_frame(dims.0, dims.1, dims.2);
             detector_config.model_path = self.options.onnx_model_path.clone();
-            if let Some(roi) = self.options.roi {
-                detector_config.roi = roi;
-            }
             detector_config.luma_band = LumaBandConfig {
                 target_luma: self.options.luma_band.target_luma,
                 delta: self.options.luma_band.delta,
             };
-            let detector = build_detector(self.options.detector, detector_config)?;
-            self.detector = Some(detector);
-            self.detector_dims = Some(dims);
+            if let Some(roi) = self.options.roi_override {
+                detector_config.roi = roi;
+            }
+            match build_detector(self.options.detector, detector_config) {
+                Ok(detector) => {
+                    self.detector = Some(detector);
+                    self.init_error_logged = false;
+                }
+                Err(err) => {
+                    if !self.init_error_logged {
+                        log_init_failure(self.options.detector, err);
+                        self.init_error_logged = true;
+                    }
+                    self.detector = None;
+                    return None;
+                }
+            }
         }
 
         let Some(detector) = self.detector.as_ref() else {
-            return Ok(SubtitleDetectionResult::empty());
+            return None;
         };
 
-        let result = detector.detect(frame.data())?;
-        Ok(result)
+        match detector.detect(frame.data(), metadata) {
+            Ok(result) => Some(result),
+            Err(err) => {
+                eprintln!(
+                    "subtitle detection failed for frame {}: {}",
+                    metadata.frame_index, err
+                );
+                None
+            }
+        }
     }
 
     fn finalize(&mut self) {
+        if !self.options.enabled {
+            return;
+        }
         self.detector = None;
         self.detector_dims = None;
     }
@@ -169,4 +196,14 @@ fn inflate_regions(
         region.width = (x1 - x0).max(0.0);
         region.height = (y1 - y0).max(0.0);
     }
+}
+
+fn log_init_failure(
+    kind: crate::subtitle_detection::SubtitleDetectorKind,
+    err: SubtitleDetectionError,
+) {
+    eprintln!(
+        "subtitle detection initialization failed for backend '{}': {err}",
+        kind.as_str()
+    );
 }

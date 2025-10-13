@@ -6,7 +6,8 @@ mod dump;
 mod validator;
 
 pub use config::{
-    FrameDumpConfig, FrameValidatorConfig, ImageOutputFormat, SubtitleDetectionOptions,
+    FrameDumpConfig, FrameMetadata, FrameValidatorConfig, ImageOutputFormat,
+    SubtitleDetectionOptions,
 };
 #[cfg(feature = "detector-onnx")]
 pub use subtitle_detection::ensure_onnx_detector_ready;

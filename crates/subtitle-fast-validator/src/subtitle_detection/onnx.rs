@@ -9,13 +9,23 @@ use ort::error::OrtError;
 use ort::session::{Session, SessionBuilder};
 use ort::value::Value;
 
+use crate::config::FrameMetadata;
+
 use super::{
-    extract_roi_plane, resolve_roi, DetectionRegion, PixelRect, SubtitleDetectionConfig,
-    SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector,
+    DetectionRegion, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
+    SubtitleDetectionResult, SubtitleDetector,
 };
 
 const MODEL_INPUT_WIDTH: usize = 640;
 const MODEL_INPUT_HEIGHT: usize = 640;
+
+#[derive(Debug, Clone, Copy)]
+struct RoiRect {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+}
 
 #[derive(Debug, Clone)]
 struct ModelHandle {
@@ -84,7 +94,6 @@ pub fn ensure_model_ready(model_path: Option<&Path>) -> Result<(), SubtitleDetec
 #[derive(Debug, Clone)]
 pub struct OnnxPpocrDetector {
     config: SubtitleDetectionConfig,
-    required_len: usize,
     model: Arc<ModelHandle>,
 }
 
@@ -100,7 +109,10 @@ impl OnnxPpocrDetector {
                 required,
             });
         }
-        let _ = resolve_roi(config.frame_width, config.frame_height, config.roi, None)?;
+        let roi = compute_roi_rect(config.frame_width, config.frame_height, config.roi)?;
+        if roi.height == 0 || roi.width == 0 {
+            return Err(SubtitleDetectionError::EmptyRoi);
+        }
 
         let model_path = config
             .model_path
@@ -109,11 +121,7 @@ impl OnnxPpocrDetector {
             .clone();
         let model = registry()?.get(&model_path)?;
 
-        Ok(Self {
-            config,
-            required_len: required,
-            model,
-        })
+        Ok(Self { config, model })
     }
 }
 
@@ -122,21 +130,29 @@ impl SubtitleDetector for OnnxPpocrDetector {
         ensure_model_ready(config.model_path.as_deref())
     }
 
-    fn detect(&self, frame_data: &[u8]) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
-        if frame_data.len() < self.required_len {
+    fn detect(
+        &self,
+        y_plane: &[u8],
+        _metadata: &FrameMetadata,
+    ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
+        let required = self
+            .config
+            .stride
+            .checked_mul(self.config.frame_height)
+            .unwrap_or(usize::MAX);
+        if y_plane.len() < required {
             return Err(SubtitleDetectionError::InsufficientData {
-                data_len: frame_data.len(),
-                required: self.required_len,
+                data_len: y_plane.len(),
+                required,
             });
         }
 
-        let roi = resolve_roi(
+        let roi = compute_roi_rect(
             self.config.frame_width,
             self.config.frame_height,
             self.config.roi,
-            None,
         )?;
-        let roi_data = extract_roi_plane(frame_data, self.config.stride, roi)?;
+        let roi_data = extract_roi(y_plane, self.config.stride, roi);
         let resized = resize_bilinear_to_model(
             &roi_data,
             roi.width,
@@ -148,16 +164,14 @@ impl SubtitleDetector for OnnxPpocrDetector {
         let (output, shape) = run_model(self.model.as_ref(), &input)?;
         let (regions, max_score) =
             decode_regions(&output, &shape, MODEL_INPUT_WIDTH, MODEL_INPUT_HEIGHT, roi);
-
-        if regions.is_empty() {
-            return Ok(SubtitleDetectionResult::empty());
-        }
-
-        Ok(SubtitleDetectionResult {
-            has_subtitle: true,
+        let has_subtitle = !regions.is_empty();
+        let result = SubtitleDetectionResult {
+            has_subtitle,
             max_score,
             regions,
-        })
+        };
+
+        Ok(result)
     }
 }
 
@@ -179,6 +193,44 @@ where
     } else {
         default(message)
     }
+}
+
+fn compute_roi_rect(
+    frame_width: usize,
+    frame_height: usize,
+    roi: RoiConfig,
+) -> Result<RoiRect, SubtitleDetectionError> {
+    let start_x = (roi.x * frame_width as f32).round() as isize;
+    let start_y = (roi.y * frame_height as f32).round() as isize;
+    let end_x = ((roi.x + roi.width) * frame_width as f32).round() as isize;
+    let end_y = ((roi.y + roi.height) * frame_height as f32).round() as isize;
+
+    let start_x = start_x.clamp(0, frame_width as isize);
+    let start_y = start_y.clamp(0, frame_height as isize);
+    let end_x = end_x.clamp(start_x, frame_width as isize);
+    let end_y = end_y.clamp(start_y, frame_height as isize);
+
+    let width = (end_x - start_x) as usize;
+    let height = (end_y - start_y) as usize;
+    if width == 0 || height == 0 {
+        return Err(SubtitleDetectionError::EmptyRoi);
+    }
+
+    Ok(RoiRect {
+        x: start_x as usize,
+        y: start_y as usize,
+        width,
+        height,
+    })
+}
+
+fn extract_roi(data: &[u8], stride: usize, roi: RoiRect) -> Vec<u8> {
+    let mut out = Vec::with_capacity(roi.width * roi.height);
+    for row in 0..roi.height {
+        let src_start = (roi.y + row) * stride + roi.x;
+        out.extend_from_slice(&data[src_start..src_start + roi.width]);
+    }
+    out
 }
 
 fn resize_bilinear_to_model(
@@ -276,7 +328,7 @@ fn decode_regions(
     shape: &[usize],
     width: usize,
     height: usize,
-    roi: PixelRect,
+    roi: RoiRect,
 ) -> (Vec<DetectionRegion>, f32) {
     let (map_height, map_width) = match shape {
         [h, w] => (*h, *w),
