@@ -3,7 +3,10 @@ mod cli;
 mod model;
 mod pipeline;
 mod progress;
+mod sampler;
 mod settings;
+mod sorter;
+mod stage;
 
 use backend::ExecutionPlan;
 use clap::CommandFactory;

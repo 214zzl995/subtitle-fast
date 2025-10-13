@@ -39,6 +39,7 @@ pub async fn run(plan: ExecutionPlan) -> Result<(), YPlaneError> {
         let provider_started = Instant::now();
         let provider_result = attempt_config.create_provider();
         let provider_elapsed = provider_started.elapsed();
+
         let provider = match provider_result {
             Ok(provider) => {
                 eprintln!(
