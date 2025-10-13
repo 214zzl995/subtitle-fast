@@ -1,9 +1,11 @@
 #![cfg(feature = "backend-videotoolbox")]
 
 use crate::core::{
-    DynYPlaneProvider, YPlaneError, YPlaneFrame, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
-    spawn_stream_from_channel,
+    DynYPlaneProvider, YPlaneError, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
 };
+
+#[cfg(target_os = "macos")]
+use crate::core::{YPlaneFrame, spawn_stream_from_channel};
 
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]

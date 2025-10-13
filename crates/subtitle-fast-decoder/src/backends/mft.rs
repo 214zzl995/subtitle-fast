@@ -16,7 +16,6 @@ mod platform {
     use std::ptr;
     use std::slice;
     use std::time::Duration;
-    use tokio::sync::mpsc;
     use tokio::sync::mpsc::Sender;
 
     const BACKEND_NAME: &str = "mft";
@@ -105,7 +104,7 @@ mod platform {
         let ok = unsafe {
             mft_decode(
                 c_path.as_ptr(),
-                Some(handle_frame),
+                handle_frame,
                 &mut context as *mut _ as *mut c_void,
                 &mut error_ptr,
             )
@@ -185,8 +184,8 @@ mod platform {
         if frame.is_null() || context.is_null() {
             return false;
         }
-        let frame = &*frame;
-        let context = &*(context as *mut DecodeContext);
+        let frame = unsafe { &*frame };
+        let context = unsafe { &*(context as *mut DecodeContext) };
         let expected_bytes = match frame.stride.checked_mul(frame.height as usize) {
             Some(bytes) => bytes,
             None => {
@@ -197,7 +196,7 @@ mod platform {
                 return false;
             }
         };
-        let data = slice::from_raw_parts(frame.data, frame.data_len);
+        let data = unsafe { slice::from_raw_parts(frame.data, frame.data_len) };
         if data.len() < expected_bytes {
             context.send_error(YPlaneError::backend_failure(
                 BACKEND_NAME,
