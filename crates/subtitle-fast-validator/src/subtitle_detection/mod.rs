@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use crate::config::FrameMetadata;
 use serde::Serialize;
 use thiserror::Error;
 
@@ -75,6 +74,76 @@ pub struct SubtitleDetectionResult {
     pub has_subtitle: bool,
     pub max_score: f32,
     pub regions: Vec<DetectionRegion>,
+}
+
+impl SubtitleDetectionResult {
+    pub fn empty() -> Self {
+        Self {
+            has_subtitle: false,
+            max_score: 0.0,
+            regions: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PixelRect {
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+pub(crate) fn resolve_roi(
+    frame_width: usize,
+    frame_height: usize,
+    base: RoiConfig,
+    override_roi: Option<RoiConfig>,
+) -> Result<PixelRect, SubtitleDetectionError> {
+    let roi = override_roi.unwrap_or(base);
+
+    let start_x = (roi.x * frame_width as f32).floor() as isize;
+    let start_y = (roi.y * frame_height as f32).floor() as isize;
+    let end_x = ((roi.x + roi.width) * frame_width as f32).ceil() as isize;
+    let end_y = ((roi.y + roi.height) * frame_height as f32).ceil() as isize;
+
+    let start_x = start_x.clamp(0, frame_width as isize);
+    let start_y = start_y.clamp(0, frame_height as isize);
+    let end_x = end_x.clamp(start_x, frame_width as isize);
+    let end_y = end_y.clamp(start_y, frame_height as isize);
+
+    let width = (end_x - start_x) as usize;
+    let height = (end_y - start_y) as usize;
+    if width == 0 || height == 0 {
+        return Err(SubtitleDetectionError::EmptyRoi);
+    }
+
+    Ok(PixelRect {
+        x: start_x as usize,
+        y: start_y as usize,
+        width,
+        height,
+    })
+}
+
+pub(crate) fn extract_roi_plane(
+    data: &[u8],
+    stride: usize,
+    rect: PixelRect,
+) -> Result<Vec<u8>, SubtitleDetectionError> {
+    let mut out = Vec::with_capacity(rect.width * rect.height);
+    for row in 0..rect.height {
+        let start = (rect.y + row) * stride + rect.x;
+        let end = start + rect.width;
+        if end > data.len() {
+            return Err(SubtitleDetectionError::InsufficientData {
+                data_len: data.len(),
+                required: end,
+            });
+        }
+        out.extend_from_slice(&data[start..end]);
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -179,6 +248,8 @@ pub enum SubtitleDetectionError {
     InsufficientData { data_len: usize, required: usize },
     #[error("region of interest height is zero")]
     EmptyRoi,
+    #[error("frame dump failed: {0}")]
+    Dump(String),
     #[error("failed to initialize onnx runtime environment: {0}")]
     Environment(String),
     #[error("failed to create inference session: {0}")]
@@ -232,6 +303,12 @@ impl SubtitleDetectionConfig {
                 delta: DEFAULT_LUMA_DELTA,
             },
         }
+    }
+}
+
+impl From<crate::dump::WriteFrameError> for SubtitleDetectionError {
+    fn from(err: crate::dump::WriteFrameError) -> Self {
+        SubtitleDetectionError::Dump(err.to_string())
     }
 }
 
@@ -323,11 +400,7 @@ impl SubtitleDetectorKind {
 }
 
 pub trait SubtitleDetector: Send + Sync {
-    fn detect(
-        &self,
-        y_plane: &[u8],
-        metadata: &FrameMetadata,
-    ) -> Result<SubtitleDetectionResult, SubtitleDetectionError>;
+    fn detect(&self, frame_data: &[u8]) -> Result<SubtitleDetectionResult, SubtitleDetectionError>;
 
     fn ensure_available(config: &SubtitleDetectionConfig) -> Result<(), SubtitleDetectionError>
     where

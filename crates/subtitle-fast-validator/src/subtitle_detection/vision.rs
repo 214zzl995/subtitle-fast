@@ -1,17 +1,14 @@
 use std::ffi::{c_char, CStr};
 use std::slice;
 
-use crate::config::FrameMetadata;
-
 use super::{
-    DetectionRegion, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
+    resolve_roi, DetectionRegion, PixelRect, SubtitleDetectionConfig, SubtitleDetectionError,
     SubtitleDetectionResult, SubtitleDetector,
 };
 
 #[derive(Debug, Clone)]
 pub struct VisionTextDetector {
     config: SubtitleDetectionConfig,
-    roi: RoiRect,
     required_bytes: usize,
 }
 
@@ -91,14 +88,6 @@ impl Drop for OwnedVisionResult {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct RoiRect {
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-}
-
 impl VisionTextDetector {
     pub fn new(config: SubtitleDetectionConfig) -> Result<Self, SubtitleDetectionError> {
         let required_bytes = config
@@ -111,10 +100,9 @@ impl VisionTextDetector {
                 required: required_bytes,
             });
         }
-        let roi = compute_roi_rect(config.frame_width, config.frame_height, config.roi)?;
+        let _ = resolve_roi(config.frame_width, config.frame_height, config.roi, None)?;
         Ok(Self {
             config,
-            roi,
             required_bytes,
         })
     }
@@ -126,11 +114,7 @@ impl SubtitleDetector for VisionTextDetector {
         Ok(())
     }
 
-    fn detect(
-        &self,
-        y_plane: &[u8],
-        _metadata: &FrameMetadata,
-    ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
+    fn detect(&self, y_plane: &[u8]) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
         if y_plane.len() < self.required_bytes {
             return Err(SubtitleDetectionError::InsufficientData {
                 data_len: y_plane.len(),
@@ -138,16 +122,23 @@ impl SubtitleDetector for VisionTextDetector {
             });
         }
 
+        let roi_cfg = self.config.roi;
+        let roi_rect = resolve_roi(
+            self.config.frame_width,
+            self.config.frame_height,
+            roi_cfg,
+            None,
+        )?;
         let raw = unsafe {
             vision_detect_text_regions(
                 y_plane.as_ptr(),
                 self.config.frame_width,
                 self.config.frame_height,
                 self.config.stride,
-                self.config.roi.x,
-                self.config.roi.y,
-                self.config.roi.width,
-                self.config.roi.height,
+                roi_cfg.x,
+                roi_cfg.y,
+                roi_cfg.width,
+                roi_cfg.height,
             )
         };
         let owned = OwnedVisionResult::new(raw);
@@ -160,7 +151,7 @@ impl SubtitleDetector for VisionTextDetector {
         for region in owned.regions() {
             if let Some(clipped) = clip_region(
                 region,
-                self.roi,
+                roi_rect,
                 self.config.frame_width,
                 self.config.frame_height,
             ) {
@@ -180,38 +171,9 @@ impl SubtitleDetector for VisionTextDetector {
     }
 }
 
-fn compute_roi_rect(
-    frame_width: usize,
-    frame_height: usize,
-    roi: RoiConfig,
-) -> Result<RoiRect, SubtitleDetectionError> {
-    let start_x = (roi.x * frame_width as f32).floor() as isize;
-    let start_y = (roi.y * frame_height as f32).floor() as isize;
-    let end_x = ((roi.x + roi.width) * frame_width as f32).ceil() as isize;
-    let end_y = ((roi.y + roi.height) * frame_height as f32).ceil() as isize;
-
-    let start_x = start_x.clamp(0, frame_width as isize);
-    let start_y = start_y.clamp(0, frame_height as isize);
-    let end_x = end_x.clamp(start_x, frame_width as isize);
-    let end_y = end_y.clamp(start_y, frame_height as isize);
-
-    let width = (end_x - start_x) as usize;
-    let height = (end_y - start_y) as usize;
-    if width == 0 || height == 0 {
-        return Err(SubtitleDetectionError::EmptyRoi);
-    }
-
-    Ok(RoiRect {
-        x: start_x as usize,
-        y: start_y as usize,
-        width,
-        height,
-    })
-}
-
 fn clip_region(
     region: &CVisionRegion,
-    roi: RoiRect,
+    roi: PixelRect,
     frame_width: usize,
     frame_height: usize,
 ) -> Option<DetectionRegion> {
@@ -221,30 +183,26 @@ fn clip_region(
 
     let frame_w = frame_width as f32;
     let frame_h = frame_height as f32;
+
     let roi_x1 = roi.x as f32;
     let roi_y1 = roi.y as f32;
-    let roi_x2 = roi_x1 + roi.width as f32;
-    let roi_y2 = roi_y1 + roi.height as f32;
+    let roi_x2 = (roi.x + roi.width) as f32;
+    let roi_y2 = (roi.y + roi.height) as f32;
 
-    let x1 = region.x.max(0.0);
-    let y1 = region.y.max(0.0);
-    let x2 = (region.x + region.width).min(frame_w);
-    let y2 = (region.y + region.height).min(frame_h);
+    let x0 = region.x.max(roi_x1).max(0.0);
+    let y0 = region.y.max(roi_y1).max(0.0);
+    let x1 = (region.x + region.width).min(roi_x2).min(frame_w);
+    let y1 = (region.y + region.height).min(roi_y2).min(frame_h);
 
-    let ix1 = x1.max(roi_x1);
-    let iy1 = y1.max(roi_y1);
-    let ix2 = x2.min(roi_x2);
-    let iy2 = y2.min(roi_y2);
-
-    if ix2 <= ix1 || iy2 <= iy1 {
+    if x1 <= x0 || y1 <= y0 {
         return None;
     }
 
     Some(DetectionRegion {
-        x: ix1,
-        y: iy1,
-        width: ix2 - ix1,
-        height: iy2 - iy1,
+        x: x0,
+        y: y0,
+        width: x1 - x0,
+        height: y1 - y0,
         score: region.confidence.max(0.0),
     })
 }
