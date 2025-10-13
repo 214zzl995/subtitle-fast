@@ -16,6 +16,7 @@ struct FileConfig {
     dump_dir: Option<String>,
     dump_format: Option<String>,
     detection_samples_per_second: Option<u32>,
+    sampler_history_seconds: Option<f32>,
     detection_backend: Option<String>,
     onnx_model: Option<String>,
     detection_luma_target: Option<u8>,
@@ -29,6 +30,7 @@ pub struct EffectiveSettings {
     pub dump_dir: Option<PathBuf>,
     pub dump_format: DumpFormat,
     pub detection_samples_per_second: u32,
+    pub sampler_history_seconds: f32,
     pub detection_backend: DetectionBackend,
     pub onnx_model: Option<String>,
     pub onnx_model_from_cli: bool,
@@ -179,6 +181,7 @@ fn merge(
         dump_dir: file_dump_dir,
         dump_format: file_dump_format,
         detection_samples_per_second: file_detection_sps,
+        sampler_history_seconds: file_sampler_history_seconds,
         detection_backend: file_detection_backend,
         onnx_model: file_onnx_model,
         detection_luma_target: file_luma_target,
@@ -220,6 +223,20 @@ fn merge(
                 });
             }
             detection_samples_per_second = value;
+        }
+    }
+
+    let mut sampler_history_seconds = cli.sampler_history_seconds;
+    if !sources.sampler_history_seconds_from_cli {
+        if let Some(value) = file_sampler_history_seconds {
+            if value <= 0.0 {
+                return Err(ConfigError::InvalidValue {
+                    path: config_path.clone(),
+                    field: "sampler_history_seconds",
+                    value: value.to_string(),
+                });
+            }
+            sampler_history_seconds = value;
         }
     }
 
@@ -274,6 +291,7 @@ fn merge(
         dump_dir,
         dump_format,
         detection_samples_per_second,
+        sampler_history_seconds,
         detection_backend,
         onnx_model,
         onnx_model_from_cli,

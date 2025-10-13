@@ -16,6 +16,7 @@ pub struct PipelineConfig {
     pub dump_dir: Option<PathBuf>,
     pub dump_format: DumpFormat,
     pub detection_samples_per_second: u32,
+    pub sampler_history_seconds: f32,
     pub detection_backend: SubtitleDetectorKind,
     pub onnx_model_path: Option<PathBuf>,
     pub detection_luma_target: Option<u8>,
@@ -28,6 +29,7 @@ impl PipelineConfig {
             dump_dir: settings.dump_dir.clone(),
             dump_format: settings.dump_format,
             detection_samples_per_second: settings.detection_samples_per_second,
+            sampler_history_seconds: settings.sampler_history_seconds,
             detection_backend: map_detection_backend(settings.detection_backend),
             onnx_model_path,
             detection_luma_target: settings.detection_luma_target,
@@ -51,12 +53,14 @@ pub async fn run_pipeline(
         total_frames: initial_total_frames,
     });
 
-    let sampler = FrameSampler::new(_pipeline.detection_samples_per_second);
-
     let StageOutput {
         stream: sampled_stream,
         total_frames: _sampled_total_frames,
-    } = Box::new(sampler).apply(StageInput {
+    } = Box::new(FrameSampler::new(
+        _pipeline.detection_samples_per_second,
+        _pipeline.sampler_history_seconds,
+    ))
+    .apply(StageInput {
         stream: sorted_stream,
         total_frames: sorted_total_frames,
     });
