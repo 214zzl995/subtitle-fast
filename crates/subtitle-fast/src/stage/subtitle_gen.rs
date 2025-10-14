@@ -18,7 +18,7 @@ pub type SubtitleGenResult = Result<GeneratedSubtitle, SubtitleGenError>;
 /// 生成字幕: converts detected subtitle segments into final text output.
 pub struct SubtitleGen<E>
 where
-    E: OcrEngine + 'static,
+    E: OcrEngine + 'static + ?Sized,
 {
     engine: Arc<E>,
     writer: Option<Arc<SubtitleWriter>>,
@@ -26,7 +26,7 @@ where
 
 impl<E> SubtitleGen<E>
 where
-    E: OcrEngine + 'static,
+    E: OcrEngine + 'static + ?Sized,
 {
     pub fn new(engine: Arc<E>, output_path: Option<PathBuf>) -> Self {
         let writer = output_path.map(|path| Arc::new(SubtitleWriter::new(path)));
@@ -36,7 +36,7 @@ where
 
 impl<E> PipelineStage<SubtitleStageResult> for SubtitleGen<E>
 where
-    E: OcrEngine + 'static,
+    E: OcrEngine + 'static + ?Sized,
 {
     type Output = SubtitleGenResult;
 
@@ -117,7 +117,7 @@ pub enum SubtitleGenError {
 
 struct SubtitleGenWorker<E>
 where
-    E: OcrEngine + 'static,
+    E: OcrEngine + 'static + ?Sized,
 {
     engine: Arc<E>,
     writer: Option<Arc<SubtitleWriter>>,
@@ -125,7 +125,7 @@ where
 
 impl<E> SubtitleGenWorker<E>
 where
-    E: OcrEngine + 'static,
+    E: OcrEngine + 'static + ?Sized,
 {
     fn new(engine: Arc<E>, writer: Option<Arc<SubtitleWriter>>) -> Self {
         Self { engine, writer }

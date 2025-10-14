@@ -7,7 +7,7 @@ use clap::ValueEnum;
 use directories::{BaseDirs, ProjectDirs};
 use serde::Deserialize;
 
-use crate::cli::{CliArgs, CliSources, DetectionBackend, DumpFormat};
+use crate::cli::{CliArgs, CliSources, DetectionBackend, DumpFormat, OcrBackend};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -16,6 +16,7 @@ struct FileConfig {
     debug: Option<DebugDumpFileConfig>,
     detection: Option<DetectionFileConfig>,
     decoder: Option<DecoderFileConfig>,
+    ocr: Option<OcrFileConfig>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -44,6 +45,13 @@ struct DetectionFileConfig {
 
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(default)]
+struct OcrFileConfig {
+    backend: Option<String>,
+    onnx_model: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(default)]
 struct ImageDumpFileConfig {
     enable: Option<bool>,
     dir: Option<String>,
@@ -66,6 +74,7 @@ pub struct EffectiveSettings {
     pub debug: DebugOutputSettings,
     pub detection: DetectionSettings,
     pub decoder: DecoderSettings,
+    pub ocr: OcrSettings,
 }
 
 #[derive(Debug)]
@@ -82,6 +91,13 @@ pub struct DetectionSettings {
     pub onnx_model_from_cli: bool,
     pub luma_target: Option<u8>,
     pub luma_delta: Option<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OcrSettings {
+    pub backend: OcrBackend,
+    pub onnx_model: Option<String>,
+    pub onnx_model_from_cli: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -256,11 +272,13 @@ fn merge(
         debug: file_debug,
         detection: file_detection,
         decoder: file_decoder,
+        ocr: file_ocr,
     } = file;
 
     let debug_cfg = file_debug.unwrap_or_default();
     let detection_cfg = file_detection.unwrap_or_default();
     let decoder_cfg = file_decoder.unwrap_or_default();
+    let ocr_cfg = file_ocr.unwrap_or_default();
 
     let file_debug_image = debug_cfg.image.clone();
     let file_debug_json = debug_cfg.json.clone();
@@ -365,7 +383,7 @@ fn merge(
 
     let (onnx_model, onnx_model_from_cli) = resolve_onnx_model(
         cli.onnx_model.clone(),
-        sources.onnx_model_from_cli,
+        sources.detection_onnx_model_from_cli,
         detection_cfg.onnx_model.clone(),
     );
 
@@ -379,6 +397,19 @@ fn merge(
         cli.detection_luma_delta,
         detection_cfg.luma_delta,
         !sources.detection_luma_delta_from_cli,
+    );
+
+    let ocr_backend = resolve_ocr_backend(
+        cli.ocr_backend,
+        ocr_cfg.backend.clone(),
+        !sources.ocr_backend_from_cli,
+        config_path.as_ref(),
+    )?;
+
+    let (ocr_onnx_model, ocr_onnx_model_from_cli) = resolve_onnx_model(
+        cli.ocr_onnx_model.clone(),
+        sources.ocr_onnx_model_from_cli,
+        ocr_cfg.onnx_model.clone(),
     );
 
     let decoder_channel_capacity = resolve_decoder_capacity(
@@ -410,6 +441,11 @@ fn merge(
             luma_delta: detection_luma_delta,
         },
         decoder: decoder_settings,
+        ocr: OcrSettings {
+            backend: ocr_backend,
+            onnx_model: ocr_onnx_model,
+            onnx_model_from_cli: ocr_onnx_model_from_cli,
+        },
     };
 
     Ok(ResolvedSettings {
@@ -499,6 +535,28 @@ fn resolve_detection_backend(
     if use_file {
         if let Some(value) = normalize_string(file_backend) {
             return parse_detection_backend(&value, config_path);
+        }
+    }
+    Ok(cli_backend)
+}
+
+fn parse_ocr_backend(value: &str, path: Option<&PathBuf>) -> Result<OcrBackend, ConfigError> {
+    OcrBackend::from_str(value, false).map_err(|_| ConfigError::InvalidValue {
+        path: path.cloned(),
+        field: "ocr_backend",
+        value: value.to_string(),
+    })
+}
+
+fn resolve_ocr_backend(
+    cli_backend: OcrBackend,
+    file_backend: Option<String>,
+    use_file: bool,
+    config_path: Option<&PathBuf>,
+) -> Result<OcrBackend, ConfigError> {
+    if use_file {
+        if let Some(value) = normalize_string(file_backend) {
+            return parse_ocr_backend(&value, config_path);
         }
     }
     Ok(cli_backend)

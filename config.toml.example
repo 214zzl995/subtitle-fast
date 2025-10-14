@@ -23,6 +23,10 @@ backend = "auto"
 # luma_delta = 12
 onnx_model = "/path/to/model.onnx"
 
+[ocr]
+backend = "auto"
+# onnx_model = "/path/to/ocr-model.onnx"
+
 [decoder]
 # backend = "ffmpeg"
 # channel_capacity = 32

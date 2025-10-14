@@ -19,12 +19,22 @@ pub enum DetectionBackend {
     Luma,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum OcrBackend {
+    Auto,
+    Vision,
+    Onnx,
+    Noop,
+}
+
 #[derive(Debug, Default)]
 pub struct CliSources {
     pub dump_format_from_cli: bool,
     pub detection_backend_from_cli: bool,
     pub detection_sps_from_cli: bool,
-    pub onnx_model_from_cli: bool,
+    pub detection_onnx_model_from_cli: bool,
+    pub ocr_backend_from_cli: bool,
+    pub ocr_onnx_model_from_cli: bool,
     pub detection_luma_target_from_cli: bool,
     pub detection_luma_delta_from_cli: bool,
     pub decoder_channel_capacity_from_cli: bool,
@@ -36,7 +46,9 @@ impl CliSources {
             dump_format_from_cli: value_from_cli(matches, "dump_format"),
             detection_backend_from_cli: value_from_cli(matches, "detection_backend"),
             detection_sps_from_cli: value_from_cli(matches, "detection_samples_per_second"),
-            onnx_model_from_cli: value_from_cli(matches, "onnx_model"),
+            detection_onnx_model_from_cli: value_from_cli(matches, "onnx_model"),
+            ocr_backend_from_cli: value_from_cli(matches, "ocr_backend"),
+            ocr_onnx_model_from_cli: value_from_cli(matches, "ocr_onnx_model"),
             detection_luma_target_from_cli: value_from_cli(matches, "detection_luma_target"),
             detection_luma_delta_from_cli: value_from_cli(matches, "detection_luma_delta"),
             decoder_channel_capacity_from_cli: value_from_cli(matches, "decoder_channel_capacity"),
@@ -112,6 +124,14 @@ pub struct CliArgs {
     /// Path or URI to the ONNX subtitle detection model
     #[arg(long = "onnx-model")]
     pub onnx_model: Option<String>,
+
+    /// Preferred OCR backend
+    #[arg(long = "ocr-backend", value_enum, default_value_t = OcrBackend::Auto)]
+    pub ocr_backend: OcrBackend,
+
+    /// Path or URI to the ONNX OCR model
+    #[arg(long = "ocr-onnx-model", id = "ocr_onnx_model")]
+    pub ocr_onnx_model: Option<String>,
 
     /// Target Y-plane brightness used by the luma-band detector (0-255)
     #[arg(

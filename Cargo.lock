@@ -1758,6 +1758,10 @@ dependencies = [
 name = "subtitle-fast-ocr"
 version = "0.1.0"
 dependencies = [
+ "cc",
+ "ndarray",
+ "once_cell",
+ "ort",
  "subtitle-fast-decoder",
  "thiserror 2.0.17",
 ]
