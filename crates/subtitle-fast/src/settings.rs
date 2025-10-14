@@ -48,6 +48,7 @@ struct DetectionFileConfig {
 struct OcrFileConfig {
     backend: Option<String>,
     onnx_model: Option<String>,
+    mlx_vlm_model: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -98,6 +99,8 @@ pub struct OcrSettings {
     pub backend: OcrBackend,
     pub onnx_model: Option<String>,
     pub onnx_model_from_cli: bool,
+    pub mlx_vlm_model: Option<String>,
+    pub mlx_vlm_model_from_cli: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -412,6 +415,12 @@ fn merge(
         ocr_cfg.onnx_model.clone(),
     );
 
+    let ocr_mlx_model = resolve_optional_override(
+        cli.ocr_mlx_model.clone(),
+        ocr_cfg.mlx_vlm_model.clone(),
+        !sources.ocr_mlx_model_from_cli,
+    );
+
     let decoder_channel_capacity = resolve_decoder_capacity(
         cli.decoder_channel_capacity,
         decoder_cfg.channel_capacity,
@@ -445,6 +454,8 @@ fn merge(
             backend: ocr_backend,
             onnx_model: ocr_onnx_model,
             onnx_model_from_cli: ocr_onnx_model_from_cli,
+            mlx_vlm_model: ocr_mlx_model,
+            mlx_vlm_model_from_cli: sources.ocr_mlx_model_from_cli,
         },
     };
 

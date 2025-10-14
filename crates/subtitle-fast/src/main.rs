@@ -11,9 +11,7 @@ use backend::ExecutionPlan;
 use clap::CommandFactory;
 #[cfg(feature = "detector-onnx")]
 use cli::DetectionBackend;
-#[cfg(feature = "ocr-onnx")]
-use cli::OcrBackend;
-use cli::{CliArgs, CliSources, parse_cli};
+use cli::{CliArgs, CliSources, OcrBackend, parse_cli};
 use model::{ModelError, resolve_model_path};
 use pipeline::PipelineConfig;
 use settings::{ConfigError, resolve_settings};
@@ -98,10 +96,30 @@ async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, YPlaneError> 
     #[cfg(not(feature = "ocr-onnx"))]
     let resolved_ocr_model_path: Option<std::path::PathBuf> = None;
 
+    #[cfg(all(feature = "ocr-mlx-vlm", target_os = "macos"))]
+    let resolved_mlx_model_path = if matches!(settings.ocr.backend, OcrBackend::MlxVlm)
+        || (matches!(settings.ocr.backend, OcrBackend::Auto)
+            && settings.ocr.mlx_vlm_model.is_some())
+    {
+        resolve_model_path(
+            settings.ocr.mlx_vlm_model.as_deref(),
+            settings.ocr.mlx_vlm_model_from_cli,
+            config_dir.as_deref(),
+        )
+        .await
+        .map_err(map_model_error)?
+    } else {
+        None
+    };
+
+    #[cfg(not(all(feature = "ocr-mlx-vlm", target_os = "macos")))]
+    let resolved_mlx_model_path: Option<std::path::PathBuf> = None;
+
     let pipeline = PipelineConfig::from_settings(
         &settings,
         resolved_detection_model_path,
         resolved_ocr_model_path,
+        resolved_mlx_model_path,
     );
 
     let env_backend_present = std::env::var("SUBFAST_BACKEND").is_ok();

@@ -25,6 +25,7 @@ pub enum OcrBackend {
     Vision,
     Onnx,
     Noop,
+    MlxVlm,
 }
 
 #[derive(Debug, Default)]
@@ -35,6 +36,7 @@ pub struct CliSources {
     pub detection_onnx_model_from_cli: bool,
     pub ocr_backend_from_cli: bool,
     pub ocr_onnx_model_from_cli: bool,
+    pub ocr_mlx_model_from_cli: bool,
     pub detection_luma_target_from_cli: bool,
     pub detection_luma_delta_from_cli: bool,
     pub decoder_channel_capacity_from_cli: bool,
@@ -49,6 +51,7 @@ impl CliSources {
             detection_onnx_model_from_cli: value_from_cli(matches, "onnx_model"),
             ocr_backend_from_cli: value_from_cli(matches, "ocr_backend"),
             ocr_onnx_model_from_cli: value_from_cli(matches, "ocr_onnx_model"),
+            ocr_mlx_model_from_cli: value_from_cli(matches, "ocr_mlx_model"),
             detection_luma_target_from_cli: value_from_cli(matches, "detection_luma_target"),
             detection_luma_delta_from_cli: value_from_cli(matches, "detection_luma_delta"),
             decoder_channel_capacity_from_cli: value_from_cli(matches, "decoder_channel_capacity"),
@@ -132,6 +135,10 @@ pub struct CliArgs {
     /// Path or URI to the ONNX OCR model
     #[arg(long = "ocr-onnx-model", id = "ocr_onnx_model")]
     pub ocr_onnx_model: Option<String>,
+
+    /// Local model path for the mlx_vlm OCR backend
+    #[arg(long = "ocr-mlx-model", id = "ocr_mlx_model")]
+    pub ocr_mlx_model: Option<String>,
 
     /// Target Y-plane brightness used by the luma-band detector (0-255)
     #[arg(

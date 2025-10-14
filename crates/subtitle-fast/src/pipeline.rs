@@ -14,6 +14,8 @@ use crate::stage::sorter::FrameSorter;
 use crate::stage::subtitle_gen::{GeneratedSubtitle, SubtitleGen, SubtitleGenError};
 use crate::stage::{PipelineStage, StageInput, StageOutput};
 use subtitle_fast_decoder::{DynYPlaneProvider, YPlaneError};
+#[cfg(all(feature = "ocr-mlx-vlm", target_os = "macos"))]
+use subtitle_fast_ocr::MlxVlmOcrEngine;
 #[cfg(feature = "ocr-onnx")]
 use subtitle_fast_ocr::OnnxOcrEngine;
 #[cfg(all(target_os = "macos", feature = "ocr-vision"))]
@@ -36,6 +38,7 @@ pub struct PipelineConfig {
 pub struct OcrPipelineConfig {
     pub backend: OcrBackend,
     pub onnx_model_path: Option<PathBuf>,
+    pub mlx_vlm_model_path: Option<PathBuf>,
 }
 
 impl PipelineConfig {
@@ -43,6 +46,7 @@ impl PipelineConfig {
         settings: &EffectiveSettings,
         detection_onnx_model_path: Option<PathBuf>,
         ocr_onnx_model_path: Option<PathBuf>,
+        ocr_mlx_model_path: Option<PathBuf>,
     ) -> Self {
         Self {
             output: settings.output.clone(),
@@ -52,6 +56,7 @@ impl PipelineConfig {
             ocr: OcrPipelineConfig {
                 backend: settings.ocr.backend,
                 onnx_model_path: ocr_onnx_model_path,
+                mlx_vlm_model_path: ocr_mlx_model_path,
             },
         }
     }
@@ -192,6 +197,7 @@ fn build_ocr_engine(pipeline: &PipelineConfig) -> Result<Arc<dyn OcrEngine>, Ocr
     match pipeline.ocr.backend {
         OcrBackend::Vision => build_vision_engine(),
         OcrBackend::Onnx => build_onnx_engine(pipeline.ocr.onnx_model_path.as_ref()),
+        OcrBackend::MlxVlm => build_mlx_vlm_engine(pipeline.ocr.mlx_vlm_model_path.as_ref()),
         OcrBackend::Noop => build_noop_engine(),
         OcrBackend::Auto => build_auto_ocr_engine(pipeline),
     }
@@ -236,12 +242,31 @@ fn build_onnx_engine(_path: Option<&PathBuf>) -> Result<Arc<dyn OcrEngine>, OcrE
     ))
 }
 
+#[cfg(all(feature = "ocr-mlx-vlm", target_os = "macos"))]
+fn build_mlx_vlm_engine(path: Option<&PathBuf>) -> Result<Arc<dyn OcrEngine>, OcrError> {
+    let model_path = path
+        .cloned()
+        .ok_or_else(|| OcrError::backend("mlx_vlm model path not configured"))?;
+    let engine = MlxVlmOcrEngine::new(model_path)?;
+    engine.warm_up()?;
+    Ok(Arc::new(engine))
+}
+
+#[cfg(any(not(feature = "ocr-mlx-vlm"), not(target_os = "macos")))]
+fn build_mlx_vlm_engine(_path: Option<&PathBuf>) -> Result<Arc<dyn OcrEngine>, OcrError> {
+    Err(OcrError::backend(
+        "mlx_vlm OCR backend is not enabled in this build",
+    ))
+}
+
 #[cfg(all(target_os = "macos", feature = "ocr-vision"))]
 fn build_auto_ocr_engine(pipeline: &PipelineConfig) -> Result<Arc<dyn OcrEngine>, OcrError> {
     match build_vision_engine() {
         Ok(engine) => Ok(engine),
         Err(err) => {
             if let Some(engine) = maybe_build_onnx(pipeline)? {
+                Ok(engine)
+            } else if let Some(engine) = maybe_build_mlx(pipeline)? {
                 Ok(engine)
             } else {
                 Err(err)
@@ -253,6 +278,8 @@ fn build_auto_ocr_engine(pipeline: &PipelineConfig) -> Result<Arc<dyn OcrEngine>
 #[cfg(not(all(target_os = "macos", feature = "ocr-vision")))]
 fn build_auto_ocr_engine(pipeline: &PipelineConfig) -> Result<Arc<dyn OcrEngine>, OcrError> {
     if let Some(engine) = maybe_build_onnx(pipeline)? {
+        Ok(engine)
+    } else if let Some(engine) = maybe_build_mlx(pipeline)? {
         Ok(engine)
     } else {
         build_noop_engine()
@@ -266,6 +293,20 @@ fn maybe_build_onnx(pipeline: &PipelineConfig) -> Result<Option<Arc<dyn OcrEngin
     } else {
         Ok(None)
     }
+}
+
+#[cfg(all(feature = "ocr-mlx-vlm", target_os = "macos"))]
+fn maybe_build_mlx(pipeline: &PipelineConfig) -> Result<Option<Arc<dyn OcrEngine>>, OcrError> {
+    if pipeline.ocr.mlx_vlm_model_path.is_some() {
+        build_mlx_vlm_engine(pipeline.ocr.mlx_vlm_model_path.as_ref()).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(any(not(feature = "ocr-mlx-vlm"), not(target_os = "macos")))]
+fn maybe_build_mlx(_pipeline: &PipelineConfig) -> Result<Option<Arc<dyn OcrEngine>>, OcrError> {
+    Ok(None)
 }
 
 #[cfg(not(feature = "ocr-onnx"))]

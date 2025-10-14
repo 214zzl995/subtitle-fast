@@ -13,6 +13,7 @@ default = [
     "detector-vision",
     "ocr-vision",
     "ocr-onnx",
+    "ocr-mlx-vlm",
 ]
 backend-ffmpeg = ["subtitle-fast-decoder/backend-ffmpeg"]
 backend-videotoolbox = ["subtitle-fast-decoder/backend-videotoolbox"]
@@ -22,6 +23,7 @@ detector-onnx = ["subtitle-fast-validator/detector-onnx"]
 detector-vision = ["subtitle-fast-validator/detector-vision"]
 ocr-vision = ["subtitle-fast-ocr/engine-vision"]
 ocr-onnx = ["subtitle-fast-ocr/engine-onnx"]
+ocr-mlx-vlm = ["subtitle-fast-ocr/engine-mlx-vlm"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

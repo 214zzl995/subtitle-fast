@@ -26,6 +26,7 @@ onnx_model = "/path/to/model.onnx"
 [ocr]
 backend = "auto"
 # onnx_model = "/path/to/ocr-model.onnx"
+# mlx_vlm_model = "/path/to/mlx-vlm-model.mlx"
 
 [decoder]
 # backend = "ffmpeg"
