@@ -9,12 +9,11 @@ use ort::error::OrtError;
 use ort::session::{Session, SessionBuilder};
 use ort::value::Value;
 
-use crate::config::FrameMetadata;
-
 use super::{
     DetectionRegion, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
     SubtitleDetectionResult, SubtitleDetector,
 };
+use subtitle_fast_decoder::YPlaneFrame;
 
 const MODEL_INPUT_WIDTH: usize = 640;
 const MODEL_INPUT_HEIGHT: usize = 640;
@@ -132,9 +131,9 @@ impl SubtitleDetector for OnnxPpocrDetector {
 
     fn detect(
         &self,
-        y_plane: &[u8],
-        _metadata: &FrameMetadata,
+        frame: &YPlaneFrame,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
+        let y_plane = frame.data();
         let required = self
             .config
             .stride

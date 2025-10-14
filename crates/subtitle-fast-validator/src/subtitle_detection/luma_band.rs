@@ -5,12 +5,11 @@ use std::arch::is_aarch64_feature_detected;
 #[cfg(target_arch = "x86_64")]
 use std::arch::is_x86_feature_detected;
 
-use crate::config::FrameMetadata;
-
 use super::{
     DetectionRegion, LumaBandConfig, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
     SubtitleDetectionResult, SubtitleDetector,
 };
+use subtitle_fast_decoder::YPlaneFrame;
 
 const RLSA_H_GAP: usize = 18;
 const RLSA_V_GAP: usize = 3;
@@ -58,9 +57,9 @@ impl SubtitleDetector for LumaBandDetector {
 
     fn detect(
         &self,
-        y_plane: &[u8],
-        _metadata: &FrameMetadata,
+        frame: &YPlaneFrame,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
+        let y_plane = frame.data();
         if y_plane.len() < self.required_len {
             return Err(SubtitleDetectionError::InsufficientData {
                 data_len: y_plane.len(),

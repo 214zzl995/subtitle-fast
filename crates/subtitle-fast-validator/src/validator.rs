@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-use crate::config::{FrameMetadata, FrameValidatorConfig};
+use crate::config::FrameValidatorConfig;
 use crate::detection::SubtitleDetectionPipeline;
+use crate::subtitle_detection::RoiConfig;
 use crate::subtitle_detection::SubtitleDetectionError;
 use crate::subtitle_detection::SubtitleDetectionResult;
 use subtitle_fast_decoder::YPlaneFrame;
@@ -23,9 +24,16 @@ impl FrameValidator {
     pub async fn process_frame(
         &self,
         frame: YPlaneFrame,
-        metadata: FrameMetadata,
-    ) -> Option<SubtitleDetectionResult> {
-        self.operations.process_frame(frame, metadata).await
+    ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
+        self.process_frame_with_roi(frame, None).await
+    }
+
+    pub async fn process_frame_with_roi(
+        &self,
+        frame: YPlaneFrame,
+        roi: Option<RoiConfig>,
+    ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
+        self.operations.process_frame(frame, roi).await
     }
 
     pub async fn finalize(&self) {
@@ -47,12 +55,12 @@ impl ProcessingOperations {
     async fn process_frame(
         &self,
         frame: YPlaneFrame,
-        metadata: FrameMetadata,
-    ) -> Option<SubtitleDetectionResult> {
+        roi: Option<RoiConfig>,
+    ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
         if let Some(pipeline) = self.detection.as_ref() {
-            pipeline.process(&frame, &metadata).await
+            pipeline.process(&frame, roi).await
         } else {
-            None
+            Ok(SubtitleDetectionResult::empty())
         }
     }
 

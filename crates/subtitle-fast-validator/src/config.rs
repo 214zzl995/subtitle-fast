@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use crate::subtitle_detection::{
     RoiConfig, SubtitleDetectorKind, DEFAULT_LUMA_DELTA, DEFAULT_LUMA_TARGET,
@@ -53,7 +52,7 @@ pub struct SubtitleDetectionOptions {
     pub enabled: bool,
     pub detector: SubtitleDetectorKind,
     pub onnx_model_path: Option<PathBuf>,
-    pub roi_override: Option<RoiConfig>,
+    pub roi: Option<RoiConfig>,
     pub luma_band: LumaBandOptions,
     pub frame_dump: Option<FrameDumpConfig>,
 }
@@ -64,7 +63,7 @@ impl Default for SubtitleDetectionOptions {
             enabled: true,
             detector: SubtitleDetectorKind::LumaBand,
             onnx_model_path: None,
-            roi_override: None,
+            roi: None,
             luma_band: LumaBandOptions::default(),
             frame_dump: None,
         }
@@ -84,12 +83,4 @@ impl Default for LumaBandOptions {
             delta: DEFAULT_LUMA_DELTA,
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct FrameMetadata {
-    pub frame_index: u64,
-    pub decoder_frame_index: Option<u64>,
-    pub processed_index: u64,
-    pub timestamp: Option<Duration>,
 }

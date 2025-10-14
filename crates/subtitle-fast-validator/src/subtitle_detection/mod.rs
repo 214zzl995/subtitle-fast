@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use crate::config::FrameMetadata;
 use serde::Serialize;
+use subtitle_fast_decoder::YPlaneFrame;
 use thiserror::Error;
 
 pub mod luma_band;
@@ -53,7 +53,7 @@ fn backend_for_kind(kind: SubtitleDetectorKind) -> Option<&'static dyn DetectorB
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RoiConfig {
     pub x: f32,
     pub y: f32,
@@ -75,6 +75,16 @@ pub struct SubtitleDetectionResult {
     pub has_subtitle: bool,
     pub max_score: f32,
     pub regions: Vec<DetectionRegion>,
+}
+
+impl SubtitleDetectionResult {
+    pub fn empty() -> Self {
+        Self {
+            has_subtitle: false,
+            max_score: 0.0,
+            regions: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -325,8 +335,7 @@ impl SubtitleDetectorKind {
 pub trait SubtitleDetector: Send + Sync {
     fn detect(
         &self,
-        y_plane: &[u8],
-        metadata: &FrameMetadata,
+        frame: &YPlaneFrame,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError>;
 
     fn ensure_available(config: &SubtitleDetectionConfig) -> Result<(), SubtitleDetectionError>

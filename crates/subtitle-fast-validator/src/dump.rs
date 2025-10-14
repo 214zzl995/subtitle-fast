@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
-use crate::config::{FrameDumpConfig, FrameMetadata, ImageOutputFormat};
+use crate::config::{FrameDumpConfig, ImageOutputFormat};
 use crate::subtitle_detection::{DetectionRegion, SubtitleDetectionResult};
 use subtitle_fast_decoder::YPlaneFrame;
 use thiserror::Error;
@@ -23,13 +24,9 @@ impl FrameDumpOperation {
     pub async fn process(
         &self,
         frame: &YPlaneFrame,
-        metadata: &FrameMetadata,
-        detection: Option<&SubtitleDetectionResult>,
+        detection: &SubtitleDetectionResult,
     ) -> Result<(), WriteFrameError> {
-        let frame_index = frame
-            .frame_index()
-            .or(metadata.decoder_frame_index)
-            .unwrap_or(metadata.frame_index);
+        let frame_index = frame_identifier(frame);
         write_frame(
             frame,
             frame_index,
@@ -50,7 +47,7 @@ async fn write_frame(
     index: u64,
     directory: &Path,
     format: ImageOutputFormat,
-    detection: Option<&SubtitleDetectionResult>,
+    detection: &SubtitleDetectionResult,
 ) -> Result<(), WriteFrameError> {
     use image::codecs::jpeg::JpegEncoder;
     use image::codecs::png::PngEncoder;
@@ -86,9 +83,7 @@ async fn write_frame(
         dest_row.copy_from_slice(&data[start..end]);
     }
 
-    let rects = detection
-        .map(|result| regions_to_rects(&result.regions, width, height))
-        .unwrap_or_default();
+    let rects = regions_to_rects(&detection.regions, width, height);
 
     if matches!(&format, ImageOutputFormat::Yuv) {
         if !rects.is_empty() {
@@ -211,6 +206,22 @@ fn regions_to_rects(
     }
 
     rects
+}
+
+fn frame_identifier(frame: &YPlaneFrame) -> u64 {
+    frame
+        .frame_index()
+        .or_else(|| frame.timestamp().map(duration_millis))
+        .unwrap_or_default()
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    let millis = duration.as_millis();
+    if millis > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        millis as u64
+    }
 }
 
 fn draw_rectangles_luma(buffer: &mut [u8], width: usize, height: usize, rects: &[Rect]) {
