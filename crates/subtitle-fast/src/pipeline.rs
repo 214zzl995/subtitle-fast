@@ -52,13 +52,6 @@ pub async fn run_pipeline(
 
     let output_manager =
         OutputManager::new(_pipeline.image_dump.clone(), _pipeline.json_dump.clone());
-    let mut frame_sender = None;
-    let mut frame_worker = None;
-    if let Some(manager) = output_manager.as_ref() {
-        let (sender, worker) = manager.spawn_frame_worker();
-        frame_sender = Some(sender);
-        frame_worker = Some(worker);
-    }
 
     let validator = match build_validator(_pipeline) {
         Ok(validator) => validator,
@@ -88,7 +81,7 @@ pub async fn run_pipeline(
         validator,
         _pipeline.detection_samples_per_second,
         Arc::new(DefaultSubtitleBandStrategy::default()),
-        frame_sender.clone(),
+        output_manager.clone(),
     ))
     .apply(StageInput {
         stream: sampled_stream,
@@ -120,14 +113,6 @@ pub async fn run_pipeline(
 
     if let Some((err, processed_count)) = failure {
         return Err((err, processed_count));
-    }
-
-    drop(frame_sender);
-
-    if let Some(worker) = frame_worker {
-        if let Err(err) = worker.await {
-            eprintln!("frame output worker failed: {err}");
-        }
     }
 
     if let Some(manager) = output_manager {

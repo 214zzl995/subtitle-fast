@@ -3,8 +3,6 @@ use std::sync::Arc;
 use crate::settings::{ImageDumpSettings, JsonDumpSettings};
 use crate::stage::detection::SubtitleSegment;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::task::JoinHandle;
 
 use super::error::OutputError;
 use super::image::ImageOutput;
@@ -34,26 +32,7 @@ impl OutputManager {
         }))
     }
 
-    pub fn spawn_frame_worker(
-        self: &Arc<Self>,
-    ) -> (UnboundedSender<FrameAnalysisSample>, JoinHandle<()>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let manager = Arc::clone(self);
-        let handle = tokio::spawn(async move {
-            manager.consume_frames(rx).await;
-        });
-        (tx, handle)
-    }
-
-    async fn consume_frames(self: Arc<Self>, mut rx: UnboundedReceiver<FrameAnalysisSample>) {
-        while let Some(sample) = rx.recv().await {
-            if let Err(err) = self.process_frame(sample).await {
-                eprintln!("frame output error: {err}");
-            }
-        }
-    }
-
-    async fn process_frame(&self, sample: FrameAnalysisSample) -> Result<(), OutputError> {
+    pub async fn publish_frame(&self, sample: FrameAnalysisSample) -> Result<(), OutputError> {
         if let Some(image) = self.image.as_ref() {
             image.write(&sample).await?;
         }
