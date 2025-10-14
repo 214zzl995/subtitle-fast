@@ -1,5 +1,9 @@
 use std::pin::Pin;
 
+pub mod detection;
+pub mod sampler;
+pub mod sorter;
+
 use futures_util::Stream;
 
 pub struct StageInput<I> {

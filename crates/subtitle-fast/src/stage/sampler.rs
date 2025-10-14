@@ -5,7 +5,7 @@ use std::time::Duration;
 use futures_util::{StreamExt, stream::unfold};
 use tokio::sync::mpsc;
 
-use crate::stage::{PipelineStage, StageInput, StageOutput};
+use super::{PipelineStage, StageInput, StageOutput};
 use subtitle_fast_decoder::{YPlaneError, YPlaneFrame, YPlaneResult};
 
 const SAMPLER_CHANNEL_CAPACITY: usize = 1;
@@ -24,110 +24,24 @@ pub enum FrameType {
 #[derive(Debug, Clone)]
 pub struct SamplerContext {
     estimated_fps: Option<f64>,
-    #[allow(dead_code)]
-    samples_per_second: u32,
-    #[allow(dead_code)]
-    subtitle_band_span: usize,
-    #[allow(dead_code)]
-    segment_span: usize,
 }
 
 impl SamplerContext {
-    fn initial(samples_per_second: u32) -> Self {
-        let samples = samples_per_second.max(1) as usize;
+    fn initial() -> Self {
         Self {
             estimated_fps: None,
-            samples_per_second,
-            subtitle_band_span: 1,
-            segment_span: samples,
         }
     }
 
-    fn with_plan(samples_per_second: u32, estimated_fps: f64, plan: SubtitleBandPlan) -> Self {
+    fn with_estimate(estimated_fps: f64) -> Self {
         Self {
             estimated_fps: Some(estimated_fps),
-            samples_per_second,
-            subtitle_band_span: plan.subtitle_band_span,
-            segment_span: plan.segment_span,
         }
     }
 
     #[allow(dead_code)]
     pub fn estimated_fps(&self) -> Option<f64> {
         self.estimated_fps
-    }
-
-    #[allow(dead_code)]
-    pub fn samples_per_second(&self) -> u32 {
-        self.samples_per_second
-    }
-
-    #[allow(dead_code)]
-    pub fn subtitle_band_span(&self) -> usize {
-        self.subtitle_band_span
-    }
-
-    #[allow(dead_code)]
-    pub fn segment_span(&self) -> usize {
-        self.segment_span
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct SubtitleBandPlan {
-    subtitle_band_span: usize,
-    segment_span: usize,
-}
-
-impl SubtitleBandPlan {
-    pub fn new(subtitle_band_span: usize, segment_span: usize) -> Self {
-        let subtitle_band_span = subtitle_band_span.max(1);
-        let segment_span = segment_span.max(1);
-        Self {
-            subtitle_band_span,
-            segment_span,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn subtitle_band_span(&self) -> usize {
-        self.subtitle_band_span
-    }
-
-    #[allow(dead_code)]
-    pub fn segment_span(&self) -> usize {
-        self.segment_span
-    }
-
-    pub fn pool_capacity(&self, fps: f64) -> usize {
-        if fps.is_finite() && fps > 0.0 {
-            let base = fps.round().max(1.0) as usize;
-            base.saturating_add(self.subtitle_band_span.saturating_mul(self.segment_span))
-        } else {
-            self.subtitle_band_span.saturating_mul(self.segment_span)
-        }
-    }
-}
-
-pub trait SubtitleBandStrategy: Send + Sync {
-    fn compute(&self, fps: f64, samples_per_second: u32) -> SubtitleBandPlan;
-}
-
-#[derive(Default)]
-pub struct DefaultSubtitleBandStrategy;
-
-impl SubtitleBandStrategy for DefaultSubtitleBandStrategy {
-    fn compute(&self, fps: f64, samples_per_second: u32) -> SubtitleBandPlan {
-        if !fps.is_finite() || fps <= 0.0 {
-            let samples = samples_per_second.max(1) as usize;
-            return SubtitleBandPlan::new(1, samples);
-        }
-
-        let samples = samples_per_second.max(1) as usize;
-        let frames_per_sample = (fps / samples as f64).round().max(1.0) as usize;
-        let subtitle_band_span = frames_per_sample.min(samples);
-
-        SubtitleBandPlan::new(subtitle_band_span, frames_per_sample)
     }
 }
 
@@ -179,11 +93,6 @@ impl SampledFrame {
         &self.context
     }
 
-    #[allow(dead_code)]
-    pub fn subtitle_band_span(&self) -> usize {
-        self.context.subtitle_band_span()
-    }
-
     pub async fn finish(self) {
         let SampledFrame {
             frame_index,
@@ -203,22 +112,11 @@ impl SampledFrame {
 
 pub struct FrameSampler {
     samples_per_second: u32,
-    strategy: Arc<dyn SubtitleBandStrategy>,
 }
 
 impl FrameSampler {
     pub fn new(samples_per_second: u32) -> Self {
-        Self::with_strategy(
-            samples_per_second,
-            Arc::new(DefaultSubtitleBandStrategy::default()),
-        )
-    }
-
-    pub fn with_strategy(samples_per_second: u32, strategy: Arc<dyn SubtitleBandStrategy>) -> Self {
-        Self {
-            samples_per_second,
-            strategy,
-        }
+        Self { samples_per_second }
     }
 }
 
@@ -239,13 +137,12 @@ impl PipelineStage<YPlaneResult<YPlaneFrame>> for FrameSampler {
         } = input;
 
         let samples_per_second = self.samples_per_second;
-        let strategy = self.strategy.clone();
         let (tx, rx) = mpsc::channel::<SamplerResult>(SAMPLER_CHANNEL_CAPACITY);
         let (completion_tx, mut completion_rx) = mpsc::channel::<PoolEntry>(MAX_POOL_CAPACITY);
 
         tokio::spawn(async move {
             let mut upstream = stream;
-            let mut worker = SamplerWorker::new(samples_per_second, strategy, completion_tx);
+            let mut worker = SamplerWorker::new(samples_per_second, completion_tx);
 
             loop {
                 tokio::select! {
@@ -294,26 +191,18 @@ struct SamplerWorker {
     pool: SamplerPool,
     schedule: SampleSchedule,
     fps: FpsEstimator,
-    samples_per_second: u32,
     context: Arc<SamplerContext>,
-    strategy: Arc<dyn SubtitleBandStrategy>,
     completion_tx: mpsc::Sender<PoolEntry>,
 }
 
 impl SamplerWorker {
-    fn new(
-        samples_per_second: u32,
-        strategy: Arc<dyn SubtitleBandStrategy>,
-        completion_tx: mpsc::Sender<PoolEntry>,
-    ) -> Self {
+    fn new(samples_per_second: u32, completion_tx: mpsc::Sender<PoolEntry>) -> Self {
         Self {
             processed: 0,
             pool: SamplerPool::new(DEFAULT_POOL_CAPACITY),
             schedule: SampleSchedule::new(samples_per_second),
             fps: FpsEstimator::new(),
-            samples_per_second,
-            context: Arc::new(SamplerContext::initial(samples_per_second)),
-            strategy,
+            context: Arc::new(SamplerContext::initial()),
             completion_tx,
         }
     }
@@ -363,8 +252,6 @@ impl SamplerWorker {
             }
         }
 
-        println!("sampler pool size: {}", self.pool.len());
-
         Ok(())
     }
 
@@ -379,17 +266,16 @@ impl SamplerWorker {
             }
         }
 
-        let plan = self.strategy.compute(fps, self.samples_per_second);
-        let mut capacity = plan.pool_capacity(fps);
+        let mut capacity = if fps.is_finite() && fps > 0.0 {
+            fps.ceil().max(1.0) as usize
+        } else {
+            DEFAULT_POOL_CAPACITY
+        };
         if capacity > MAX_POOL_CAPACITY {
             capacity = MAX_POOL_CAPACITY;
         }
         self.pool.set_capacity(capacity);
-        self.context = Arc::new(SamplerContext::with_plan(
-            self.samples_per_second,
-            fps,
-            plan,
-        ));
+        self.context = Arc::new(SamplerContext::with_estimate(fps));
     }
 }
 
@@ -433,10 +319,6 @@ impl SamplerPool {
         while self.entries.len() > self.capacity {
             self.entries.pop_front();
         }
-    }
-
-    fn len(&self) -> usize {
-        self.entries.len()
     }
 }
 

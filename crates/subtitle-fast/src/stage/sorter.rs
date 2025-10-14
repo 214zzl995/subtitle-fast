@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use futures_util::{Stream, StreamExt};
 
-use crate::stage::{PipelineStage, StageInput, StageOutput};
+use super::{PipelineStage, StageInput, StageOutput};
 use subtitle_fast_decoder::{YPlaneFrame, YPlaneResult};
 
 pub struct FrameSorter;

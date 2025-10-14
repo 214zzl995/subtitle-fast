@@ -1,14 +1,20 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use tokio_stream::StreamExt;
 
 use crate::cli::{DetectionBackend, DumpFormat};
-use crate::sampler::{FrameSampler, SampledFrame};
 use crate::settings::EffectiveSettings;
-use crate::sorter::FrameSorter;
+use crate::stage::detection::{
+    DefaultSubtitleBandStrategy, SubtitleDetectionStage, SubtitleSegment, SubtitleStageError,
+};
+use crate::stage::sampler::FrameSampler;
+use crate::stage::sorter::FrameSorter;
 use crate::stage::{PipelineStage, StageInput, StageOutput};
 use subtitle_fast_decoder::{DynYPlaneProvider, YPlaneError};
-use subtitle_fast_validator::SubtitleDetectorKind;
+use subtitle_fast_validator::subtitle_detection::SubtitleDetectionError;
+use subtitle_fast_validator::{FrameValidator, FrameValidatorConfig, SubtitleDetectorKind};
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -43,6 +49,11 @@ pub async fn run_pipeline(
     let initial_total_frames = provider.total_frames();
     let initial_stream = provider.into_stream();
 
+    let validator = match build_validator(_pipeline) {
+        Ok(validator) => validator,
+        Err(err) => return Err((map_detection_error(err), 0)),
+    };
+
     let StageOutput {
         stream: sorted_stream,
         total_frames: sorted_total_frames,
@@ -59,18 +70,32 @@ pub async fn run_pipeline(
         total_frames: sorted_total_frames,
     });
 
-    let mut stream = sampled_stream;
-    let mut processed: u64 = 0;
+    let StageOutput {
+        stream: mut detection_stream,
+        total_frames: _detection_total_frames,
+    } = Box::new(SubtitleDetectionStage::new(
+        validator,
+        _pipeline.detection_samples_per_second,
+        Arc::new(DefaultSubtitleBandStrategy::default()),
+    ))
+    .apply(StageInput {
+        stream: sampled_stream,
+        total_frames: _sampled_total_frames,
+    });
+
     let mut failure: Option<(YPlaneError, u64)> = None;
 
-    while let Some(frame) = stream.next().await {
-        match frame {
-            Ok(sampled) => {
-                processed = processed.saturating_add(1);
-                handle_sampled_frame(sampled).await;
+    while let Some(event) = detection_stream.next().await {
+        match event {
+            Ok(segment) => {
+                handle_segment(segment);
             }
-            Err(err) => {
-                failure = Some((err, processed));
+            Err(SubtitleStageError::Decoder { error, processed }) => {
+                failure = Some((error, processed));
+                break;
+            }
+            Err(SubtitleStageError::Detection(err)) => {
+                failure = Some((map_detection_error(err), 0));
                 break;
             }
         }
@@ -83,12 +108,6 @@ pub async fn run_pipeline(
     Ok(())
 }
 
-async fn handle_sampled_frame(frame: SampledFrame) {
-    // Placeholder to keep the compiler happy until the detector stage is wired in.
-    // Future implementations will route sampled vs skipped frames downstream.
-    frame.finish().await;
-}
-
 fn map_detection_backend(backend: DetectionBackend) -> SubtitleDetectorKind {
     match backend {
         DetectionBackend::Auto => SubtitleDetectorKind::Auto,
@@ -96,4 +115,58 @@ fn map_detection_backend(backend: DetectionBackend) -> SubtitleDetectorKind {
         DetectionBackend::Vision => SubtitleDetectorKind::MacVision,
         DetectionBackend::Luma => SubtitleDetectorKind::LumaBand,
     }
+}
+
+fn build_validator(pipeline: &PipelineConfig) -> Result<FrameValidator, SubtitleDetectionError> {
+    let mut config = FrameValidatorConfig::default();
+    let detection = &mut config.detection;
+    detection.detector = pipeline.detection_backend;
+    detection.onnx_model_path = pipeline.onnx_model_path.clone();
+    if let Some(target) = pipeline.detection_luma_target {
+        detection.luma_band.target_luma = target;
+    }
+    if let Some(delta) = pipeline.detection_luma_delta {
+        detection.luma_band.delta = delta;
+    }
+    FrameValidator::new(config)
+}
+
+fn handle_segment(segment: SubtitleSegment) {
+    let SubtitleSegment {
+        frame,
+        max_score,
+        region,
+        start,
+        end,
+    } = segment;
+    let start = format_timestamp(start);
+    let end = format_timestamp(end);
+    let frame_index = frame
+        .frame_index()
+        .map(|idx| idx.to_string())
+        .unwrap_or_else(|| "n/a".into());
+    let frame_ts = format_timestamp(frame.timestamp());
+    println!(
+        "subtitle segment {} -> {} (score {:.2}) frame {} @ {} region x:{:.1} y:{:.1} w:{:.1} h:{:.1}",
+        start,
+        end,
+        max_score,
+        frame_index,
+        frame_ts,
+        region.x,
+        region.y,
+        region.width,
+        region.height
+    );
+}
+
+fn format_timestamp(ts: Option<Duration>) -> String {
+    match ts {
+        Some(value) => format!("{:.3}s", value.as_secs_f64()),
+        None => "n/a".into(),
+    }
+}
+
+fn map_detection_error(err: SubtitleDetectionError) -> YPlaneError {
+    YPlaneError::configuration(err.to_string())
 }
