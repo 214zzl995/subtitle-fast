@@ -1,6 +1,7 @@
 mod backend;
 mod cli;
 mod model;
+mod output;
 mod pipeline;
 mod progress;
 mod settings;
@@ -51,8 +52,11 @@ async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, YPlaneError> 
 
     let settings = resolve_settings(&cli_args, &cli_sources).map_err(map_config_error)?;
 
-    if let Some(dir) = settings.dump_dir.as_ref() {
-        fs::create_dir_all(dir)?;
+    if let Some(image) = settings.image_dump.as_ref() {
+        fs::create_dir_all(&image.dir)?;
+    }
+    if let Some(json) = settings.json_dump.as_ref() {
+        fs::create_dir_all(&json.dir)?;
     }
 
     #[cfg(feature = "detector-onnx")]

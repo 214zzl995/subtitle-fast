@@ -5,10 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, UnboundedSender};
 
 use super::sampler::{FrameHistory, SampledFrame, SamplerContext, SamplerResult};
 use super::{PipelineStage, StageInput, StageOutput};
+use crate::output::FrameAnalysisSample;
 use subtitle_fast_decoder::{YPlaneError, YPlaneFrame};
 use subtitle_fast_validator::FrameValidator;
 use subtitle_fast_validator::subtitle_detection::{
@@ -51,6 +52,7 @@ pub struct SubtitleDetectionStage {
     validator: FrameValidator,
     samples_per_second: u32,
     strategy: Arc<dyn SubtitleBandStrategy>,
+    frame_sender: Option<UnboundedSender<FrameAnalysisSample>>,
 }
 
 impl SubtitleDetectionStage {
@@ -58,11 +60,13 @@ impl SubtitleDetectionStage {
         validator: FrameValidator,
         samples_per_second: u32,
         strategy: Arc<dyn SubtitleBandStrategy>,
+        frame_sender: Option<UnboundedSender<FrameAnalysisSample>>,
     ) -> Self {
         Self {
             validator,
             samples_per_second,
             strategy,
+            frame_sender,
         }
     }
 }
@@ -83,11 +87,13 @@ impl PipelineStage<SamplerResult> for SubtitleDetectionStage {
         let validator = self.validator.clone();
         let samples_per_second = self.samples_per_second;
         let strategy = self.strategy.clone();
+        let frame_sender = self.frame_sender.clone();
         let (tx, rx) = mpsc::channel::<SubtitleStageResult>(24);
 
         tokio::spawn(async move {
             let mut upstream = stream;
-            let mut worker = SubtitleDetectionWorker::new(validator, samples_per_second, strategy);
+            let mut worker =
+                SubtitleDetectionWorker::new(validator, samples_per_second, strategy, frame_sender);
 
             loop {
                 let item = upstream.next().await;
@@ -169,6 +175,7 @@ struct SubtitleDetectionWorker {
     samples_per_second: u32,
     strategy: Arc<dyn SubtitleBandStrategy>,
     processed_samples: u64,
+    frame_sender: Option<UnboundedSender<FrameAnalysisSample>>,
 }
 
 impl SubtitleDetectionWorker {
@@ -176,6 +183,7 @@ impl SubtitleDetectionWorker {
         validator: FrameValidator,
         samples_per_second: u32,
         strategy: Arc<dyn SubtitleBandStrategy>,
+        frame_sender: Option<UnboundedSender<FrameAnalysisSample>>,
     ) -> Self {
         Self {
             validator,
@@ -186,6 +194,7 @@ impl SubtitleDetectionWorker {
             samples_per_second,
             strategy,
             processed_samples: 0,
+            frame_sender,
         }
     }
 
@@ -195,6 +204,22 @@ impl SubtitleDetectionWorker {
             .compute_span(context.estimated_fps(), self.samples_per_second)
             .max(1);
         self.required_consecutive = span;
+    }
+
+    fn emit_frame(
+        &self,
+        frame: &YPlaneFrame,
+        detection: &SubtitleDetectionResult,
+        roi: Option<RoiConfig>,
+    ) {
+        if let Some(sender) = self.frame_sender.as_ref() {
+            let sample = FrameAnalysisSample {
+                frame: frame.clone(),
+                detection: detection.clone(),
+                roi,
+            };
+            let _ = sender.send(sample);
+        }
     }
 
     async fn handle_sample(
@@ -218,6 +243,7 @@ impl SubtitleDetectionWorker {
             .process_frame_with_roi(frame.clone(), roi)
             .await
             .map_err(SubtitleStageError::Detection)?;
+        self.emit_frame(&frame, &detection, roi);
         sample.finish().await;
 
         if detection.has_subtitle {

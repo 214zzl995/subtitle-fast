@@ -15,6 +15,7 @@ struct FileConfig {
     backend: Option<String>,
     dump_dir: Option<String>,
     dump_format: Option<String>,
+    dump: Option<DumpFileConfig>,
     detection_samples_per_second: Option<u32>,
     detection_backend: Option<String>,
     onnx_model: Option<String>,
@@ -23,11 +24,36 @@ struct FileConfig {
     decoder_channel_capacity: Option<usize>,
 }
 
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(default)]
+struct DumpFileConfig {
+    image: Option<ImageDumpFileConfig>,
+    json: Option<JsonDumpFileConfig>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(default)]
+struct ImageDumpFileConfig {
+    enable: Option<bool>,
+    dir: Option<String>,
+    format: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(default)]
+struct JsonDumpFileConfig {
+    enable: Option<bool>,
+    dir: Option<String>,
+    frames: Option<String>,
+    segments: Option<String>,
+    pretty: Option<bool>,
+}
+
 #[derive(Debug)]
 pub struct EffectiveSettings {
     pub backend: Option<String>,
-    pub dump_dir: Option<PathBuf>,
-    pub dump_format: DumpFormat,
+    pub image_dump: Option<ImageDumpSettings>,
+    pub json_dump: Option<JsonDumpSettings>,
     pub detection_samples_per_second: u32,
     pub detection_backend: DetectionBackend,
     pub onnx_model: Option<String>,
@@ -37,6 +63,25 @@ pub struct EffectiveSettings {
     pub detection_luma_delta: Option<u8>,
     pub decoder_channel_capacity: Option<usize>,
 }
+
+#[derive(Debug, Clone)]
+pub struct ImageDumpSettings {
+    pub dir: PathBuf,
+    pub format: DumpFormat,
+}
+
+#[derive(Debug, Clone)]
+pub struct JsonDumpSettings {
+    pub dir: PathBuf,
+    pub segments_filename: String,
+    pub frames_filename: String,
+    pub pretty: bool,
+}
+
+const DEFAULT_FRAMES_JSON: &str = "frames.json";
+const DEFAULT_SEGMENTS_JSON: &str = "segments.json";
+const DEFAULT_IMAGE_DUMP_DIR: &str = "dump/frames";
+const DEFAULT_JSON_DUMP_DIR: &str = "dump";
 
 #[derive(Debug)]
 pub enum ConfigError {
@@ -178,6 +223,7 @@ fn merge(
         backend: file_backend,
         dump_dir: file_dump_dir,
         dump_format: file_dump_format,
+        dump: file_dump_sections,
         detection_samples_per_second: file_detection_sps,
         detection_backend: file_detection_backend,
         onnx_model: file_onnx_model,
@@ -186,21 +232,101 @@ fn merge(
         decoder_channel_capacity: file_decoder_channel_capacity,
     } = file;
 
+    let (file_dump_image, file_dump_json) = match file_dump_sections {
+        Some(section) => (section.image, section.json),
+        None => (None, None),
+    };
+
     let mut backend = normalize_string(cli.backend.clone());
     if backend.is_none() {
         backend = normalize_string(file_backend);
     }
 
-    let dump_dir = cli.dump_dir.clone().map(expand_pathbuf).or_else(|| {
-        file_dump_dir.and_then(|dir| resolve_path_from_config(dir, config_dir.as_deref()))
-    });
+    let legacy_dump_dir = normalize_string(file_dump_dir.clone());
 
     let mut dump_format = cli.dump_format;
     if !sources.dump_format_from_cli {
-        if let Some(format_str) = normalize_string(file_dump_format) {
+        if let Some(format_str) = file_dump_image
+            .as_ref()
+            .and_then(|cfg| normalize_string(cfg.format.clone()))
+            .or_else(|| normalize_string(file_dump_format))
+        {
             dump_format = parse_dump_format(&format_str, config_path.as_ref())?;
         }
     }
+
+    let image_enabled_config = match file_dump_image.as_ref().and_then(|cfg| cfg.enable) {
+        Some(value) => value,
+        None => legacy_dump_dir.is_some(),
+    };
+    let image_enabled = cli.dump_dir.is_some() || image_enabled_config;
+
+    let image_dir_path = if image_enabled {
+        if let Some(dir) = cli.dump_dir.clone() {
+            Some(expand_pathbuf(dir))
+        } else if let Some(path) = file_dump_image
+            .as_ref()
+            .and_then(|cfg| normalize_string(cfg.dir.clone()))
+            .and_then(|dir| resolve_path_from_config(dir, config_dir.as_deref()))
+        {
+            Some(path)
+        } else if let Some(path) = legacy_dump_dir
+            .as_ref()
+            .and_then(|dir| resolve_path_from_config(dir.clone(), config_dir.as_deref()))
+        {
+            Some(path)
+        } else {
+            Some(
+                resolve_path_from_config(DEFAULT_IMAGE_DUMP_DIR.to_string(), config_dir.as_deref())
+                    .unwrap_or_else(|| PathBuf::from(DEFAULT_IMAGE_DUMP_DIR)),
+            )
+        }
+    } else {
+        None
+    };
+
+    let image_dump = image_dir_path.clone().map(|dir| ImageDumpSettings {
+        dir,
+        format: dump_format,
+    });
+
+    let json_enabled = file_dump_json
+        .as_ref()
+        .and_then(|cfg| cfg.enable)
+        .unwrap_or(false);
+
+    let json_dump = if json_enabled {
+        let resolved_dir = file_dump_json
+            .as_ref()
+            .and_then(|cfg| normalize_string(cfg.dir.clone()))
+            .and_then(|value| resolve_path_from_config(value, config_dir.as_deref()))
+            .unwrap_or_else(|| {
+                resolve_path_from_config(DEFAULT_JSON_DUMP_DIR.to_string(), config_dir.as_deref())
+                    .unwrap_or_else(|| PathBuf::from(DEFAULT_JSON_DUMP_DIR))
+            });
+
+        let frames_filename = file_dump_json
+            .as_ref()
+            .and_then(|cfg| normalize_string(cfg.frames.clone()))
+            .unwrap_or_else(|| DEFAULT_FRAMES_JSON.to_string());
+        let segments_filename = file_dump_json
+            .as_ref()
+            .and_then(|cfg| normalize_string(cfg.segments.clone()))
+            .unwrap_or_else(|| DEFAULT_SEGMENTS_JSON.to_string());
+        let pretty = file_dump_json
+            .as_ref()
+            .and_then(|cfg| cfg.pretty)
+            .unwrap_or(true);
+
+        Some(JsonDumpSettings {
+            dir: resolved_dir,
+            segments_filename,
+            frames_filename,
+            pretty,
+        })
+    } else {
+        None
+    };
 
     let mut detection_backend = cli.detection_backend;
     if !sources.detection_backend_from_cli {
@@ -271,8 +397,8 @@ fn merge(
 
     Ok(EffectiveSettings {
         backend,
-        dump_dir,
-        dump_format,
+        image_dump,
+        json_dump,
         detection_samples_per_second,
         detection_backend,
         onnx_model,

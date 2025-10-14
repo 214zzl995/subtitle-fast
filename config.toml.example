@@ -4,11 +4,21 @@
 # Decoding backend to force (optional). Supported values:
 #   mock | ffmpeg | videotoolbox | openh264 | mft
 # backend = "ffmpeg"
-# Directory to store dumped frames when enabled.
-# dump_dir = "/path/to/output"
-# Image format for dumped frames when dump_dir is set.
-# Valid values: jpeg | png | webp | yuv
-dump_format = "jpeg"
+[dump.image]
+# enable must be true to emit image dumps
+enable = false
+# dir = "/path/to/output/frames"
+# format must be one of: jpeg | png | webp | yuv
+format = "jpeg"
+
+[dump.json]
+# enable must be true to emit json dumps
+enable = false
+# dir = "/path/to/output" # defaults to ./dump when omitted
+frames = "frames.json"
+segments = "segments.json"
+pretty = true
+
 # Subtitle detection sampling frequency (frames per second). Minimum: 1.
 detection_samples_per_second = 7
 # Subtitle detection backend preference.

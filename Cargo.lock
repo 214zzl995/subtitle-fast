@@ -1716,6 +1716,7 @@ dependencies = [
  "directories",
  "futures-util",
  "hex",
+ "image",
  "indicatif",
  "reqwest",
  "serde",
@@ -1758,7 +1759,6 @@ name = "subtitle-fast-validator"
 version = "0.1.0"
 dependencies = [
  "cc",
- "image",
  "ndarray",
  "once_cell",
  "ort",

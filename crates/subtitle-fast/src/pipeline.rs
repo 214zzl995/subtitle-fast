@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use tokio_stream::StreamExt;
 
-use crate::cli::{DetectionBackend, DumpFormat};
-use crate::settings::EffectiveSettings;
+use crate::cli::DetectionBackend;
+use crate::output::OutputManager;
+use crate::settings::{EffectiveSettings, ImageDumpSettings, JsonDumpSettings};
 use crate::stage::detection::{
     DefaultSubtitleBandStrategy, SubtitleDetectionStage, SubtitleSegment, SubtitleStageError,
 };
@@ -19,8 +20,8 @@ use subtitle_fast_validator::{FrameValidator, FrameValidatorConfig, SubtitleDete
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct PipelineConfig {
-    pub dump_dir: Option<PathBuf>,
-    pub dump_format: DumpFormat,
+    pub image_dump: Option<ImageDumpSettings>,
+    pub json_dump: Option<JsonDumpSettings>,
     pub detection_samples_per_second: u32,
     pub detection_backend: SubtitleDetectorKind,
     pub onnx_model_path: Option<PathBuf>,
@@ -31,8 +32,8 @@ pub struct PipelineConfig {
 impl PipelineConfig {
     pub fn from_settings(settings: &EffectiveSettings, onnx_model_path: Option<PathBuf>) -> Self {
         Self {
-            dump_dir: settings.dump_dir.clone(),
-            dump_format: settings.dump_format,
+            image_dump: settings.image_dump.clone(),
+            json_dump: settings.json_dump.clone(),
             detection_samples_per_second: settings.detection_samples_per_second,
             detection_backend: map_detection_backend(settings.detection_backend),
             onnx_model_path,
@@ -48,6 +49,16 @@ pub async fn run_pipeline(
 ) -> Result<(), (YPlaneError, u64)> {
     let initial_total_frames = provider.total_frames();
     let initial_stream = provider.into_stream();
+
+    let output_manager =
+        OutputManager::new(_pipeline.image_dump.clone(), _pipeline.json_dump.clone());
+    let mut frame_sender = None;
+    let mut frame_worker = None;
+    if let Some(manager) = output_manager.as_ref() {
+        let (sender, worker) = manager.spawn_frame_worker();
+        frame_sender = Some(sender);
+        frame_worker = Some(worker);
+    }
 
     let validator = match build_validator(_pipeline) {
         Ok(validator) => validator,
@@ -77,6 +88,7 @@ pub async fn run_pipeline(
         validator,
         _pipeline.detection_samples_per_second,
         Arc::new(DefaultSubtitleBandStrategy::default()),
+        frame_sender.clone(),
     ))
     .apply(StageInput {
         stream: sampled_stream,
@@ -88,6 +100,11 @@ pub async fn run_pipeline(
     while let Some(event) = detection_stream.next().await {
         match event {
             Ok(segment) => {
+                if let Some(manager) = output_manager.as_ref() {
+                    if let Err(err) = manager.record_segment(&segment).await {
+                        eprintln!("segment output error: {err}");
+                    }
+                }
                 handle_segment(segment);
             }
             Err(SubtitleStageError::Decoder { error, processed }) => {
@@ -103,6 +120,20 @@ pub async fn run_pipeline(
 
     if let Some((err, processed_count)) = failure {
         return Err((err, processed_count));
+    }
+
+    drop(frame_sender);
+
+    if let Some(worker) = frame_worker {
+        if let Err(err) = worker.await {
+            eprintln!("frame output worker failed: {err}");
+        }
+    }
+
+    if let Some(manager) = output_manager {
+        if let Err(err) = manager.finalize().await {
+            eprintln!("output finalize error: {err}");
+        }
     }
 
     Ok(())

@@ -1,79 +1,66 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
 
-use crate::config::{FrameDumpConfig, ImageOutputFormat};
-use crate::subtitle_detection::{DetectionRegion, SubtitleDetectionResult};
-use subtitle_fast_decoder::YPlaneFrame;
-use thiserror::Error;
+use crate::cli::DumpFormat;
+use crate::output::error::OutputError;
+use crate::output::types::{FrameAnalysisSample, frame_identifier};
+use crate::settings::ImageDumpSettings;
+use image::codecs::jpeg::JpegEncoder;
+use image::codecs::png::PngEncoder;
+use image::codecs::webp::WebPEncoder;
+use image::{ColorType, ImageEncoder};
+use subtitle_fast_validator::subtitle_detection::DetectionRegion;
 use tokio::task;
 
-pub(crate) struct FrameDumpOperation {
-    directory: Arc<PathBuf>,
-    format: ImageOutputFormat,
+pub(crate) struct ImageOutput {
+    directory: PathBuf,
+    format: DumpFormat,
 }
 
-impl FrameDumpOperation {
-    pub fn new(config: FrameDumpConfig) -> Self {
+impl ImageOutput {
+    pub(crate) fn new(settings: ImageDumpSettings) -> Self {
         Self {
-            directory: Arc::from(config.directory),
-            format: config.format,
+            directory: settings.dir,
+            format: settings.format,
         }
     }
 
-    pub async fn process(
-        &self,
-        frame: &YPlaneFrame,
-        detection: &SubtitleDetectionResult,
-    ) -> Result<(), WriteFrameError> {
+    pub(crate) async fn write(&self, sample: &FrameAnalysisSample) -> Result<(), OutputError> {
+        let frame = &sample.frame;
+        let detection = &sample.detection;
         let frame_index = frame_identifier(frame);
-        write_frame(
-            frame,
-            frame_index,
-            self.directory.as_ref(),
-            self.format,
-            detection,
-        )
-        .await
-    }
-
-    pub async fn finalize(&self) -> Result<(), WriteFrameError> {
-        Ok(())
+        write_frame(frame, frame_index, &self.directory, self.format, detection).await
     }
 }
 
 async fn write_frame(
-    frame: &YPlaneFrame,
+    frame: &subtitle_fast_decoder::YPlaneFrame,
     index: u64,
     directory: &Path,
-    format: ImageOutputFormat,
-    detection: &SubtitleDetectionResult,
-) -> Result<(), WriteFrameError> {
-    use image::codecs::jpeg::JpegEncoder;
-    use image::codecs::png::PngEncoder;
-    use image::codecs::webp::WebPEncoder;
-    use image::{ColorType, ImageEncoder};
-
+    format: DumpFormat,
+    detection: &subtitle_fast_validator::subtitle_detection::SubtitleDetectionResult,
+) -> Result<(), OutputError> {
     let width = frame.width() as usize;
     let height = frame.height() as usize;
     if width == 0 || height == 0 {
         return Ok(());
     }
     let stride = frame.stride();
-    let required = stride
-        .checked_mul(height)
-        .ok_or(WriteFrameError::PlaneBounds {
-            stride,
-            width,
-            height,
-        })?;
+    let required = stride.checked_mul(height).ok_or_else(|| {
+        OutputError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "stride overflow",
+        ))
+    })?;
     let data = frame.data();
     if data.len() < required {
-        return Err(WriteFrameError::PlaneBounds {
-            stride,
-            width,
-            height,
-        });
+        return Err(OutputError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "invalid plane length: got {} expected at least {}",
+                data.len(),
+                required
+            ),
+        )));
     }
 
     let mut buffer = vec![0u8; width * height];
@@ -85,16 +72,17 @@ async fn write_frame(
 
     let rects = regions_to_rects(&detection.regions, width, height);
 
-    if matches!(&format, ImageOutputFormat::Yuv) {
+    if matches!(format, DumpFormat::Yuv) {
         if !rects.is_empty() {
             draw_rectangles_luma(&mut buffer, width, height, &rects);
         }
         let filename = format!("frame_{index}.yuv");
         let path = directory.join(filename);
+        let buffer = buffer;
         task::spawn_blocking(move || std::fs::write(path, buffer))
             .await
             .map_err(|err| {
-                WriteFrameError::Io(std::io::Error::new(
+                OutputError::Io(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     format!("join error: {err}"),
                 ))
@@ -108,25 +96,25 @@ async fn write_frame(
     }
 
     let (encoded, extension): (Vec<u8>, &'static str) = match format {
-        ImageOutputFormat::Jpeg { quality } => {
+        DumpFormat::Jpeg => {
             let mut encoded = Vec::new();
-            let mut encoder = JpegEncoder::new_with_quality(&mut encoded, quality);
+            let mut encoder = JpegEncoder::new_with_quality(&mut encoded, 90);
             encoder.encode(&rgb_buffer, frame.width(), frame.height(), ColorType::Rgb8)?;
             (encoded, "jpg")
         }
-        ImageOutputFormat::Png => {
+        DumpFormat::Png => {
             let mut encoded = Vec::new();
             let encoder = PngEncoder::new(&mut encoded);
             encoder.write_image(&rgb_buffer, frame.width(), frame.height(), ColorType::Rgb8)?;
             (encoded, "png")
         }
-        ImageOutputFormat::Webp => {
+        DumpFormat::Webp => {
             let mut encoded = Vec::new();
             let encoder = WebPEncoder::new_lossless(&mut encoded);
             encoder.encode(&rgb_buffer, frame.width(), frame.height(), ColorType::Rgb8)?;
             (encoded, "webp")
         }
-        ImageOutputFormat::Yuv => unreachable!(),
+        DumpFormat::Yuv => unreachable!(),
     };
 
     let filename = format!("frame_{index}.{extension}");
@@ -134,26 +122,12 @@ async fn write_frame(
     task::spawn_blocking(move || std::fs::write(path, encoded))
         .await
         .map_err(|err| {
-            WriteFrameError::Io(std::io::Error::new(
+            OutputError::Io(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 format!("join error: {err}"),
             ))
         })??;
     Ok(())
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum WriteFrameError {
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("encoding error: {0}")]
-    Encode(#[from] image::ImageError),
-    #[error("invalid plane dimensions stride={stride} width={width} height={height}")]
-    PlaneBounds {
-        stride: usize,
-        width: usize,
-        height: usize,
-    },
 }
 
 #[derive(Clone, Copy)]
@@ -206,22 +180,6 @@ fn regions_to_rects(
     }
 
     rects
-}
-
-fn frame_identifier(frame: &YPlaneFrame) -> u64 {
-    frame
-        .frame_index()
-        .or_else(|| frame.timestamp().map(duration_millis))
-        .unwrap_or_default()
-}
-
-fn duration_millis(duration: Duration) -> u64 {
-    let millis = duration.as_millis();
-    if millis > u64::MAX as u128 {
-        u64::MAX
-    } else {
-        millis as u64
-    }
 }
 
 fn draw_rectangles_luma(buffer: &mut [u8], width: usize, height: usize, rects: &[Rect]) {

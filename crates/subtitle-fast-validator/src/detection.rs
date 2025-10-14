@@ -1,5 +1,4 @@
 use crate::config::SubtitleDetectionOptions;
-use crate::dump::FrameDumpOperation;
 use crate::subtitle_detection::{
     build_detector, LumaBandConfig, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
     SubtitleDetectionResult, SubtitleDetector,
@@ -11,23 +10,18 @@ use tokio::sync::Mutex;
 static REGION_MARGIN_PX: u32 = 5;
 
 pub(crate) struct SubtitleDetectionPipeline {
-    dump: Option<FrameDumpOperation>,
     state: Mutex<SubtitleDetectionState>,
     enabled: bool,
 }
 
 impl SubtitleDetectionPipeline {
-    pub fn from_options(mut options: SubtitleDetectionOptions) -> Option<Self> {
-        let dump_cfg = options.frame_dump.take();
-        if !options.enabled && dump_cfg.is_none() {
+    pub fn from_options(options: SubtitleDetectionOptions) -> Option<Self> {
+        if !options.enabled {
             return None;
         }
 
-        let dump = dump_cfg.map(FrameDumpOperation::new);
-        let enabled = options.enabled;
         Some(Self {
-            dump,
-            enabled,
+            enabled: options.enabled,
             state: Mutex::new(SubtitleDetectionState::new(options)),
         })
     }
@@ -53,22 +47,10 @@ impl SubtitleDetectionPipeline {
             );
         }
 
-        if let Some(dump) = self.dump.as_ref() {
-            if let Err(err) = dump.process(frame, &detection).await {
-                eprintln!("frame dump error: {err}");
-            }
-        }
-
         Ok(detection)
     }
 
     pub async fn finalize(&self) {
-        if let Some(dump) = self.dump.as_ref() {
-            if let Err(err) = dump.finalize().await {
-                eprintln!("frame dump finalize error: {err}");
-            }
-        }
-
         if !self.enabled {
             return;
         }
