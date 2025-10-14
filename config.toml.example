@@ -2,8 +2,8 @@
 # Input video path must still be provided on the command line.
 # Every CLI flag overrides the corresponding setting here.
 
-# Final output artifact path (optional).
-# output = "/path/to/subtitles.json"
+# Final subtitle output path (optional).
+# output = "/path/to/subtitles.srt"
 
 [debug.image]
 # dir = "/path/to/debug/frames"

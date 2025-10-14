@@ -3,6 +3,7 @@ use std::pin::Pin;
 pub mod detection;
 pub mod sampler;
 pub mod sorter;
+pub mod subtitle_gen;
 
 use futures_util::Stream;
 

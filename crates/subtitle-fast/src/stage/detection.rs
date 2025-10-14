@@ -1,15 +1,19 @@
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::f32;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use serde::Serialize;
+use tokio::fs;
 use tokio::sync::mpsc;
 
 use super::sampler::{FrameHistory, SampledFrame, SamplerContext, SamplerResult};
 use super::{PipelineStage, StageInput, StageOutput};
-use crate::output::{FrameAnalysisSample, OutputManager};
+use crate::settings::{ImageDumpSettings, JsonDumpSettings};
+use crate::tools::YPlaneSaver;
 use subtitle_fast_decoder::{YPlaneError, YPlaneFrame};
 use subtitle_fast_validator::FrameValidator;
 use subtitle_fast_validator::subtitle_detection::{
@@ -52,7 +56,8 @@ pub struct SubtitleDetectionStage {
     validator: FrameValidator,
     samples_per_second: u32,
     strategy: Arc<dyn SubtitleBandStrategy>,
-    output: Option<Arc<OutputManager>>,
+    image_settings: Option<ImageDumpSettings>,
+    json_settings: Option<JsonDumpSettings>,
 }
 
 impl SubtitleDetectionStage {
@@ -60,13 +65,15 @@ impl SubtitleDetectionStage {
         validator: FrameValidator,
         samples_per_second: u32,
         strategy: Arc<dyn SubtitleBandStrategy>,
-        output: Option<Arc<OutputManager>>,
+        image_settings: Option<ImageDumpSettings>,
+        json_settings: Option<JsonDumpSettings>,
     ) -> Self {
         Self {
             validator,
             samples_per_second,
             strategy,
-            output,
+            image_settings,
+            json_settings,
         }
     }
 }
@@ -87,19 +94,26 @@ impl PipelineStage<SamplerResult> for SubtitleDetectionStage {
         let validator = self.validator.clone();
         let samples_per_second = self.samples_per_second;
         let strategy = self.strategy.clone();
-        let output = self.output.clone();
+        let image_settings = self.image_settings.clone();
+        let json_settings = self.json_settings.clone();
         let (tx, rx) = mpsc::channel::<SubtitleStageResult>(24);
 
         tokio::spawn(async move {
             let mut upstream = stream;
-            let mut worker =
-                SubtitleDetectionWorker::new(validator, samples_per_second, strategy, output);
+            let mut worker = SubtitleDetectionWorker::new(
+                validator,
+                samples_per_second,
+                strategy,
+                image_settings,
+                json_settings,
+            );
 
             loop {
                 let item = upstream.next().await;
                 match item {
                     Some(Ok(sample)) => match worker.handle_sample(sample).await {
                         Ok(Some(segment)) => {
+                            worker.record_segment(&segment);
                             if tx.send(Ok(segment)).await.is_err() {
                                 break;
                             }
@@ -125,7 +139,12 @@ impl PipelineStage<SamplerResult> for SubtitleDetectionStage {
             }
 
             if let Some(segment) = worker.finalize_active().await {
+                worker.record_segment(&segment);
                 let _ = tx.send(Ok(segment)).await;
+            }
+
+            if let Err(err) = worker.finalize_outputs().await {
+                eprintln!("debug finalize error: {err}");
             }
 
             worker.validator.finalize().await;
@@ -175,7 +194,7 @@ struct SubtitleDetectionWorker {
     samples_per_second: u32,
     strategy: Arc<dyn SubtitleBandStrategy>,
     processed_samples: u64,
-    output: Option<Arc<OutputManager>>,
+    debug: DebugOutputs,
 }
 
 impl SubtitleDetectionWorker {
@@ -183,7 +202,8 @@ impl SubtitleDetectionWorker {
         validator: FrameValidator,
         samples_per_second: u32,
         strategy: Arc<dyn SubtitleBandStrategy>,
-        output: Option<Arc<OutputManager>>,
+        image_settings: Option<ImageDumpSettings>,
+        json_settings: Option<JsonDumpSettings>,
     ) -> Self {
         Self {
             validator,
@@ -194,7 +214,7 @@ impl SubtitleDetectionWorker {
             samples_per_second,
             strategy,
             processed_samples: 0,
-            output,
+            debug: DebugOutputs::new(image_settings, json_settings),
         }
     }
 
@@ -207,21 +227,20 @@ impl SubtitleDetectionWorker {
     }
 
     async fn emit_frame(
-        &self,
+        &mut self,
         frame: &YPlaneFrame,
         detection: &SubtitleDetectionResult,
         roi: Option<RoiConfig>,
     ) {
-        if let Some(manager) = self.output.as_ref() {
-            let sample = FrameAnalysisSample {
-                frame: frame.clone(),
-                detection: detection.clone(),
-                roi,
-            };
-            if let Err(err) = manager.publish_frame(sample).await {
-                eprintln!("frame output error: {err}");
-            }
-        }
+        self.debug.record_frame(frame, detection, roi).await;
+    }
+
+    fn record_segment(&mut self, segment: &SubtitleSegment) {
+        self.debug.record_segment(segment);
+    }
+
+    async fn finalize_outputs(&mut self) -> std::io::Result<()> {
+        self.debug.finalize().await
     }
 
     async fn handle_sample(
@@ -518,6 +537,183 @@ impl SubtitleDetectionWorker {
     }
 }
 
+struct DebugOutputs {
+    image: Option<YPlaneSaver>,
+    json: Option<JsonSink>,
+}
+
+impl DebugOutputs {
+    fn new(
+        image_settings: Option<ImageDumpSettings>,
+        json_settings: Option<JsonDumpSettings>,
+    ) -> Self {
+        let image = image_settings.map(|settings| YPlaneSaver::new(settings.dir, settings.format));
+        let json = json_settings.map(JsonSink::new);
+        Self { image, json }
+    }
+
+    async fn record_frame(
+        &mut self,
+        frame: &YPlaneFrame,
+        detection: &SubtitleDetectionResult,
+        roi: Option<RoiConfig>,
+    ) {
+        if let Some(saver) = self.image.as_ref() {
+            let index = frame_identifier(frame);
+            if let Err(err) = saver.save(frame, detection, roi, index).await {
+                eprintln!("frame dump error: {err}");
+            }
+        }
+        if let Some(json) = self.json.as_mut() {
+            json.record_frame(frame, detection, roi);
+        }
+    }
+
+    fn record_segment(&mut self, segment: &SubtitleSegment) {
+        if let Some(json) = self.json.as_mut() {
+            json.record_segment(segment);
+        }
+    }
+
+    async fn finalize(&mut self) -> std::io::Result<()> {
+        if let Some(json) = self.json.as_mut() {
+            json.flush().await?;
+        }
+        Ok(())
+    }
+}
+
+struct JsonSink {
+    frames: Vec<FrameEntry>,
+    segments: Vec<SegmentEntry>,
+    dir: PathBuf,
+    frames_name: String,
+    segments_name: String,
+    pretty: bool,
+}
+
+impl JsonSink {
+    fn new(settings: JsonDumpSettings) -> Self {
+        Self {
+            frames: Vec::new(),
+            segments: Vec::new(),
+            dir: settings.dir,
+            frames_name: settings.frames_filename,
+            segments_name: settings.segments_filename,
+            pretty: settings.pretty,
+        }
+    }
+
+    fn record_frame(
+        &mut self,
+        frame: &YPlaneFrame,
+        detection: &SubtitleDetectionResult,
+        roi: Option<RoiConfig>,
+    ) {
+        self.frames.push(FrameEntry {
+            frame_index: frame.frame_index(),
+            timestamp: frame.timestamp().map(duration_secs),
+            has_subtitle: detection.has_subtitle,
+            max_score: detection.max_score,
+            roi: roi.map(RoiEntry::from),
+            regions: detection.regions.clone(),
+        });
+    }
+
+    fn record_segment(&mut self, segment: &SubtitleSegment) {
+        self.segments.push(SegmentEntry {
+            frame_index: segment.frame.frame_index(),
+            frame_timestamp: segment.frame.timestamp().map(duration_secs),
+            start: segment.start.map(duration_secs),
+            end: segment.end.map(duration_secs),
+            max_score: segment.max_score,
+            region: RoiEntry::from(segment.region),
+        });
+    }
+
+    async fn flush(&mut self) -> std::io::Result<()> {
+        if self.frames.is_empty() && self.segments.is_empty() {
+            return Ok(());
+        }
+
+        self.frames
+            .sort_by_key(|entry| entry.frame_index.unwrap_or(u64::MAX));
+        self.segments
+            .sort_by_key(|entry| entry.frame_index.unwrap_or(u64::MAX));
+
+        fs::create_dir_all(&self.dir).await?;
+
+        let frames_path = self.dir.join(&self.frames_name);
+        let segments_path = self.dir.join(&self.segments_name);
+
+        let frames_data = if self.pretty {
+            serde_json::to_vec_pretty(&self.frames).map_err(json_error_to_io)?
+        } else {
+            serde_json::to_vec(&self.frames).map_err(json_error_to_io)?
+        };
+        let segments_data = if self.pretty {
+            serde_json::to_vec_pretty(&self.segments).map_err(json_error_to_io)?
+        } else {
+            serde_json::to_vec(&self.segments).map_err(json_error_to_io)?
+        };
+
+        fs::write(frames_path, frames_data).await?;
+        fs::write(segments_path, segments_data).await?;
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+struct FrameEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<f64>,
+    has_subtitle: bool,
+    max_score: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    roi: Option<RoiEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    regions: Vec<DetectionRegion>,
+}
+
+#[derive(Serialize)]
+struct SegmentEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_timestamp: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end: Option<f64>,
+    max_score: f32,
+    region: RoiEntry,
+}
+
+#[derive(Serialize, Clone, Copy)]
+struct RoiEntry {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+impl From<RoiConfig> for RoiEntry {
+    fn from(value: RoiConfig) -> Self {
+        Self {
+            x: value.x,
+            y: value.y,
+            width: value.width,
+            height: value.height,
+        }
+    }
+}
+
+fn json_error_to_io(err: serde_json::Error) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, err)
+}
+
 #[derive(Debug, Clone)]
 pub struct SubtitleSegment {
     pub frame: YPlaneFrame,
@@ -525,6 +721,21 @@ pub struct SubtitleSegment {
     pub region: RoiConfig,
     pub start: Option<Duration>,
     pub end: Option<Duration>,
+}
+
+fn frame_identifier(frame: &YPlaneFrame) -> u64 {
+    frame
+        .frame_index()
+        .or_else(|| frame.timestamp().map(duration_millis))
+        .unwrap_or_default()
+}
+
+fn duration_secs(value: Duration) -> f64 {
+    value.as_secs_f64()
+}
+
+fn duration_millis(value: Duration) -> u64 {
+    value.as_millis() as u64
 }
 
 fn best_region(result: &SubtitleDetectionResult) -> Option<DetectionRegion> {

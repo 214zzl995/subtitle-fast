@@ -5,15 +5,16 @@ use std::time::Duration;
 use tokio_stream::StreamExt;
 
 use crate::cli::DetectionBackend;
-use crate::output::OutputManager;
 use crate::settings::{DebugOutputSettings, DetectionSettings, EffectiveSettings};
 use crate::stage::detection::{
-    DefaultSubtitleBandStrategy, SubtitleDetectionStage, SubtitleSegment, SubtitleStageError,
+    DefaultSubtitleBandStrategy, SubtitleDetectionStage, SubtitleStageError,
 };
 use crate::stage::sampler::FrameSampler;
 use crate::stage::sorter::FrameSorter;
+use crate::stage::subtitle_gen::{GeneratedSubtitle, SubtitleGen, SubtitleGenError};
 use crate::stage::{PipelineStage, StageInput, StageOutput};
 use subtitle_fast_decoder::{DynYPlaneProvider, YPlaneError};
+use subtitle_fast_ocr::{NoopOcrEngine, OcrEngine, OcrError};
 use subtitle_fast_validator::subtitle_detection::SubtitleDetectionError;
 use subtitle_fast_validator::{FrameValidator, FrameValidatorConfig, SubtitleDetectorKind};
 
@@ -44,9 +45,6 @@ pub async fn run_pipeline(
     let initial_total_frames = provider.total_frames();
     let initial_stream = provider.into_stream();
 
-    let output_manager =
-        OutputManager::new(_pipeline.debug.image.clone(), _pipeline.debug.json.clone());
-
     let validator = match build_validator(_pipeline) {
         Ok(validator) => validator,
         Err(err) => return Err((map_detection_error(err), 0)),
@@ -69,37 +67,42 @@ pub async fn run_pipeline(
     });
 
     let StageOutput {
-        stream: mut detection_stream,
-        total_frames: _detection_total_frames,
+        stream: detection_stream,
+        total_frames: detection_total_frames,
     } = Box::new(SubtitleDetectionStage::new(
         validator,
         _pipeline.detection.samples_per_second,
         Arc::new(DefaultSubtitleBandStrategy::default()),
-        output_manager.clone(),
+        _pipeline.debug.image.clone(),
+        _pipeline.debug.json.clone(),
     ))
     .apply(StageInput {
         stream: sampled_stream,
         total_frames: _sampled_total_frames,
     });
 
+    let ocr_engine = match build_ocr_engine(_pipeline) {
+        Ok(engine) => Arc::new(engine),
+        Err(err) => return Err((map_ocr_init_error(err), 0)),
+    };
+
+    let StageOutput {
+        stream: mut gen_stream,
+        total_frames: _gen_total_frames,
+    } = Box::new(SubtitleGen::new(ocr_engine, _pipeline.output.clone())).apply(StageInput {
+        stream: detection_stream,
+        total_frames: detection_total_frames,
+    });
+
     let mut failure: Option<(YPlaneError, u64)> = None;
 
-    while let Some(event) = detection_stream.next().await {
+    while let Some(event) = gen_stream.next().await {
         match event {
-            Ok(segment) => {
-                if let Some(manager) = output_manager.as_ref() {
-                    if let Err(err) = manager.record_segment(&segment).await {
-                        eprintln!("segment output error: {err}");
-                    }
-                }
-                handle_segment(segment);
+            Ok(subtitle) => {
+                log_generated_subtitle(&subtitle);
             }
-            Err(SubtitleStageError::Decoder { error, processed }) => {
-                failure = Some((error, processed));
-                break;
-            }
-            Err(SubtitleStageError::Detection(err)) => {
-                failure = Some((map_detection_error(err), 0));
+            Err(err) => {
+                failure = Some(map_subtitle_gen_error(err));
                 break;
             }
         }
@@ -109,9 +112,9 @@ pub async fn run_pipeline(
         return Err((err, processed_count));
     }
 
-    if let Some(manager) = output_manager {
-        if let Err(err) = manager.finalize().await {
-            eprintln!("output finalize error: {err}");
+    if failure.is_none() {
+        if let Some(path) = _pipeline.output.as_ref() {
+            println!("subtitle output written to {}", path.display());
         }
     }
 
@@ -141,39 +144,60 @@ fn build_validator(pipeline: &PipelineConfig) -> Result<FrameValidator, Subtitle
     FrameValidator::new(config)
 }
 
-fn handle_segment(segment: SubtitleSegment) {
-    let SubtitleSegment {
-        frame,
-        max_score,
-        region,
-        start,
-        end,
-    } = segment;
-    let start = format_timestamp(start);
-    let end = format_timestamp(end);
-    let frame_index = frame
-        .frame_index()
-        .map(|idx| idx.to_string())
-        .unwrap_or_else(|| "n/a".into());
-    let frame_ts = format_timestamp(frame.timestamp());
-    println!(
-        "subtitle segment {} -> {} (score {:.2}) frame {} @ {} region x:{:.1} y:{:.1} w:{:.1} h:{:.1}",
-        start,
-        end,
-        max_score,
-        frame_index,
-        frame_ts,
-        region.x,
-        region.y,
-        region.width,
-        region.height
-    );
+fn log_generated_subtitle(subtitle: &GeneratedSubtitle) {
+    let start = format_timestamp(Some(subtitle.start));
+    let end = format_timestamp(Some(subtitle.end));
+    let mut parts = Vec::new();
+    if let Some(frame_index) = subtitle.frame_index {
+        parts.push(format!("frame {}", frame_index));
+    }
+    if let Some(confidence) = subtitle.confidence {
+        parts.push(format!("conf {:.2}", confidence));
+    }
+    let meta = if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join(", "))
+    };
+    println!("subtitle {} -> {}{}: {}", start, end, meta, subtitle.text);
 }
 
 fn format_timestamp(ts: Option<Duration>) -> String {
     match ts {
         Some(value) => format!("{:.3}s", value.as_secs_f64()),
         None => "n/a".into(),
+    }
+}
+
+fn build_ocr_engine(_pipeline: &PipelineConfig) -> Result<NoopOcrEngine, OcrError> {
+    let engine = NoopOcrEngine::default();
+    engine.warm_up()?;
+    Ok(engine)
+}
+
+fn map_ocr_init_error(err: OcrError) -> YPlaneError {
+    YPlaneError::configuration(format!("failed to initialize OCR engine: {err}"))
+}
+
+fn map_subtitle_gen_error(err: SubtitleGenError) -> (YPlaneError, u64) {
+    match err {
+        SubtitleGenError::Upstream(SubtitleStageError::Decoder { error, processed }) => {
+            (error, processed)
+        }
+        SubtitleGenError::Upstream(SubtitleStageError::Detection(err)) => {
+            (map_detection_error(err), 0)
+        }
+        SubtitleGenError::Ocr(err) => {
+            (YPlaneError::configuration(format!("ocr failure: {err}")), 0)
+        }
+        SubtitleGenError::Writer(err) => (
+            YPlaneError::configuration(format!("subtitle output error: {err}")),
+            0,
+        ),
+        SubtitleGenError::Join(msg) => (
+            YPlaneError::configuration(format!("subtitle task error: {msg}")),
+            0,
+        ),
     }
 }
 
