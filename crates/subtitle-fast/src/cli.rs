@@ -76,6 +76,10 @@ pub struct CliArgs {
     #[arg(long = "config")]
     pub config: Option<PathBuf>,
 
+    /// Final output path for generated subtitle data
+    #[arg(long = "output")]
+    pub output: Option<PathBuf>,
+
     /// Output directory for writing sampled frames as image files
     #[arg(long = "dump-dir")]
     pub dump_dir: Option<PathBuf>,

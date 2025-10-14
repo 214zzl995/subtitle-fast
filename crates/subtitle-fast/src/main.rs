@@ -50,21 +50,23 @@ async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, YPlaneError> 
         )));
     }
 
-    let settings = resolve_settings(&cli_args, &cli_sources).map_err(map_config_error)?;
+    let resolved = resolve_settings(&cli_args, &cli_sources).map_err(map_config_error)?;
+    let config_dir = resolved.config_dir.clone();
+    let settings = resolved.settings;
 
-    if let Some(image) = settings.image_dump.as_ref() {
+    if let Some(image) = settings.debug.image.as_ref() {
         fs::create_dir_all(&image.dir)?;
     }
-    if let Some(json) = settings.json_dump.as_ref() {
+    if let Some(json) = settings.debug.json.as_ref() {
         fs::create_dir_all(&json.dir)?;
     }
 
     #[cfg(feature = "detector-onnx")]
-    let resolved_model_path = if matches!(settings.detection_backend, DetectionBackend::Onnx) {
+    let resolved_model_path = if matches!(settings.detection.backend, DetectionBackend::Onnx) {
         resolve_model_path(
-            settings.onnx_model.as_deref(),
-            settings.onnx_model_from_cli,
-            settings.config_dir.as_deref(),
+            settings.detection.onnx_model.as_deref(),
+            settings.detection.onnx_model_from_cli,
+            config_dir.as_deref(),
         )
         .await
         .map_err(map_model_error)?
@@ -79,7 +81,7 @@ async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, YPlaneError> 
 
     let env_backend_present = std::env::var("SUBFAST_BACKEND").is_ok();
     let mut config = subtitle_fast_decoder::Configuration::from_env().unwrap_or_default();
-    let backend_override = match settings.backend.as_ref() {
+    let backend_override = match settings.decoder.backend.as_ref() {
         Some(name) => Some(backend::parse_backend(name)?),
         None => None,
     };
@@ -88,7 +90,7 @@ async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, YPlaneError> 
         config.backend = backend_value;
     }
     config.input = Some(input);
-    if let Some(capacity) = settings.decoder_channel_capacity {
+    if let Some(capacity) = settings.decoder.channel_capacity {
         if let Some(non_zero) = NonZeroUsize::new(capacity) {
             config.channel_capacity = Some(non_zero);
         }

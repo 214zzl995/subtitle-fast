@@ -12,23 +12,34 @@ use crate::cli::{CliArgs, CliSources, DetectionBackend, DumpFormat};
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct FileConfig {
-    backend: Option<String>,
-    dump_dir: Option<String>,
-    dump_format: Option<String>,
-    dump: Option<DumpFileConfig>,
-    detection_samples_per_second: Option<u32>,
-    detection_backend: Option<String>,
-    onnx_model: Option<String>,
-    detection_luma_target: Option<u8>,
-    detection_luma_delta: Option<u8>,
-    decoder_channel_capacity: Option<usize>,
+    output: Option<String>,
+    debug: Option<DebugDumpFileConfig>,
+    detection: Option<DetectionFileConfig>,
+    decoder: Option<DecoderFileConfig>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(default)]
-struct DumpFileConfig {
+struct DecoderFileConfig {
+    backend: Option<String>,
+    channel_capacity: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(default)]
+struct DebugDumpFileConfig {
     image: Option<ImageDumpFileConfig>,
     json: Option<JsonDumpFileConfig>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(default)]
+struct DetectionFileConfig {
+    samples_per_second: Option<u32>,
+    backend: Option<String>,
+    onnx_model: Option<String>,
+    luma_target: Option<u8>,
+    luma_delta: Option<u8>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -51,17 +62,38 @@ struct JsonDumpFileConfig {
 
 #[derive(Debug)]
 pub struct EffectiveSettings {
-    pub backend: Option<String>,
-    pub image_dump: Option<ImageDumpSettings>,
-    pub json_dump: Option<JsonDumpSettings>,
-    pub detection_samples_per_second: u32,
-    pub detection_backend: DetectionBackend,
+    pub output: Option<PathBuf>,
+    pub debug: DebugOutputSettings,
+    pub detection: DetectionSettings,
+    pub decoder: DecoderSettings,
+}
+
+#[derive(Debug)]
+pub struct ResolvedSettings {
+    pub settings: EffectiveSettings,
+    pub config_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DetectionSettings {
+    pub samples_per_second: u32,
+    pub backend: DetectionBackend,
     pub onnx_model: Option<String>,
     pub onnx_model_from_cli: bool,
-    pub config_dir: Option<PathBuf>,
-    pub detection_luma_target: Option<u8>,
-    pub detection_luma_delta: Option<u8>,
-    pub decoder_channel_capacity: Option<usize>,
+    pub luma_target: Option<u8>,
+    pub luma_delta: Option<u8>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DecoderSettings {
+    pub backend: Option<String>,
+    pub channel_capacity: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DebugOutputSettings {
+    pub image: Option<ImageDumpSettings>,
+    pub json: Option<JsonDumpSettings>,
 }
 
 #[derive(Debug, Clone)]
@@ -156,7 +188,7 @@ impl std::error::Error for ConfigError {
 pub fn resolve_settings(
     cli: &CliArgs,
     sources: &CliSources,
-) -> Result<EffectiveSettings, ConfigError> {
+) -> Result<ResolvedSettings, ConfigError> {
     let (file, config_path) = load_config(cli.config.as_deref())?;
     merge(cli, sources, file, config_path)
 }
@@ -214,65 +246,48 @@ fn merge(
     sources: &CliSources,
     file: FileConfig,
     config_path: Option<PathBuf>,
-) -> Result<EffectiveSettings, ConfigError> {
+) -> Result<ResolvedSettings, ConfigError> {
     let config_dir = config_path
         .as_ref()
         .and_then(|path| path.parent().map(|dir| dir.to_path_buf()));
 
     let FileConfig {
-        backend: file_backend,
-        dump_dir: file_dump_dir,
-        dump_format: file_dump_format,
-        dump: file_dump_sections,
-        detection_samples_per_second: file_detection_sps,
-        detection_backend: file_detection_backend,
-        onnx_model: file_onnx_model,
-        detection_luma_target: file_luma_target,
-        detection_luma_delta: file_luma_delta,
-        decoder_channel_capacity: file_decoder_channel_capacity,
+        output: file_output,
+        debug: file_debug,
+        detection: file_detection,
+        decoder: file_decoder,
     } = file;
 
-    let (file_dump_image, file_dump_json) = match file_dump_sections {
-        Some(section) => (section.image, section.json),
-        None => (None, None),
-    };
+    let debug_cfg = file_debug.unwrap_or_default();
+    let detection_cfg = file_detection.unwrap_or_default();
+    let decoder_cfg = file_decoder.unwrap_or_default();
 
-    let mut backend = normalize_string(cli.backend.clone());
-    if backend.is_none() {
-        backend = normalize_string(file_backend);
-    }
-
-    let legacy_dump_dir = normalize_string(file_dump_dir.clone());
+    let file_debug_image = debug_cfg.image.clone();
+    let file_debug_json = debug_cfg.json.clone();
 
     let mut dump_format = cli.dump_format;
     if !sources.dump_format_from_cli {
-        if let Some(format_str) = file_dump_image
+        if let Some(format_str) = file_debug_image
             .as_ref()
             .and_then(|cfg| normalize_string(cfg.format.clone()))
-            .or_else(|| normalize_string(file_dump_format))
         {
             dump_format = parse_dump_format(&format_str, config_path.as_ref())?;
         }
     }
 
-    let image_enabled_config = match file_dump_image.as_ref().and_then(|cfg| cfg.enable) {
-        Some(value) => value,
-        None => legacy_dump_dir.is_some(),
-    };
+    let image_enabled_config = file_debug_image
+        .as_ref()
+        .and_then(|cfg| cfg.enable)
+        .unwrap_or(false);
     let image_enabled = cli.dump_dir.is_some() || image_enabled_config;
 
     let image_dir_path = if image_enabled {
         if let Some(dir) = cli.dump_dir.clone() {
             Some(expand_pathbuf(dir))
-        } else if let Some(path) = file_dump_image
+        } else if let Some(path) = file_debug_image
             .as_ref()
             .and_then(|cfg| normalize_string(cfg.dir.clone()))
             .and_then(|dir| resolve_path_from_config(dir, config_dir.as_deref()))
-        {
-            Some(path)
-        } else if let Some(path) = legacy_dump_dir
-            .as_ref()
-            .and_then(|dir| resolve_path_from_config(dir.clone(), config_dir.as_deref()))
         {
             Some(path)
         } else {
@@ -290,30 +305,31 @@ fn merge(
         format: dump_format,
     });
 
-    let json_enabled = file_dump_json
+    let json_enabled = file_debug_json
         .as_ref()
         .and_then(|cfg| cfg.enable)
         .unwrap_or(false);
 
     let json_dump = if json_enabled {
-        let resolved_dir = file_dump_json
+        let resolved_dir = file_debug_json
             .as_ref()
             .and_then(|cfg| normalize_string(cfg.dir.clone()))
             .and_then(|value| resolve_path_from_config(value, config_dir.as_deref()))
+            .or_else(|| image_dir_path.clone())
             .unwrap_or_else(|| {
                 resolve_path_from_config(DEFAULT_JSON_DUMP_DIR.to_string(), config_dir.as_deref())
                     .unwrap_or_else(|| PathBuf::from(DEFAULT_JSON_DUMP_DIR))
             });
 
-        let frames_filename = file_dump_json
+        let frames_filename = file_debug_json
             .as_ref()
             .and_then(|cfg| normalize_string(cfg.frames.clone()))
             .unwrap_or_else(|| DEFAULT_FRAMES_JSON.to_string());
-        let segments_filename = file_dump_json
+        let segments_filename = file_debug_json
             .as_ref()
             .and_then(|cfg| normalize_string(cfg.segments.clone()))
             .unwrap_or_else(|| DEFAULT_SEGMENTS_JSON.to_string());
-        let pretty = file_dump_json
+        let pretty = file_debug_json
             .as_ref()
             .and_then(|cfg| cfg.pretty)
             .unwrap_or(true);
@@ -328,85 +344,77 @@ fn merge(
         None
     };
 
-    let mut detection_backend = cli.detection_backend;
-    if !sources.detection_backend_from_cli {
-        if let Some(value) = normalize_string(file_detection_backend) {
-            detection_backend = parse_detection_backend(&value, config_path.as_ref())?;
-        }
-    }
+    let debug_output = DebugOutputSettings {
+        image: image_dump,
+        json: json_dump,
+    };
 
-    let mut detection_samples_per_second = cli.detection_samples_per_second;
-    if !sources.detection_sps_from_cli {
-        if let Some(value) = file_detection_sps {
-            if value < 1 {
-                return Err(ConfigError::InvalidValue {
-                    path: config_path,
-                    field: "detection_samples_per_second",
-                    value: value.to_string(),
-                });
-            }
-            detection_samples_per_second = value;
-        }
-    }
+    let detection_backend = resolve_detection_backend(
+        cli.detection_backend,
+        detection_cfg.backend.clone(),
+        !sources.detection_backend_from_cli,
+        config_path.as_ref(),
+    )?;
 
-    let cli_model = normalize_string(cli.onnx_model.clone());
-    let cli_model_present = sources.onnx_model_from_cli && cli_model.is_some();
-    let mut onnx_model = cli_model;
-    let mut onnx_model_from_cli = cli_model_present;
-    if !onnx_model_from_cli {
-        if let Some(value) = normalize_string(file_onnx_model) {
-            onnx_model = Some(value);
-            onnx_model_from_cli = false;
-        }
-    }
+    let detection_samples_per_second = resolve_detection_sps(
+        cli.detection_samples_per_second,
+        detection_cfg.samples_per_second,
+        !sources.detection_sps_from_cli,
+        config_path.as_ref(),
+    )?;
 
-    let mut detection_luma_target = cli.detection_luma_target;
-    if !sources.detection_luma_target_from_cli {
-        if let Some(value) = file_luma_target {
-            detection_luma_target = Some(value);
-        }
-    }
+    let (onnx_model, onnx_model_from_cli) = resolve_onnx_model(
+        cli.onnx_model.clone(),
+        sources.onnx_model_from_cli,
+        detection_cfg.onnx_model.clone(),
+    );
 
-    let mut detection_luma_delta = cli.detection_luma_delta;
-    if !sources.detection_luma_delta_from_cli {
-        if let Some(value) = file_luma_delta {
-            detection_luma_delta = Some(value);
-        }
-    }
+    let detection_luma_target = resolve_optional_override(
+        cli.detection_luma_target,
+        detection_cfg.luma_target,
+        !sources.detection_luma_target_from_cli,
+    );
 
-    let mut decoder_channel_capacity = cli.decoder_channel_capacity;
-    if let Some(0) = decoder_channel_capacity {
-        return Err(ConfigError::InvalidValue {
-            path: None,
-            field: "decoder_channel_capacity",
-            value: "0".to_string(),
-        });
-    }
-    if !sources.decoder_channel_capacity_from_cli {
-        if let Some(value) = file_decoder_channel_capacity {
-            if value == 0 {
-                return Err(ConfigError::InvalidValue {
-                    path: config_path,
-                    field: "decoder_channel_capacity",
-                    value: value.to_string(),
-                });
-            }
-            decoder_channel_capacity = Some(value);
-        }
-    }
+    let detection_luma_delta = resolve_optional_override(
+        cli.detection_luma_delta,
+        detection_cfg.luma_delta,
+        !sources.detection_luma_delta_from_cli,
+    );
 
-    Ok(EffectiveSettings {
-        backend,
-        image_dump,
-        json_dump,
-        detection_samples_per_second,
-        detection_backend,
-        onnx_model,
-        onnx_model_from_cli,
+    let decoder_channel_capacity = resolve_decoder_capacity(
+        cli.decoder_channel_capacity,
+        decoder_cfg.channel_capacity,
+        !sources.decoder_channel_capacity_from_cli,
+        config_path.as_ref(),
+    )?;
+
+    let decoder_backend = normalize_string(cli.backend.clone())
+        .or_else(|| normalize_string(decoder_cfg.backend.clone()));
+
+    let output_path = resolve_output_path(cli.output.clone(), file_output, config_dir.as_deref());
+
+    let decoder_settings = DecoderSettings {
+        backend: decoder_backend,
+        channel_capacity: decoder_channel_capacity,
+    };
+
+    let settings = EffectiveSettings {
+        output: output_path,
+        debug: debug_output,
+        detection: DetectionSettings {
+            samples_per_second: detection_samples_per_second,
+            backend: detection_backend,
+            onnx_model,
+            onnx_model_from_cli,
+            luma_target: detection_luma_target,
+            luma_delta: detection_luma_delta,
+        },
+        decoder: decoder_settings,
+    };
+
+    Ok(ResolvedSettings {
+        settings,
         config_dir,
-        detection_luma_target,
-        detection_luma_delta,
-        decoder_channel_capacity,
     })
 }
 
@@ -480,4 +488,108 @@ fn parse_detection_backend(
         field: "detection_backend",
         value: value.to_string(),
     })
+}
+
+fn resolve_detection_backend(
+    cli_backend: DetectionBackend,
+    file_backend: Option<String>,
+    use_file: bool,
+    config_path: Option<&PathBuf>,
+) -> Result<DetectionBackend, ConfigError> {
+    if use_file {
+        if let Some(value) = normalize_string(file_backend) {
+            return parse_detection_backend(&value, config_path);
+        }
+    }
+    Ok(cli_backend)
+}
+
+fn resolve_detection_sps(
+    cli_value: u32,
+    file_value: Option<u32>,
+    use_file: bool,
+    config_path: Option<&PathBuf>,
+) -> Result<u32, ConfigError> {
+    if use_file {
+        if let Some(value) = file_value {
+            if value < 1 {
+                return Err(ConfigError::InvalidValue {
+                    path: config_path.cloned(),
+                    field: "detection_samples_per_second",
+                    value: value.to_string(),
+                });
+            }
+            return Ok(value);
+        }
+    }
+    Ok(cli_value)
+}
+
+fn resolve_onnx_model(
+    cli_model: Option<String>,
+    cli_override: bool,
+    file_model: Option<String>,
+) -> (Option<String>, bool) {
+    let cli_normalized = normalize_string(cli_model);
+    if cli_override && cli_normalized.is_some() {
+        return (cli_normalized, true);
+    }
+    if let Some(value) = normalize_string(file_model) {
+        return (Some(value), false);
+    }
+    let result = cli_normalized.clone();
+    (result, cli_override && cli_normalized.is_some())
+}
+
+fn resolve_optional_override<T>(
+    cli_value: Option<T>,
+    file_value: Option<T>,
+    use_file: bool,
+) -> Option<T> {
+    if use_file {
+        if file_value.is_some() {
+            return file_value;
+        }
+    }
+    cli_value
+}
+
+fn resolve_decoder_capacity(
+    cli_value: Option<usize>,
+    file_value: Option<usize>,
+    use_file: bool,
+    config_path: Option<&PathBuf>,
+) -> Result<Option<usize>, ConfigError> {
+    let mut capacity = cli_value;
+    if let Some(0) = capacity {
+        return Err(ConfigError::InvalidValue {
+            path: None,
+            field: "decoder_channel_capacity",
+            value: "0".into(),
+        });
+    }
+    if use_file {
+        if let Some(value) = file_value {
+            if value == 0 {
+                return Err(ConfigError::InvalidValue {
+                    path: config_path.cloned(),
+                    field: "decoder_channel_capacity",
+                    value: value.to_string(),
+                });
+            }
+            capacity = Some(value);
+        }
+    }
+    Ok(capacity)
+}
+
+fn resolve_output_path(
+    cli_value: Option<PathBuf>,
+    file_value: Option<String>,
+    config_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(path) = cli_value {
+        return Some(expand_pathbuf(path));
+    }
+    normalize_string(file_value).and_then(|value| resolve_path_from_config(value, config_dir))
 }

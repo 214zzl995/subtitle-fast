@@ -6,7 +6,7 @@ use tokio_stream::StreamExt;
 
 use crate::cli::DetectionBackend;
 use crate::output::OutputManager;
-use crate::settings::{EffectiveSettings, ImageDumpSettings, JsonDumpSettings};
+use crate::settings::{DebugOutputSettings, DetectionSettings, EffectiveSettings};
 use crate::stage::detection::{
     DefaultSubtitleBandStrategy, SubtitleDetectionStage, SubtitleSegment, SubtitleStageError,
 };
@@ -20,25 +20,19 @@ use subtitle_fast_validator::{FrameValidator, FrameValidatorConfig, SubtitleDete
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct PipelineConfig {
-    pub image_dump: Option<ImageDumpSettings>,
-    pub json_dump: Option<JsonDumpSettings>,
-    pub detection_samples_per_second: u32,
-    pub detection_backend: SubtitleDetectorKind,
+    pub output: Option<PathBuf>,
+    pub debug: DebugOutputSettings,
+    pub detection: DetectionSettings,
     pub onnx_model_path: Option<PathBuf>,
-    pub detection_luma_target: Option<u8>,
-    pub detection_luma_delta: Option<u8>,
 }
 
 impl PipelineConfig {
     pub fn from_settings(settings: &EffectiveSettings, onnx_model_path: Option<PathBuf>) -> Self {
         Self {
-            image_dump: settings.image_dump.clone(),
-            json_dump: settings.json_dump.clone(),
-            detection_samples_per_second: settings.detection_samples_per_second,
-            detection_backend: map_detection_backend(settings.detection_backend),
+            output: settings.output.clone(),
+            debug: settings.debug.clone(),
+            detection: settings.detection.clone(),
             onnx_model_path,
-            detection_luma_target: settings.detection_luma_target,
-            detection_luma_delta: settings.detection_luma_delta,
         }
     }
 }
@@ -51,7 +45,7 @@ pub async fn run_pipeline(
     let initial_stream = provider.into_stream();
 
     let output_manager =
-        OutputManager::new(_pipeline.image_dump.clone(), _pipeline.json_dump.clone());
+        OutputManager::new(_pipeline.debug.image.clone(), _pipeline.debug.json.clone());
 
     let validator = match build_validator(_pipeline) {
         Ok(validator) => validator,
@@ -69,7 +63,7 @@ pub async fn run_pipeline(
     let StageOutput {
         stream: sampled_stream,
         total_frames: _sampled_total_frames,
-    } = Box::new(FrameSampler::new(_pipeline.detection_samples_per_second)).apply(StageInput {
+    } = Box::new(FrameSampler::new(_pipeline.detection.samples_per_second)).apply(StageInput {
         stream: sorted_stream,
         total_frames: sorted_total_frames,
     });
@@ -79,7 +73,7 @@ pub async fn run_pipeline(
         total_frames: _detection_total_frames,
     } = Box::new(SubtitleDetectionStage::new(
         validator,
-        _pipeline.detection_samples_per_second,
+        _pipeline.detection.samples_per_second,
         Arc::new(DefaultSubtitleBandStrategy::default()),
         output_manager.clone(),
     ))
@@ -136,12 +130,12 @@ fn map_detection_backend(backend: DetectionBackend) -> SubtitleDetectorKind {
 fn build_validator(pipeline: &PipelineConfig) -> Result<FrameValidator, SubtitleDetectionError> {
     let mut config = FrameValidatorConfig::default();
     let detection = &mut config.detection;
-    detection.detector = pipeline.detection_backend;
+    detection.detector = map_detection_backend(pipeline.detection.backend);
     detection.onnx_model_path = pipeline.onnx_model_path.clone();
-    if let Some(target) = pipeline.detection_luma_target {
+    if let Some(target) = pipeline.detection.luma_target {
         detection.luma_band.target_luma = target;
     }
-    if let Some(delta) = pipeline.detection_luma_delta {
+    if let Some(delta) = pipeline.detection.luma_delta {
         detection.luma_band.delta = delta;
     }
     FrameValidator::new(config)
