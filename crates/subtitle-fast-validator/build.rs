@@ -6,11 +6,11 @@ fn build_vision_bridge() {
         return;
     }
 
-    println!("cargo:rerun-if-changed=src/subtitle_detection/vision_bridge.m");
+    println!("cargo:rerun-if-changed=src/subtitle_detection/vision/vision_bridge.m");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
 
     let mut build = cc::Build::new();
-    build.file("src/subtitle_detection/vision_bridge.m");
+    build.file("src/subtitle_detection/vision/vision_bridge.m");
     build.flag("-fobjc-arc");
     build.compile("vision_bridge");
 

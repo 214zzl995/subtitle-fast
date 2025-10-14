@@ -6,11 +6,11 @@ fn build_videotoolbox_bridge() {
         return;
     }
 
-    println!("cargo:rerun-if-changed=src/backends/videotoolbox_bridge.m");
+    println!("cargo:rerun-if-changed=src/backends/videotoolbox/videotoolbox_bridge.m");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
 
     let mut build = cc::Build::new();
-    build.file("src/backends/videotoolbox_bridge.m");
+    build.file("src/backends/videotoolbox/videotoolbox_bridge.m");
     build.flag("-fobjc-arc");
     build.compile("videotoolbox_bridge");
 
@@ -30,10 +30,10 @@ fn build_mft_bridge() {
         return;
     }
 
-    println!("cargo:rerun-if-changed=src/backends/mft_bridge.cpp");
+    println!("cargo:rerun-if-changed=src/backends/mft/mft_bridge.cpp");
 
     let mut build = cc::Build::new();
-    build.file("src/backends/mft_bridge.cpp");
+    build.file("src/backends/mft/mft_bridge.cpp");
     build.cpp(true);
     build.flag_if_supported("/std:c++17");
     build.flag_if_supported("-std=c++17");

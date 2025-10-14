@@ -1,10 +1,17 @@
 #[cfg(target_os = "macos")]
+use std::env;
+
+#[cfg(target_os = "macos")]
 fn build_vision_bridge() {
-    println!("cargo:rerun-if-changed=src/macos/vision_ocr_bridge.m");
+    if env::var("CARGO_FEATURE_ENGINE_VISION").is_err() {
+        return;
+    }
+
+    println!("cargo:rerun-if-changed=src/backends/vision/vision_bridge.m");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
 
     let mut build = cc::Build::new();
-    build.file("src/macos/vision_ocr_bridge.m");
+    build.file("src/backends/vision/vision_bridge.m");
     build.flag("-fobjc-arc");
     build.compile("vision_ocr_bridge");
 
