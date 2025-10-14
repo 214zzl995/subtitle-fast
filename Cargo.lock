@@ -1746,6 +1746,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "subtitle-fast-ocr"
+version = "0.1.0"
+dependencies = [
+ "subtitle-fast-decoder",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "subtitle-fast-validator"
 version = "0.1.0"
 dependencies = [
