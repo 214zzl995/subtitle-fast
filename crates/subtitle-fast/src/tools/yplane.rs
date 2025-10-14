@@ -42,9 +42,18 @@ impl YPlaneComposer {
             dst.copy_from_slice(&frame.data()[start..end]);
         }
 
-        let mut rects = regions_to_rects(&detection.regions, width, height);
+        let mut rects = regions_to_rects(&detection.regions, width, height)
+            .into_iter()
+            .map(|rect| ColoredRect {
+                rect,
+                color: [255, 0, 0],
+            })
+            .collect::<Vec<_>>();
         if let Some(roi) = roi {
-            rects.push(roi_to_rect(roi, width, height));
+            rects.push(ColoredRect {
+                rect: roi_to_rect(roi, width, height),
+                color: [0, 255, 0],
+            });
         }
 
         if !rects.is_empty() {
@@ -224,15 +233,20 @@ struct Rect {
     y1: usize,
 }
 
-fn draw_rectangles_luma(buffer: &mut [u8], width: usize, height: usize, rects: &[Rect]) {
-    for rect in rects {
-        draw_rect_luma(buffer, width, height, *rect);
+struct ColoredRect {
+    rect: Rect,
+    color: [u8; 3],
+}
+
+fn draw_rectangles_luma(buffer: &mut [u8], width: usize, height: usize, rects: &[ColoredRect]) {
+    for colored in rects {
+        draw_rect_luma(buffer, width, height, colored.rect);
     }
 }
 
-fn draw_rectangles_rgb(buffer: &mut [u8], width: usize, height: usize, rects: &[Rect]) {
-    for rect in rects {
-        draw_rect_rgb(buffer, width, height, *rect);
+fn draw_rectangles_rgb(buffer: &mut [u8], width: usize, height: usize, rects: &[ColoredRect]) {
+    for colored in rects {
+        draw_rect_rgb(buffer, width, height, colored.rect, colored.color);
     }
 }
 
@@ -247,28 +261,14 @@ fn draw_rect_luma(buffer: &mut [u8], width: usize, height: usize, rect: Rect) {
     }
 }
 
-fn draw_rect_rgb(buffer: &mut [u8], width: usize, height: usize, rect: Rect) {
+fn draw_rect_rgb(buffer: &mut [u8], width: usize, height: usize, rect: Rect, color: [u8; 3]) {
     for x in rect.x0..rect.x1 {
-        set_rgb(buffer, width, height, x, rect.y0, [255, 0, 0]);
-        set_rgb(
-            buffer,
-            width,
-            height,
-            x,
-            rect.y1.saturating_sub(1),
-            [255, 0, 0],
-        );
+        set_rgb(buffer, width, height, x, rect.y0, color);
+        set_rgb(buffer, width, height, x, rect.y1.saturating_sub(1), color);
     }
     for y in rect.y0..rect.y1 {
-        set_rgb(buffer, width, height, rect.x0, y, [255, 0, 0]);
-        set_rgb(
-            buffer,
-            width,
-            height,
-            rect.x1.saturating_sub(1),
-            y,
-            [255, 0, 0],
-        );
+        set_rgb(buffer, width, height, rect.x0, y, color);
+        set_rgb(buffer, width, height, rect.x1.saturating_sub(1), y, color);
     }
 }
 

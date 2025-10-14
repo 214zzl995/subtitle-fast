@@ -167,6 +167,8 @@ impl PipelineStage<YPlaneResult<YPlaneFrame>> for FrameSampler {
                 }
             }
 
+            worker.completion_tx.take();
+
             while let Some(entry) = completion_rx.recv().await {
                 worker.reclaim(entry);
             }
@@ -192,7 +194,7 @@ struct SamplerWorker {
     schedule: SampleSchedule,
     fps: FpsEstimator,
     context: Arc<SamplerContext>,
-    completion_tx: mpsc::Sender<PoolEntry>,
+    completion_tx: Option<mpsc::Sender<PoolEntry>>,
 }
 
 impl SamplerWorker {
@@ -203,7 +205,7 @@ impl SamplerWorker {
             schedule: SampleSchedule::new(samples_per_second),
             fps: FpsEstimator::new(),
             context: Arc::new(SamplerContext::initial()),
-            completion_tx,
+            completion_tx: Some(completion_tx),
         }
     }
 
@@ -244,7 +246,10 @@ impl SamplerWorker {
                     frame,
                     history,
                     self.context.clone(),
-                    self.completion_tx.clone(),
+                    self.completion_tx
+                        .as_ref()
+                        .expect("completion channel missing")
+                        .clone(),
                 );
                 if tx.send(Ok(sample)).await.is_err() {
                     return Err(());
