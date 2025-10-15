@@ -183,6 +183,7 @@ struct ActiveSubtitle {
     start_frame_index: Option<u64>,
     best_shot: DetectionShot,
     last_positive_shot: DetectionShot,
+    regions: Vec<DetectionRegion>,
 }
 
 struct SubtitleDetectionWorker {
@@ -306,6 +307,7 @@ impl SubtitleDetectionWorker {
                 let updated = merge_regions(&active.best_shot.region, &shot.region);
                 active.roi = roi_with_margin(updated, width, height);
             }
+            append_regions(&mut active.regions, &shot.regions);
             return Ok(None);
         }
 
@@ -346,7 +348,7 @@ impl SubtitleDetectionWorker {
         history: FrameHistory,
     ) -> Result<Option<SubtitleSegment>, SubtitleStageError> {
         if let Some(mut active) = self.active.take() {
-            let (end_shot, best_update) = self.find_end(&active, &history).await?;
+            let (end_shot, best_update) = self.find_end(&mut active, &history).await?;
             if let Some(update) = best_update {
                 update_best_shot(&mut active, &update);
             }
@@ -359,7 +361,7 @@ impl SubtitleDetectionWorker {
                     end: summary.timestamp,
                     start_frame_index: active.start_frame_index,
                     end_frame_index: Some(summary.frame_index),
-                    regions: active.best_shot.regions.clone(),
+                    regions: active.regions.clone(),
                 };
                 self.window.clear();
                 return Ok(Some(segment));
@@ -380,7 +382,7 @@ impl SubtitleDetectionWorker {
                 end: active.last_positive_shot.timestamp,
                 start_frame_index: active.start_frame_index,
                 end_frame_index: Some(active.last_positive_shot.frame_index),
-                regions: active.best_shot.regions.clone(),
+                regions: active.regions.clone(),
             };
             return Some(segment);
         }
@@ -427,13 +429,19 @@ impl SubtitleDetectionWorker {
         let last_shot = last.shot.clone();
 
         let mut best_shot = first_shot.clone();
+        let mut combined_regions = Vec::new();
+        for observation in &self.window {
+            append_regions(&mut combined_regions, &observation.shot.regions);
+        }
         for observation in &self.window {
             if observation.shot.score > best_shot.score {
                 best_shot = observation.shot.clone();
             }
         }
 
-        let history_shot = self.scan_history_backward(&first_history, roi).await?;
+        let history_shot = self
+            .scan_history_backward(&first_history, roi, &mut combined_regions)
+            .await?;
         let (start_timestamp, start_frame_index);
         if let Some(history_shot) = history_shot {
             if history_shot.score > best_shot.score {
@@ -441,10 +449,12 @@ impl SubtitleDetectionWorker {
             }
             start_timestamp = history_shot.timestamp;
             start_frame_index = Some(history_shot.frame_index);
+            append_regions(&mut combined_regions, &history_shot.regions);
         } else {
             start_timestamp = first_shot.timestamp;
             start_frame_index = Some(first_shot.frame_index);
         }
+        append_regions(&mut combined_regions, &best_shot.regions);
 
         Ok(Some(ActiveSubtitle {
             roi,
@@ -452,12 +462,13 @@ impl SubtitleDetectionWorker {
             start_frame_index,
             best_shot,
             last_positive_shot: last_shot,
+            regions: combined_regions,
         }))
     }
 
     async fn find_end(
         &mut self,
-        active: &ActiveSubtitle,
+        active: &mut ActiveSubtitle,
         history: &FrameHistory,
     ) -> Result<(Option<DetectionShot>, Option<DetectionShot>), SubtitleStageError> {
         let last_positive_index = active.last_positive_shot.frame_index;
@@ -488,6 +499,7 @@ impl SubtitleDetectionWorker {
                         score: detection.max_score,
                     };
                     summary = shot.clone();
+                    append_regions(&mut active.regions, &detection.regions);
                     if detection.max_score > active.best_shot.score {
                         best_update = Some(shot.clone());
                     }
@@ -504,6 +516,7 @@ impl SubtitleDetectionWorker {
         &mut self,
         history: &FrameHistory,
         roi: RoiConfig,
+        regions: &mut Vec<DetectionRegion>,
     ) -> Result<Option<DetectionShot>, SubtitleStageError> {
         let mut last_positive: Option<DetectionShot> = None;
 
@@ -528,6 +541,7 @@ impl SubtitleDetectionWorker {
                     regions: detection.regions.clone(),
                     score: detection.max_score,
                 };
+                append_regions(regions, &detection.regions);
                 match &last_positive {
                     Some(existing) => {
                         if shot.frame_index < existing.frame_index {
@@ -833,4 +847,11 @@ fn update_best_shot(active: &mut ActiveSubtitle, shot: &DetectionShot) {
     if shot.score > active.best_shot.score {
         active.best_shot = shot.clone();
     }
+}
+
+fn append_regions(target: &mut Vec<DetectionRegion>, source: &[DetectionRegion]) {
+    if source.is_empty() {
+        return;
+    }
+    target.extend(source.iter().cloned());
 }
