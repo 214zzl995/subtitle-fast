@@ -217,8 +217,26 @@ where
         .map_err(|err| SubtitleGenError::Join(err.to_string()))?
         .map_err(SubtitleGenError::Ocr)?;
 
-        let (text, confidence) = render_response(&response);
-        if text.trim().is_empty() {
+        let (raw_text, confidence) = render_response(&response);
+        let trimmed_text = raw_text.trim();
+        let text = trimmed_text.to_string();
+
+        if let Some(json) = self.segments.as_ref() {
+            let entry = SegmentDumpEntry::from_segment(
+                &frame,
+                start_frame_index,
+                end_frame_index,
+                start,
+                end,
+                max_score,
+                text.as_str(),
+                confidence,
+                &region_for_dump,
+            );
+            json.record(entry).await.map_err(SubtitleGenError::Writer)?;
+        }
+
+        if text.is_empty() {
             return Ok(None);
         }
 
@@ -230,20 +248,6 @@ where
             })
             .await
             .map_err(SubtitleGenError::Writer)?;
-        if let Some(json) = self.segments.as_ref() {
-            let entry = SegmentDumpEntry::from_segment(
-                &frame,
-                start_frame_index,
-                end_frame_index,
-                start,
-                end,
-                max_score,
-                &text,
-                confidence,
-                &region_for_dump,
-            );
-            json.record(entry).await.map_err(SubtitleGenError::Writer)?;
-        }
 
         Ok(Some(GeneratedSubtitle {
             start,
