@@ -49,6 +49,8 @@ struct OcrFileConfig {
     backend: Option<String>,
     onnx_model: Option<String>,
     mlx_vlm_model: Option<String>,
+    languages: Option<Vec<String>>,
+    auto_detect_language: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -101,6 +103,8 @@ pub struct OcrSettings {
     pub onnx_model_from_cli: bool,
     pub mlx_vlm_model: Option<String>,
     pub mlx_vlm_model_from_cli: bool,
+    pub languages: Vec<String>,
+    pub auto_detect_language: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -421,6 +425,18 @@ fn merge(
         !sources.ocr_mlx_model_from_cli,
     );
 
+    let ocr_languages = resolve_ocr_languages(
+        &cli.ocr_languages,
+        ocr_cfg.languages.clone(),
+        !sources.ocr_languages_from_cli,
+    );
+
+    let auto_detect_language = resolve_auto_detect_language(
+        cli.ocr_auto_detect_language,
+        ocr_cfg.auto_detect_language,
+        !sources.ocr_auto_detect_language_from_cli,
+    );
+
     let decoder_channel_capacity = resolve_decoder_capacity(
         cli.decoder_channel_capacity,
         decoder_cfg.channel_capacity,
@@ -456,6 +472,8 @@ fn merge(
             onnx_model_from_cli: ocr_onnx_model_from_cli,
             mlx_vlm_model: ocr_mlx_model,
             mlx_vlm_model_from_cli: sources.ocr_mlx_model_from_cli,
+            languages: ocr_languages,
+            auto_detect_language,
         },
     };
 
@@ -621,6 +639,64 @@ fn resolve_optional_override<T>(
         }
     }
     cli_value
+}
+
+fn normalize_language_iter<I, S>(values: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut normalized = Vec::new();
+    for value in values {
+        let trimmed = value.as_ref().trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let candidate = trimmed.to_string();
+        if normalized
+            .iter()
+            .any(|existing: &String| existing.as_str().eq_ignore_ascii_case(&candidate))
+        {
+            continue;
+        }
+        normalized.push(candidate);
+    }
+    normalized
+}
+
+fn resolve_ocr_languages(
+    cli_languages: &[String],
+    file_languages: Option<Vec<String>>,
+    use_file: bool,
+) -> Vec<String> {
+    if !cli_languages.is_empty() && !use_file {
+        return normalize_language_iter(cli_languages.iter());
+    }
+    if use_file {
+        if let Some(list) = file_languages {
+            let normalized = normalize_language_iter(list);
+            if !normalized.is_empty() {
+                return normalized;
+            }
+        }
+    }
+    normalize_language_iter(cli_languages.iter())
+}
+
+fn resolve_auto_detect_language(
+    cli_value: Option<bool>,
+    file_value: Option<bool>,
+    use_file: bool,
+) -> bool {
+    if let Some(value) = cli_value {
+        return value;
+    }
+    if use_file {
+        if let Some(value) = file_value {
+            return value;
+        }
+    }
+    file_value.unwrap_or(true)
 }
 
 fn resolve_decoder_capacity(

@@ -1,4 +1,4 @@
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::ptr;
 use std::slice;
 
@@ -35,6 +35,9 @@ unsafe extern "C" {
         stride: usize,
         regions: *const CVisionOcrRect,
         regions_count: usize,
+        languages: *const *const std::os::raw::c_char,
+        languages_count: usize,
+        auto_detect_language: bool,
     ) -> CVisionOcrResult;
 
     fn vision_ocr_result_destroy(result: CVisionOcrResult);
@@ -85,12 +88,58 @@ impl Drop for OwnedVisionOcrResult {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct VisionOcrEngine;
+#[derive(Debug, Clone)]
+pub struct VisionOcrConfig {
+    pub languages: Vec<String>,
+    pub auto_detect_language: bool,
+}
+
+impl Default for VisionOcrConfig {
+    fn default() -> Self {
+        Self {
+            languages: Vec::new(),
+            auto_detect_language: true,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct VisionOcrEngine {
+    languages: Vec<CString>,
+    auto_detect_language: bool,
+}
 
 impl VisionOcrEngine {
     pub fn new() -> Result<Self, OcrError> {
-        Ok(Self)
+        Self::with_config(VisionOcrConfig::default())
+    }
+
+    pub fn with_config(config: VisionOcrConfig) -> Result<Self, OcrError> {
+        if !config.auto_detect_language && config.languages.is_empty() {
+            return Err(OcrError::backend(
+                "vision OCR auto language detection disabled but no languages provided",
+            ));
+        }
+
+        let mut languages = Vec::with_capacity(config.languages.len());
+        for value in config.languages {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let cstr = CString::new(trimmed).map_err(|_| {
+                OcrError::backend(
+                    "vision OCR language contains interior null byte and cannot be used",
+                )
+            })?;
+            if !languages.iter().any(|existing| existing == &cstr) {
+                languages.push(cstr);
+            }
+        }
+        Ok(Self {
+            languages,
+            auto_detect_language: config.auto_detect_language,
+        })
     }
 }
 
@@ -122,9 +171,17 @@ impl OcrEngine for VisionOcrEngine {
         }
 
         let (regions_ptr, regions_count) = if ffi_regions.is_empty() {
-            (std::ptr::null(), 0)
+            (ptr::null(), 0)
         } else {
             (ffi_regions.as_ptr(), ffi_regions.len())
+        };
+
+        let language_ptrs: Vec<*const std::os::raw::c_char> =
+            self.languages.iter().map(|lang| lang.as_ptr()).collect();
+        let (languages_ptr, languages_count) = if language_ptrs.is_empty() {
+            (ptr::null(), 0)
+        } else {
+            (language_ptrs.as_ptr(), language_ptrs.len())
         };
 
         let raw = unsafe {
@@ -135,6 +192,9 @@ impl OcrEngine for VisionOcrEngine {
                 stride,
                 regions_ptr,
                 regions_count,
+                languages_ptr,
+                languages_count,
+                self.auto_detect_language,
             )
         };
 

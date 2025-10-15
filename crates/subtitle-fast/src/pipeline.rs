@@ -18,9 +18,9 @@ use subtitle_fast_decoder::{DynYPlaneProvider, YPlaneError};
 use subtitle_fast_ocr::MlxVlmOcrEngine;
 #[cfg(feature = "ocr-onnx")]
 use subtitle_fast_ocr::OnnxOcrEngine;
-#[cfg(all(target_os = "macos", feature = "ocr-vision"))]
-use subtitle_fast_ocr::VisionOcrEngine;
 use subtitle_fast_ocr::{NoopOcrEngine, OcrEngine, OcrError};
+#[cfg(all(target_os = "macos", feature = "ocr-vision"))]
+use subtitle_fast_ocr::{VisionOcrConfig, VisionOcrEngine};
 use subtitle_fast_validator::subtitle_detection::SubtitleDetectionError;
 use subtitle_fast_validator::{FrameValidator, FrameValidatorConfig, SubtitleDetectorKind};
 
@@ -39,6 +39,8 @@ pub struct OcrPipelineConfig {
     pub backend: OcrBackend,
     pub onnx_model_path: Option<PathBuf>,
     pub mlx_vlm_model_path: Option<PathBuf>,
+    pub languages: Vec<String>,
+    pub auto_detect_language: bool,
 }
 
 impl PipelineConfig {
@@ -57,6 +59,8 @@ impl PipelineConfig {
                 backend: settings.ocr.backend,
                 onnx_model_path: ocr_onnx_model_path,
                 mlx_vlm_model_path: ocr_mlx_model_path,
+                languages: settings.ocr.languages.clone(),
+                auto_detect_language: settings.ocr.auto_detect_language,
             },
         }
     }
@@ -195,7 +199,7 @@ fn format_timestamp(ts: Option<Duration>) -> String {
 
 fn build_ocr_engine(pipeline: &PipelineConfig) -> Result<Arc<dyn OcrEngine>, OcrError> {
     match pipeline.ocr.backend {
-        OcrBackend::Vision => build_vision_engine(),
+        OcrBackend::Vision => build_vision_engine(&pipeline.ocr),
         OcrBackend::Onnx => build_onnx_engine(pipeline.ocr.onnx_model_path.as_ref()),
         OcrBackend::MlxVlm => build_mlx_vlm_engine(pipeline.ocr.mlx_vlm_model_path.as_ref()),
         OcrBackend::Noop => build_noop_engine(),
@@ -210,14 +214,18 @@ fn build_noop_engine() -> Result<Arc<dyn OcrEngine>, OcrError> {
 }
 
 #[cfg(all(target_os = "macos", feature = "ocr-vision"))]
-fn build_vision_engine() -> Result<Arc<dyn OcrEngine>, OcrError> {
-    let engine = VisionOcrEngine::new()?;
+fn build_vision_engine(config: &OcrPipelineConfig) -> Result<Arc<dyn OcrEngine>, OcrError> {
+    let vision_config = VisionOcrConfig {
+        languages: config.languages.clone(),
+        auto_detect_language: config.auto_detect_language,
+    };
+    let engine = VisionOcrEngine::with_config(vision_config)?;
     engine.warm_up()?;
     Ok(Arc::new(engine))
 }
 
 #[cfg(not(all(target_os = "macos", feature = "ocr-vision")))]
-fn build_vision_engine() -> Result<Arc<dyn OcrEngine>, OcrError> {
+fn build_vision_engine(_config: &OcrPipelineConfig) -> Result<Arc<dyn OcrEngine>, OcrError> {
     Err(OcrError::backend(
         "vision OCR backend is not available on this platform",
     ))
@@ -261,7 +269,7 @@ fn build_mlx_vlm_engine(_path: Option<&PathBuf>) -> Result<Arc<dyn OcrEngine>, O
 
 #[cfg(all(target_os = "macos", feature = "ocr-vision"))]
 fn build_auto_ocr_engine(pipeline: &PipelineConfig) -> Result<Arc<dyn OcrEngine>, OcrError> {
-    match build_vision_engine() {
+    match build_vision_engine(&pipeline.ocr) {
         Ok(engine) => Ok(engine),
         Err(err) => {
             if let Some(engine) = maybe_build_onnx(pipeline)? {

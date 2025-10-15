@@ -37,6 +37,8 @@ pub struct CliSources {
     pub ocr_backend_from_cli: bool,
     pub ocr_onnx_model_from_cli: bool,
     pub ocr_mlx_model_from_cli: bool,
+    pub ocr_languages_from_cli: bool,
+    pub ocr_auto_detect_language_from_cli: bool,
     pub detection_luma_target_from_cli: bool,
     pub detection_luma_delta_from_cli: bool,
     pub decoder_channel_capacity_from_cli: bool,
@@ -52,6 +54,8 @@ impl CliSources {
             ocr_backend_from_cli: value_from_cli(matches, "ocr_backend"),
             ocr_onnx_model_from_cli: value_from_cli(matches, "ocr_onnx_model"),
             ocr_mlx_model_from_cli: value_from_cli(matches, "ocr_mlx_model"),
+            ocr_languages_from_cli: value_from_cli(matches, "ocr_languages"),
+            ocr_auto_detect_language_from_cli: value_from_cli(matches, "ocr_auto_detect_language"),
             detection_luma_target_from_cli: value_from_cli(matches, "detection_luma_target"),
             detection_luma_delta_from_cli: value_from_cli(matches, "detection_luma_delta"),
             decoder_channel_capacity_from_cli: value_from_cli(matches, "decoder_channel_capacity"),
@@ -139,6 +143,18 @@ pub struct CliArgs {
     /// Local model path for the mlx_vlm OCR backend
     #[arg(long = "ocr-mlx-model", id = "ocr_mlx_model")]
     pub ocr_mlx_model: Option<String>,
+
+    /// Restrict OCR to the provided language (repeatable)
+    #[arg(long = "ocr-language", id = "ocr_languages", value_name = "LANG")]
+    pub ocr_languages: Vec<String>,
+
+    /// Enable or disable automatic language detection inside the OCR backend
+    #[arg(
+        long = "ocr-auto-detect-language",
+        id = "ocr_auto_detect_language",
+        value_parser = clap::value_parser!(bool)
+    )]
+    pub ocr_auto_detect_language: Option<bool>,
 
     /// Target Y-plane brightness used by the luma-band detector (0-255)
     #[arg(

@@ -135,7 +135,10 @@ VisionOcrResult vision_recognize_text(
     size_t height,
     size_t stride,
     const VisionOcrRect *regions,
-    size_t regions_count
+    size_t regions_count,
+    const char *const *languages,
+    size_t languages_count,
+    bool auto_detect_language
 ) {
     VisionOcrResult result = {0};
 
@@ -191,6 +194,30 @@ VisionOcrResult vision_recognize_text(
         float frame_width_f = (float)width;
         float frame_height_f = (float)height;
 
+        NSArray<NSString *> *language_list = nil;
+        if (languages != NULL && languages_count > 0) {
+            NSMutableArray<NSString *> *mutable_languages =
+                [NSMutableArray arrayWithCapacity:languages_count];
+            for (size_t idx = 0; idx < languages_count; idx++) {
+                const char *lang = languages[idx];
+                if (lang == NULL || lang[0] == '\0') {
+                    continue;
+                }
+                NSString *value = [NSString stringWithUTF8String:lang];
+                if (value == nil || value.length == 0) {
+                    continue;
+                }
+                if (![mutable_languages containsObject:value]) {
+                    [mutable_languages addObject:value];
+                }
+            }
+            if (mutable_languages.count > 0) {
+                language_list = [mutable_languages copy];
+            }
+        }
+
+        BOOL autoDetect = auto_detect_language ? YES : NO;
+
         size_t effective_regions = regions_count;
         VisionOcrRect fallback_region = {
             .x = 0.0f,
@@ -244,6 +271,10 @@ VisionOcrResult vision_recognize_text(
             VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
             request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
             request.usesLanguageCorrection = YES;
+            request.automaticallyDetectsLanguage = autoDetect;
+            if (language_list != nil) {
+                request.recognitionLanguages = language_list;
+            }
             request.regionOfInterest = roi;
 
             NSError *error = nil;
