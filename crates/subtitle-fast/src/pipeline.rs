@@ -27,7 +27,7 @@ use subtitle_fast_validator::{FrameValidator, FrameValidatorConfig, SubtitleDete
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct PipelineConfig {
-    pub output: Option<PathBuf>,
+    pub output: PathBuf,
     pub debug: DebugOutputSettings,
     pub detection: DetectionSettings,
     pub detection_onnx_model_path: Option<PathBuf>,
@@ -117,7 +117,12 @@ pub async fn run_pipeline(
     let StageOutput {
         stream: mut gen_stream,
         total_frames: _gen_total_frames,
-    } = Box::new(SubtitleGen::new(ocr_engine, _pipeline.output.clone())).apply(StageInput {
+    } = Box::new(SubtitleGen::new(
+        ocr_engine,
+        _pipeline.output.clone(),
+        _pipeline.debug.json.clone(),
+    ))
+    .apply(StageInput {
         stream: detection_stream,
         total_frames: detection_total_frames,
     });
@@ -141,9 +146,7 @@ pub async fn run_pipeline(
     }
 
     if failure.is_none() {
-        if let Some(path) = _pipeline.output.as_ref() {
-            println!("subtitle output written to {}", path.display());
-        }
+        println!("subtitle output written to {}", _pipeline.output.display());
     }
 
     Ok(())

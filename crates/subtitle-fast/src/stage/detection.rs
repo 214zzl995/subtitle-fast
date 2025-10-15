@@ -113,7 +113,6 @@ impl PipelineStage<SamplerResult> for SubtitleDetectionStage {
                 match item {
                     Some(Ok(sample)) => match worker.handle_sample(sample).await {
                         Ok(Some(segment)) => {
-                            worker.record_segment(&segment);
                             if tx.send(Ok(segment)).await.is_err() {
                                 break;
                             }
@@ -139,7 +138,6 @@ impl PipelineStage<SamplerResult> for SubtitleDetectionStage {
             }
 
             if let Some(segment) = worker.finalize_active().await {
-                worker.record_segment(&segment);
                 let _ = tx.send(Ok(segment)).await;
             }
 
@@ -170,6 +168,7 @@ struct DetectionShot {
     timestamp: Option<Duration>,
     frame: YPlaneFrame,
     region: DetectionRegion,
+    regions: Vec<DetectionRegion>,
     score: f32,
 }
 
@@ -181,6 +180,7 @@ struct SampleObservation {
 struct ActiveSubtitle {
     roi: RoiConfig,
     start_timestamp: Option<Duration>,
+    start_frame_index: Option<u64>,
     best_shot: DetectionShot,
     last_positive_shot: DetectionShot,
 }
@@ -233,10 +233,6 @@ impl SubtitleDetectionWorker {
         roi: Option<RoiConfig>,
     ) {
         self.debug.record_frame(frame, detection, roi).await;
-    }
-
-    fn record_segment(&mut self, segment: &SubtitleSegment) {
-        self.debug.record_segment(segment);
     }
 
     async fn finalize_outputs(&mut self) -> std::io::Result<()> {
@@ -294,6 +290,7 @@ impl SubtitleDetectionWorker {
             timestamp,
             frame,
             region,
+            regions: detection.regions.clone(),
             score: detection.max_score,
         };
 
@@ -360,6 +357,9 @@ impl SubtitleDetectionWorker {
                     region: roi_from_region(&active.best_shot.region),
                     start: active.start_timestamp,
                     end: summary.timestamp,
+                    start_frame_index: active.start_frame_index,
+                    end_frame_index: Some(summary.frame_index),
+                    regions: active.best_shot.regions.clone(),
                 };
                 self.window.clear();
                 return Ok(Some(segment));
@@ -378,6 +378,9 @@ impl SubtitleDetectionWorker {
                 region: roi_from_region(&active.best_shot.region),
                 start: active.start_timestamp,
                 end: active.last_positive_shot.timestamp,
+                start_frame_index: active.start_frame_index,
+                end_frame_index: Some(active.last_positive_shot.frame_index),
+                regions: active.best_shot.regions.clone(),
             };
             return Some(segment);
         }
@@ -431,19 +434,22 @@ impl SubtitleDetectionWorker {
         }
 
         let history_shot = self.scan_history_backward(&first_history, roi).await?;
-        let start_timestamp;
+        let (start_timestamp, start_frame_index);
         if let Some(history_shot) = history_shot {
             if history_shot.score > best_shot.score {
                 best_shot = history_shot.clone();
             }
             start_timestamp = history_shot.timestamp;
+            start_frame_index = Some(history_shot.frame_index);
         } else {
             start_timestamp = first_shot.timestamp;
+            start_frame_index = Some(first_shot.frame_index);
         }
 
         Ok(Some(ActiveSubtitle {
             roi,
             start_timestamp,
+            start_frame_index,
             best_shot,
             last_positive_shot: last_shot,
         }))
@@ -478,6 +484,7 @@ impl SubtitleDetectionWorker {
                         timestamp: frame_clone.timestamp(),
                         frame: frame_clone.clone(),
                         region,
+                        regions: detection.regions.clone(),
                         score: detection.max_score,
                     };
                     summary = shot.clone();
@@ -518,6 +525,7 @@ impl SubtitleDetectionWorker {
                     timestamp: frame_clone.timestamp(),
                     frame: frame_clone.clone(),
                     region,
+                    regions: detection.regions.clone(),
                     score: detection.max_score,
                 };
                 match &last_positive {
@@ -569,12 +577,6 @@ impl DebugOutputs {
         }
     }
 
-    fn record_segment(&mut self, segment: &SubtitleSegment) {
-        if let Some(json) = self.json.as_mut() {
-            json.record_segment(segment);
-        }
-    }
-
     async fn finalize(&mut self) -> std::io::Result<()> {
         if let Some(json) = self.json.as_mut() {
             json.flush().await?;
@@ -585,10 +587,8 @@ impl DebugOutputs {
 
 struct JsonSink {
     frames: Vec<FrameEntry>,
-    segments: Vec<SegmentEntry>,
     dir: PathBuf,
     frames_name: String,
-    segments_name: String,
     pretty: bool,
 }
 
@@ -596,10 +596,8 @@ impl JsonSink {
     fn new(settings: JsonDumpSettings) -> Self {
         Self {
             frames: Vec::new(),
-            segments: Vec::new(),
             dir: settings.dir,
             frames_name: settings.frames_filename,
-            segments_name: settings.segments_filename,
             pretty: settings.pretty,
         }
     }
@@ -613,6 +611,8 @@ impl JsonSink {
         self.frames.push(FrameEntry {
             frame_index: frame.frame_index(),
             timestamp: frame.timestamp().map(duration_secs),
+            width: frame.width(),
+            height: frame.height(),
             has_subtitle: detection.has_subtitle,
             max_score: detection.max_score,
             roi: roi.map(RoiEntry::from),
@@ -620,45 +620,25 @@ impl JsonSink {
         });
     }
 
-    fn record_segment(&mut self, segment: &SubtitleSegment) {
-        self.segments.push(SegmentEntry {
-            frame_index: segment.frame.frame_index(),
-            frame_timestamp: segment.frame.timestamp().map(duration_secs),
-            start: segment.start.map(duration_secs),
-            end: segment.end.map(duration_secs),
-            max_score: segment.max_score,
-            region: RoiEntry::from(segment.region),
-        });
-    }
-
     async fn flush(&mut self) -> std::io::Result<()> {
-        if self.frames.is_empty() && self.segments.is_empty() {
+        if self.frames.is_empty() {
             return Ok(());
         }
 
         self.frames
             .sort_by_key(|entry| entry.frame_index.unwrap_or(u64::MAX));
-        self.segments
-            .sort_by_key(|entry| entry.frame_index.unwrap_or(u64::MAX));
 
         fs::create_dir_all(&self.dir).await?;
 
         let frames_path = self.dir.join(&self.frames_name);
-        let segments_path = self.dir.join(&self.segments_name);
 
         let frames_data = if self.pretty {
             serde_json::to_vec_pretty(&self.frames).map_err(json_error_to_io)?
         } else {
             serde_json::to_vec(&self.frames).map_err(json_error_to_io)?
         };
-        let segments_data = if self.pretty {
-            serde_json::to_vec_pretty(&self.segments).map_err(json_error_to_io)?
-        } else {
-            serde_json::to_vec(&self.segments).map_err(json_error_to_io)?
-        };
 
         fs::write(frames_path, frames_data).await?;
-        fs::write(segments_path, segments_data).await?;
         Ok(())
     }
 }
@@ -669,26 +649,14 @@ struct FrameEntry {
     frame_index: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timestamp: Option<f64>,
+    width: u32,
+    height: u32,
     has_subtitle: bool,
     max_score: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     roi: Option<RoiEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     regions: Vec<DetectionRegion>,
-}
-
-#[derive(Serialize)]
-struct SegmentEntry {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    frame_index: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    frame_timestamp: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    start: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    end: Option<f64>,
-    max_score: f32,
-    region: RoiEntry,
 }
 
 #[derive(Serialize, Clone, Copy)]
@@ -721,6 +689,9 @@ pub struct SubtitleSegment {
     pub region: RoiConfig,
     pub start: Option<Duration>,
     pub end: Option<Duration>,
+    pub start_frame_index: Option<u64>,
+    pub end_frame_index: Option<u64>,
+    pub regions: Vec<DetectionRegion>,
 }
 
 fn frame_identifier(frame: &YPlaneFrame) -> u64 {

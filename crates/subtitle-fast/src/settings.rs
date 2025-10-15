@@ -73,7 +73,7 @@ struct JsonDumpFileConfig {
 
 #[derive(Debug)]
 pub struct EffectiveSettings {
-    pub output: Option<PathBuf>,
+    pub output: PathBuf,
     pub debug: DebugOutputSettings,
     pub detection: DetectionSettings,
     pub decoder: DecoderSettings,
@@ -447,7 +447,7 @@ fn merge(
     let decoder_backend = normalize_string(cli.backend.clone())
         .or_else(|| normalize_string(decoder_cfg.backend.clone()));
 
-    let output_path = resolve_output_path(cli.output.clone(), file_output, config_dir.as_deref());
+    let output_path = resolve_output_path(cli.output.clone(), file_output, config_dir.as_deref())?;
 
     let decoder_settings = DecoderSettings {
         backend: decoder_backend,
@@ -729,12 +729,32 @@ fn resolve_decoder_capacity(
 }
 
 fn resolve_output_path(
-    cli_value: Option<PathBuf>,
+    cli_value: PathBuf,
     file_value: Option<String>,
     config_dir: Option<&Path>,
-) -> Option<PathBuf> {
-    if let Some(path) = cli_value {
-        return Some(expand_pathbuf(path));
+) -> Result<PathBuf, ConfigError> {
+    let _ = file_value;
+    let _ = config_dir;
+    let mut path = expand_pathbuf(cli_value);
+
+    // If CLI path points to an existing directory, join default filename.
+    if path.metadata().map(|meta| meta.is_dir()).unwrap_or(false) {
+        path = path.join("subtitles.srt");
+    } else if path.file_name().is_none() {
+        path.push("subtitles.srt");
     }
-    normalize_string(file_value).and_then(|value| resolve_path_from_config(value, config_dir))
+
+    ensure_srt_extension(&mut path);
+    Ok(path)
+}
+
+fn ensure_srt_extension(path: &mut PathBuf) {
+    let is_srt = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("srt"))
+        .unwrap_or(false);
+    if !is_srt {
+        path.set_extension("srt");
+    }
 }
