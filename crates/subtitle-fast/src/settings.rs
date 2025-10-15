@@ -340,7 +340,6 @@ fn merge(
             .as_ref()
             .and_then(|cfg| normalize_string(cfg.dir.clone()))
             .and_then(|value| resolve_path_from_config(value, config_dir.as_deref()))
-            .or_else(|| image_dir_path.clone())
             .unwrap_or_else(|| {
                 resolve_path_from_config(DEFAULT_JSON_DUMP_DIR.to_string(), config_dir.as_deref())
                     .unwrap_or_else(|| PathBuf::from(DEFAULT_JSON_DUMP_DIR))
