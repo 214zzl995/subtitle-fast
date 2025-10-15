@@ -19,6 +19,7 @@ use subtitle_fast_validator::subtitle_detection::{DetectionRegion, RoiConfig};
 const LINE_MERGE_THRESHOLD_PX: f32 = 12.0;
 const OCR_SIDE_EXPAND_PX: f32 = 12.0;
 const OCR_VERTICAL_EXPAND_PX: f32 = 4.0;
+const SRT_MERGE_THRESHOLD: Duration = Duration::from_millis(40);
 
 pub type SubtitleGenResult = Result<GeneratedSubtitle, SubtitleGenError>;
 
@@ -615,6 +616,14 @@ impl SubtitleWriter {
                 "attempted to push entry after finalize",
             ));
         }
+        if let Some(last) = state.entries.last_mut() {
+            if should_merge_entries(last, &entry) {
+                if entry.end > last.end {
+                    last.end = entry.end;
+                }
+                return Ok(());
+            }
+        }
         state.entries.push(entry);
         Ok(())
     }
@@ -736,6 +745,19 @@ fn json_error_to_io(err: serde_json::Error) -> io::Error {
     io::Error::new(io::ErrorKind::Other, err)
 }
 
+fn should_merge_entries(a: &SubtitleEntry, b: &SubtitleEntry) -> bool {
+    if a.text != b.text {
+        return false;
+    }
+    let (first, second) = if a.start <= b.start { (a, b) } else { (b, a) };
+    let gap = if second.start >= first.end {
+        second.start - first.end
+    } else {
+        Duration::ZERO
+    };
+    gap <= SRT_MERGE_THRESHOLD
+}
+
 fn format_timestamp(time: Duration) -> String {
     let total_millis = time.as_millis() as u64;
     let millis = (total_millis % 1_000) as u32;
@@ -810,5 +832,34 @@ mod tests {
         ]);
         let (text, _) = render_response(&response);
         assert_eq!(text, "Hello World\nLine2");
+    }
+
+    #[tokio::test]
+    async fn subtitle_writer_merges_adjacent_matching_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("merged.srt");
+        let writer = SubtitleWriter::new(path.clone());
+
+        writer
+            .push(SubtitleEntry {
+                start: Duration::from_secs(1),
+                end: Duration::from_secs(2),
+                text: "merge".into(),
+            })
+            .await
+            .unwrap();
+        writer
+            .push(SubtitleEntry {
+                start: Duration::from_secs(2),
+                end: Duration::from_secs(3),
+                text: "merge".into(),
+            })
+            .await
+            .unwrap();
+
+        writer.finalize().await.unwrap();
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(contents.contains("00:00:01,000 --> 00:00:03,000"));
+        assert!(!contents.contains("2\r\n"));
     }
 }
