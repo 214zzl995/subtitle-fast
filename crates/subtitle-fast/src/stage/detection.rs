@@ -428,11 +428,7 @@ impl SubtitleDetectionWorker {
             Some(obs) => obs,
             None => return Ok(None),
         };
-        let window_frames: Vec<u64> = self
-            .window
-            .iter()
-            .map(|obs| obs.shot.frame_index)
-            .collect();
+        let window_frames: Vec<u64> = self.window.iter().map(|obs| obs.shot.frame_index).collect();
         let last = match self.window.back() {
             Some(obs) => obs,
             None => return Ok(None),
@@ -523,6 +519,7 @@ impl SubtitleDetectionWorker {
         let last_positive_index = active.last_positive_shot.frame_index;
         let mut summary = active.last_positive_shot.clone();
         let mut best_update: Option<DetectionShot> = None;
+        let mut prev_region = active.last_positive_shot.region.clone();
 
         for record in history.records() {
             if record.frame_index <= last_positive_index {
@@ -539,6 +536,10 @@ impl SubtitleDetectionWorker {
                 .await;
             if detection.has_subtitle {
                 if let Some(region) = best_region(&detection) {
+                    let iou = region_iou(&prev_region, &region);
+                    if iou < STABILITY_IOU_THRESHOLD {
+                        break;
+                    }
                     let shot = DetectionShot {
                         frame_index: record.frame_index,
                         timestamp: frame_clone.timestamp(),
@@ -548,6 +549,7 @@ impl SubtitleDetectionWorker {
                         score: detection.max_score,
                     };
                     summary = shot.clone();
+                    prev_region = shot.region.clone();
                     append_regions(&mut active.regions, &detection.regions);
                     if detection.max_score > active.best_shot.score {
                         best_update = Some(shot.clone());
@@ -569,6 +571,7 @@ impl SubtitleDetectionWorker {
         mut debug_indices: Option<&mut Vec<u64>>,
     ) -> Result<Option<DetectionShot>, SubtitleStageError> {
         let mut last_positive: Option<DetectionShot> = None;
+        let mut prev_region: Option<DetectionRegion> = None;
 
         for record in history.records().iter().rev() {
             let frame = record.frame_handle();
@@ -579,10 +582,17 @@ impl SubtitleDetectionWorker {
                 .await
                 .map_err(SubtitleStageError::Detection)?;
             self.emit_frame(&frame_clone, &detection, Some(roi)).await;
+
             if !detection.has_subtitle {
                 break;
             }
             if let Some(region) = best_region(&detection) {
+                if let Some(previous) = prev_region.as_ref() {
+                    let iou = region_iou(previous, &region);
+                    if iou < STABILITY_IOU_THRESHOLD {
+                        break;
+                    }
+                }
                 let shot = DetectionShot {
                     frame_index: record.frame_index,
                     timestamp: frame_clone.timestamp(),
@@ -595,14 +605,14 @@ impl SubtitleDetectionWorker {
                     indices.push(shot.frame_index);
                 }
                 append_regions(regions, &detection.regions);
-                match &last_positive {
-                    Some(existing) => {
-                        if shot.frame_index < existing.frame_index {
-                            last_positive = Some(shot);
-                        }
-                    }
-                    None => last_positive = Some(shot),
+                let region_clone = shot.region.clone();
+                if last_positive
+                    .as_ref()
+                    .map_or(true, |existing| shot.frame_index < existing.frame_index)
+                {
+                    last_positive = Some(shot);
                 }
+                prev_region = Some(region_clone);
             } else {
                 break;
             }
