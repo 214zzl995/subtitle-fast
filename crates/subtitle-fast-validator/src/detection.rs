@@ -101,7 +101,6 @@ impl SubtitleDetectionState {
             self.detector_dims = Some(dims);
             self.detector_roi = desired_roi;
             let mut detector_config = SubtitleDetectionConfig::for_frame(dims.0, dims.1, dims.2);
-            detector_config.model_path = self.options.onnx_model_path.clone();
             detector_config.luma_band = LumaBandConfig {
                 target_luma: self.options.luma_band.target_luma,
                 delta: self.options.luma_band.delta,

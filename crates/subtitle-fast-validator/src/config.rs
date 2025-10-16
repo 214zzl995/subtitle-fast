@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use crate::subtitle_detection::{
     RoiConfig, SubtitleDetectorKind, DEFAULT_LUMA_DELTA, DEFAULT_LUMA_TARGET,
 };
@@ -21,7 +19,6 @@ impl Default for FrameValidatorConfig {
 pub struct SubtitleDetectionOptions {
     pub enabled: bool,
     pub detector: SubtitleDetectorKind,
-    pub onnx_model_path: Option<PathBuf>,
     pub roi: Option<RoiConfig>,
     pub luma_band: LumaBandOptions,
 }
@@ -31,7 +28,6 @@ impl Default for SubtitleDetectionOptions {
         Self {
             enabled: true,
             detector: SubtitleDetectorKind::LumaBand,
-            onnx_model_path: None,
             roi: None,
             luma_band: LumaBandOptions::default(),
         }

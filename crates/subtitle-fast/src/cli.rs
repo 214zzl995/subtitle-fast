@@ -14,7 +14,6 @@ pub enum DumpFormat {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum DetectionBackend {
     Auto,
-    Onnx,
     Vision,
     Luma,
 }
@@ -23,7 +22,6 @@ pub enum DetectionBackend {
 pub enum OcrBackend {
     Auto,
     Vision,
-    Onnx,
     Noop,
     MlxVlm,
 }
@@ -33,9 +31,7 @@ pub struct CliSources {
     pub dump_format_from_cli: bool,
     pub detection_backend_from_cli: bool,
     pub detection_sps_from_cli: bool,
-    pub detection_onnx_model_from_cli: bool,
     pub ocr_backend_from_cli: bool,
-    pub ocr_onnx_model_from_cli: bool,
     pub ocr_mlx_model_from_cli: bool,
     pub ocr_languages_from_cli: bool,
     pub ocr_auto_detect_language_from_cli: bool,
@@ -50,9 +46,7 @@ impl CliSources {
             dump_format_from_cli: value_from_cli(matches, "dump_format"),
             detection_backend_from_cli: value_from_cli(matches, "detection_backend"),
             detection_sps_from_cli: value_from_cli(matches, "detection_samples_per_second"),
-            detection_onnx_model_from_cli: value_from_cli(matches, "onnx_model"),
             ocr_backend_from_cli: value_from_cli(matches, "ocr_backend"),
-            ocr_onnx_model_from_cli: value_from_cli(matches, "ocr_onnx_model"),
             ocr_mlx_model_from_cli: value_from_cli(matches, "ocr_mlx_model"),
             ocr_languages_from_cli: value_from_cli(matches, "ocr_languages"),
             ocr_auto_detect_language_from_cli: value_from_cli(matches, "ocr_auto_detect_language"),
@@ -128,17 +122,9 @@ pub struct CliArgs {
     )]
     pub detection_backend: DetectionBackend,
 
-    /// Path or URI to the ONNX subtitle detection model
-    #[arg(long = "onnx-model")]
-    pub onnx_model: Option<String>,
-
     /// Preferred OCR backend
     #[arg(long = "ocr-backend", value_enum, default_value_t = OcrBackend::Auto)]
     pub ocr_backend: OcrBackend,
-
-    /// Path or URI to the ONNX OCR model
-    #[arg(long = "ocr-onnx-model", id = "ocr_onnx_model")]
-    pub ocr_onnx_model: Option<String>,
 
     /// Local model path for the mlx_vlm OCR backend
     #[arg(long = "ocr-mlx-model", id = "ocr_mlx_model")]

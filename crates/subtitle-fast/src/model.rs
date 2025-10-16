@@ -297,13 +297,13 @@ fn build_cache_file_name(url: &Url) -> PathBuf {
     let last_segment = url
         .path_segments()
         .and_then(|segments| segments.filter(|s| !s.is_empty()).last())
-        .unwrap_or("model.onnx");
+        .unwrap_or("model.bin");
 
     let (raw_stem, raw_ext) = split_name(last_segment);
     let stem = sanitize_component(raw_stem, "model");
     let ext = raw_ext
-        .map(|ext| sanitize_component(ext, "onnx"))
-        .unwrap_or_else(|| "onnx".to_string());
+        .map(|ext| sanitize_component(ext, "bin"))
+        .unwrap_or_else(|| "bin".to_string());
 
     PathBuf::from(format!("{stem}-{short_hash}.{ext}"))
 }

@@ -9,20 +9,16 @@ default = [
     "backend-ffmpeg",
     "backend-openh264",
     "backend-mft",
-    "detector-onnx",
     "detector-vision",
     "ocr-vision",
-    "ocr-onnx",
     "ocr-mlx-vlm",
 ]
 backend-ffmpeg = ["subtitle-fast-decoder/backend-ffmpeg"]
 backend-videotoolbox = ["subtitle-fast-decoder/backend-videotoolbox"]
 backend-openh264 = ["subtitle-fast-decoder/backend-openh264"]
 backend-mft = ["subtitle-fast-decoder/backend-mft"]
-detector-onnx = ["subtitle-fast-validator/detector-onnx"]
 detector-vision = ["subtitle-fast-validator/detector-vision"]
 ocr-vision = ["subtitle-fast-ocr/engine-vision"]
-ocr-onnx = ["subtitle-fast-ocr/engine-onnx"]
 ocr-mlx-vlm = ["subtitle-fast-ocr/engine-mlx-vlm"]
 
 [dependencies]

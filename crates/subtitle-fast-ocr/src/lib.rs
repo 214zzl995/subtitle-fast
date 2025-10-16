@@ -8,8 +8,6 @@ mod response;
 
 #[cfg(all(feature = "engine-mlx-vlm", target_os = "macos"))]
 pub use backends::mlx::MlxVlmOcrEngine;
-#[cfg(feature = "engine-onnx")]
-pub use backends::onnx::OnnxOcrEngine;
 #[cfg(all(feature = "engine-vision", target_os = "macos"))]
 pub use backends::vision::{VisionOcrConfig, VisionOcrEngine};
 pub use engine::{NoopOcrEngine, OcrEngine};

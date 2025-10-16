@@ -21,11 +21,9 @@ samples_per_second = 7
 backend = "auto"
 # luma_target = 230
 # luma_delta = 12
-onnx_model = "/path/to/model.onnx"
 
 [ocr]
 backend = "auto"
-# onnx_model = "/path/to/ocr-model.onnx"
 # mlx_vlm_model = "/path/to/mlx-vlm-model.mlx"
 # languages = ["en-US", "zh-Hans"]
 # auto_detect_language = true

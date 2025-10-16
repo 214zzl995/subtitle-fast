@@ -16,8 +16,6 @@ use crate::stage::{PipelineStage, StageInput, StageOutput};
 use subtitle_fast_decoder::{DynYPlaneProvider, YPlaneError};
 #[cfg(all(feature = "ocr-mlx-vlm", target_os = "macos"))]
 use subtitle_fast_ocr::MlxVlmOcrEngine;
-#[cfg(feature = "ocr-onnx")]
-use subtitle_fast_ocr::OnnxOcrEngine;
 use subtitle_fast_ocr::{NoopOcrEngine, OcrEngine, OcrError};
 #[cfg(all(target_os = "macos", feature = "ocr-vision"))]
 use subtitle_fast_ocr::{VisionOcrConfig, VisionOcrEngine};
@@ -30,14 +28,12 @@ pub struct PipelineConfig {
     pub output: PathBuf,
     pub debug: DebugOutputSettings,
     pub detection: DetectionSettings,
-    pub detection_onnx_model_path: Option<PathBuf>,
     pub ocr: OcrPipelineConfig,
 }
 
 #[derive(Clone)]
 pub struct OcrPipelineConfig {
     pub backend: OcrBackend,
-    pub onnx_model_path: Option<PathBuf>,
     pub mlx_vlm_model_path: Option<PathBuf>,
     pub languages: Vec<String>,
     pub auto_detect_language: bool,
@@ -46,18 +42,14 @@ pub struct OcrPipelineConfig {
 impl PipelineConfig {
     pub fn from_settings(
         settings: &EffectiveSettings,
-        detection_onnx_model_path: Option<PathBuf>,
-        ocr_onnx_model_path: Option<PathBuf>,
         ocr_mlx_model_path: Option<PathBuf>,
     ) -> Self {
         Self {
             output: settings.output.clone(),
             debug: settings.debug.clone(),
             detection: settings.detection.clone(),
-            detection_onnx_model_path,
             ocr: OcrPipelineConfig {
                 backend: settings.ocr.backend,
-                onnx_model_path: ocr_onnx_model_path,
                 mlx_vlm_model_path: ocr_mlx_model_path,
                 languages: settings.ocr.languages.clone(),
                 auto_detect_language: settings.ocr.auto_detect_language,
@@ -155,7 +147,6 @@ pub async fn run_pipeline(
 fn map_detection_backend(backend: DetectionBackend) -> SubtitleDetectorKind {
     match backend {
         DetectionBackend::Auto => SubtitleDetectorKind::Auto,
-        DetectionBackend::Onnx => SubtitleDetectorKind::OnnxPpocr,
         DetectionBackend::Vision => SubtitleDetectorKind::MacVision,
         DetectionBackend::Luma => SubtitleDetectorKind::LumaBand,
     }
@@ -165,7 +156,6 @@ fn build_validator(pipeline: &PipelineConfig) -> Result<FrameValidator, Subtitle
     let mut config = FrameValidatorConfig::default();
     let detection = &mut config.detection;
     detection.detector = map_detection_backend(pipeline.detection.backend);
-    detection.onnx_model_path = pipeline.detection_onnx_model_path.clone();
     if let Some(target) = pipeline.detection.luma_target {
         detection.luma_band.target_luma = target;
     }
@@ -203,7 +193,6 @@ fn format_timestamp(ts: Option<Duration>) -> String {
 fn build_ocr_engine(pipeline: &PipelineConfig) -> Result<Arc<dyn OcrEngine>, OcrError> {
     match pipeline.ocr.backend {
         OcrBackend::Vision => build_vision_engine(&pipeline.ocr),
-        OcrBackend::Onnx => build_onnx_engine(pipeline.ocr.onnx_model_path.as_ref()),
         OcrBackend::MlxVlm => build_mlx_vlm_engine(pipeline.ocr.mlx_vlm_model_path.as_ref()),
         OcrBackend::Noop => build_noop_engine(),
         OcrBackend::Auto => build_auto_ocr_engine(pipeline),
@@ -234,25 +223,6 @@ fn build_vision_engine(_config: &OcrPipelineConfig) -> Result<Arc<dyn OcrEngine>
     ))
 }
 
-#[cfg(feature = "ocr-onnx")]
-fn build_onnx_engine(path: Option<&PathBuf>) -> Result<Arc<dyn OcrEngine>, OcrError> {
-    let model_path = path.ok_or_else(|| {
-        OcrError::backend(
-            "no OCR ONNX model configured; provide --ocr-onnx-model or set ocr.onnx_model",
-        )
-    })?;
-    let engine = OnnxOcrEngine::new(model_path.clone())?;
-    engine.warm_up()?;
-    Ok(Arc::new(engine))
-}
-
-#[cfg(not(feature = "ocr-onnx"))]
-fn build_onnx_engine(_path: Option<&PathBuf>) -> Result<Arc<dyn OcrEngine>, OcrError> {
-    Err(OcrError::backend(
-        "onnx OCR backend is not enabled in this build",
-    ))
-}
-
 #[cfg(all(feature = "ocr-mlx-vlm", target_os = "macos"))]
 fn build_mlx_vlm_engine(path: Option<&PathBuf>) -> Result<Arc<dyn OcrEngine>, OcrError> {
     let model_path = path
@@ -275,9 +245,7 @@ fn build_auto_ocr_engine(pipeline: &PipelineConfig) -> Result<Arc<dyn OcrEngine>
     match build_vision_engine(&pipeline.ocr) {
         Ok(engine) => Ok(engine),
         Err(err) => {
-            if let Some(engine) = maybe_build_onnx(pipeline)? {
-                Ok(engine)
-            } else if let Some(engine) = maybe_build_mlx(pipeline)? {
+            if let Some(engine) = maybe_build_mlx(pipeline)? {
                 Ok(engine)
             } else {
                 Err(err)
@@ -288,21 +256,10 @@ fn build_auto_ocr_engine(pipeline: &PipelineConfig) -> Result<Arc<dyn OcrEngine>
 
 #[cfg(not(all(target_os = "macos", feature = "ocr-vision")))]
 fn build_auto_ocr_engine(pipeline: &PipelineConfig) -> Result<Arc<dyn OcrEngine>, OcrError> {
-    if let Some(engine) = maybe_build_onnx(pipeline)? {
-        Ok(engine)
-    } else if let Some(engine) = maybe_build_mlx(pipeline)? {
+    if let Some(engine) = maybe_build_mlx(pipeline)? {
         Ok(engine)
     } else {
         build_noop_engine()
-    }
-}
-
-#[cfg(feature = "ocr-onnx")]
-fn maybe_build_onnx(pipeline: &PipelineConfig) -> Result<Option<Arc<dyn OcrEngine>>, OcrError> {
-    if pipeline.ocr.onnx_model_path.is_some() {
-        build_onnx_engine(pipeline.ocr.onnx_model_path.as_ref()).map(Some)
-    } else {
-        Ok(None)
     }
 }
 
@@ -317,11 +274,6 @@ fn maybe_build_mlx(pipeline: &PipelineConfig) -> Result<Option<Arc<dyn OcrEngine
 
 #[cfg(any(not(feature = "ocr-mlx-vlm"), not(target_os = "macos")))]
 fn maybe_build_mlx(_pipeline: &PipelineConfig) -> Result<Option<Arc<dyn OcrEngine>>, OcrError> {
-    Ok(None)
-}
-
-#[cfg(not(feature = "ocr-onnx"))]
-fn maybe_build_onnx(_pipeline: &PipelineConfig) -> Result<Option<Arc<dyn OcrEngine>>, OcrError> {
     Ok(None)
 }
 

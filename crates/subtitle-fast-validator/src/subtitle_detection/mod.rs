@@ -1,16 +1,9 @@
-use std::path::{Path, PathBuf};
-
 use serde::Serialize;
 use subtitle_fast_decoder::YPlaneFrame;
 use thiserror::Error;
 
 pub mod luma_band;
 pub use luma_band::LumaBandDetector;
-
-#[cfg(feature = "detector-onnx")]
-pub mod onnx;
-#[cfg(feature = "detector-onnx")]
-pub use onnx::OnnxPpocrDetector;
 
 #[cfg(all(feature = "detector-vision", target_os = "macos"))]
 pub mod vision;
@@ -29,16 +22,6 @@ const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[SubtitleDetectorKind::
 fn backend_for_kind(kind: SubtitleDetectorKind) -> Option<&'static dyn DetectorBackend> {
     match kind {
         SubtitleDetectorKind::Auto => None,
-        SubtitleDetectorKind::OnnxPpocr => {
-            #[cfg(feature = "detector-onnx")]
-            {
-                return Some(&ONNX_BACKEND);
-            }
-            #[cfg(not(feature = "detector-onnx"))]
-            {
-                return None;
-            }
-        }
         SubtitleDetectorKind::MacVision => {
             #[cfg(all(feature = "detector-vision", target_os = "macos"))]
             {
@@ -105,33 +88,6 @@ trait DetectorBackend {
     ) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError>;
 }
 
-#[cfg(feature = "detector-onnx")]
-struct OnnxBackend;
-
-#[cfg(feature = "detector-onnx")]
-impl DetectorBackend for OnnxBackend {
-    fn kind(&self) -> SubtitleDetectorKind {
-        SubtitleDetectorKind::OnnxPpocr
-    }
-
-    fn ensure_available(
-        &self,
-        config: &SubtitleDetectionConfig,
-    ) -> Result<(), SubtitleDetectionError> {
-        OnnxPpocrDetector::ensure_available(config)
-    }
-
-    fn build(
-        &self,
-        config: SubtitleDetectionConfig,
-    ) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
-        Ok(Box::new(OnnxPpocrDetector::new(config)?))
-    }
-}
-
-#[cfg(feature = "detector-onnx")]
-static ONNX_BACKEND: OnnxBackend = OnnxBackend;
-
 #[cfg(all(feature = "detector-vision", target_os = "macos"))]
 struct VisionBackend;
 
@@ -189,24 +145,6 @@ pub enum SubtitleDetectionError {
     InsufficientData { data_len: usize, required: usize },
     #[error("region of interest height is zero")]
     EmptyRoi,
-    #[error("failed to initialize onnx runtime environment: {0}")]
-    Environment(String),
-    #[error("failed to create inference session: {0}")]
-    Session(String),
-    #[error("model file not found: {path}")]
-    ModelNotFound { path: std::path::PathBuf },
-    #[error("no ONNX model path configured; provide --onnx-model or set detection.onnx_model_path in the configuration file")]
-    MissingOnnxModelPath,
-    #[error("failed to prepare model input: {0}")]
-    Input(String),
-    #[error("model inference failed: {0}")]
-    Inference(String),
-    #[error("unexpected model output shape")]
-    InvalidOutputShape,
-    #[error(
-        "onnxruntime schema registration conflict detected. Ensure only one ONNX Runtime version is present and that it matches the crate (suggest reinstalling onnxruntime 1.16.x). Original error: {message}"
-    )]
-    RuntimeSchemaConflict { message: String },
     #[error("vision framework error: {0}")]
     Vision(String),
     #[error("{backend} detector is not supported on this platform")]
@@ -218,7 +156,6 @@ pub struct SubtitleDetectionConfig {
     pub frame_width: usize,
     pub frame_height: usize,
     pub stride: usize,
-    pub model_path: Option<PathBuf>,
     pub roi: RoiConfig,
     pub luma_band: LumaBandConfig,
 }
@@ -230,7 +167,6 @@ impl SubtitleDetectionConfig {
             frame_width,
             frame_height,
             stride,
-            model_path: None,
             roi: RoiConfig {
                 x: 0.05,
                 y: roi_y,
@@ -245,23 +181,12 @@ impl SubtitleDetectionConfig {
     }
 }
 
-#[cfg(feature = "detector-onnx")]
-pub fn ensure_onnx_detector_ready(model_path: Option<&Path>) -> Result<(), SubtitleDetectionError> {
-    onnx::ensure_model_ready(model_path)
-}
-
 pub fn preflight_detection(
     kind: SubtitleDetectorKind,
-    model_path: Option<&Path>,
 ) -> Result<(), SubtitleDetectionError> {
-    let probe_config = build_probe_config(model_path);
+    let probe_config = build_probe_config();
     match kind {
-        SubtitleDetectorKind::Auto => preflight_auto(&probe_config, model_path),
-        SubtitleDetectorKind::OnnxPpocr => {
-            #[cfg(feature = "detector-onnx")]
-            log_onnx_preflight(model_path);
-            ensure_backend_available(SubtitleDetectorKind::OnnxPpocr, &probe_config)
-        }
+        SubtitleDetectorKind::Auto => preflight_auto(&probe_config),
         SubtitleDetectorKind::MacVision => {
             ensure_backend_available(SubtitleDetectorKind::MacVision, &probe_config)
         }
@@ -271,32 +196,15 @@ pub fn preflight_detection(
     }
 }
 
-#[cfg(feature = "detector-onnx")]
-fn log_onnx_preflight(path: Option<&Path>) {
-    let target = path
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "bundled default model".to_string());
-    eprintln!("preflighting ONNX subtitle detector using {target}");
-}
-
-fn build_probe_config(model_path: Option<&Path>) -> SubtitleDetectionConfig {
-    let mut config = SubtitleDetectionConfig::for_frame(640, 360, 640);
-    if let Some(path) = model_path {
-        config.model_path = Some(path.to_path_buf());
-    }
-    config
+fn build_probe_config() -> SubtitleDetectionConfig {
+    SubtitleDetectionConfig::for_frame(640, 360, 640)
 }
 
 fn preflight_auto(
     probe_config: &SubtitleDetectionConfig,
-    model_path: Option<&Path>,
 ) -> Result<(), SubtitleDetectionError> {
     let mut last_err: Option<SubtitleDetectionError> = None;
     for &candidate in auto_backend_priority() {
-        if candidate == SubtitleDetectorKind::OnnxPpocr {
-            #[cfg(feature = "detector-onnx")]
-            log_onnx_preflight(model_path);
-        }
         match ensure_backend_available(candidate, probe_config) {
             Ok(()) => return Ok(()),
             Err(err) => {
@@ -316,7 +224,6 @@ fn preflight_auto(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtitleDetectorKind {
     Auto,
-    OnnxPpocr,
     MacVision,
     LumaBand,
 }
@@ -325,7 +232,6 @@ impl SubtitleDetectorKind {
     pub fn as_str(self) -> &'static str {
         match self {
             SubtitleDetectorKind::Auto => "auto",
-            SubtitleDetectorKind::OnnxPpocr => "onnx-ppocr",
             SubtitleDetectorKind::MacVision => "macos-vision",
             SubtitleDetectorKind::LumaBand => "luma",
         }

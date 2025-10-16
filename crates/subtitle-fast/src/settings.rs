@@ -38,7 +38,6 @@ struct DebugDumpFileConfig {
 struct DetectionFileConfig {
     samples_per_second: Option<u32>,
     backend: Option<String>,
-    onnx_model: Option<String>,
     luma_target: Option<u8>,
     luma_delta: Option<u8>,
 }
@@ -47,7 +46,6 @@ struct DetectionFileConfig {
 #[serde(default)]
 struct OcrFileConfig {
     backend: Option<String>,
-    onnx_model: Option<String>,
     mlx_vlm_model: Option<String>,
     languages: Option<Vec<String>>,
     auto_detect_language: Option<bool>,
@@ -90,8 +88,6 @@ pub struct ResolvedSettings {
 pub struct DetectionSettings {
     pub samples_per_second: u32,
     pub backend: DetectionBackend,
-    pub onnx_model: Option<String>,
-    pub onnx_model_from_cli: bool,
     pub luma_target: Option<u8>,
     pub luma_delta: Option<u8>,
 }
@@ -99,8 +95,6 @@ pub struct DetectionSettings {
 #[derive(Debug, Clone)]
 pub struct OcrSettings {
     pub backend: OcrBackend,
-    pub onnx_model: Option<String>,
-    pub onnx_model_from_cli: bool,
     pub mlx_vlm_model: Option<String>,
     pub mlx_vlm_model_from_cli: bool,
     pub languages: Vec<String>,
@@ -387,12 +381,6 @@ fn merge(
         config_path.as_ref(),
     )?;
 
-    let (onnx_model, onnx_model_from_cli) = resolve_onnx_model(
-        cli.onnx_model.clone(),
-        sources.detection_onnx_model_from_cli,
-        detection_cfg.onnx_model.clone(),
-    );
-
     let detection_luma_target = resolve_optional_override(
         cli.detection_luma_target,
         detection_cfg.luma_target,
@@ -411,12 +399,6 @@ fn merge(
         !sources.ocr_backend_from_cli,
         config_path.as_ref(),
     )?;
-
-    let (ocr_onnx_model, ocr_onnx_model_from_cli) = resolve_onnx_model(
-        cli.ocr_onnx_model.clone(),
-        sources.ocr_onnx_model_from_cli,
-        ocr_cfg.onnx_model.clone(),
-    );
 
     let ocr_mlx_model = resolve_optional_override(
         cli.ocr_mlx_model.clone(),
@@ -459,16 +441,12 @@ fn merge(
         detection: DetectionSettings {
             samples_per_second: detection_samples_per_second,
             backend: detection_backend,
-            onnx_model,
-            onnx_model_from_cli,
             luma_target: detection_luma_target,
             luma_delta: detection_luma_delta,
         },
         decoder: decoder_settings,
         ocr: OcrSettings {
             backend: ocr_backend,
-            onnx_model: ocr_onnx_model,
-            onnx_model_from_cli: ocr_onnx_model_from_cli,
             mlx_vlm_model: ocr_mlx_model,
             mlx_vlm_model_from_cli: sources.ocr_mlx_model_from_cli,
             languages: ocr_languages,
@@ -609,22 +587,6 @@ fn resolve_detection_sps(
         }
     }
     Ok(cli_value)
-}
-
-fn resolve_onnx_model(
-    cli_model: Option<String>,
-    cli_override: bool,
-    file_model: Option<String>,
-) -> (Option<String>, bool) {
-    let cli_normalized = normalize_string(cli_model);
-    if cli_override && cli_normalized.is_some() {
-        return (cli_normalized, true);
-    }
-    if let Some(value) = normalize_string(file_model) {
-        return (Some(value), false);
-    }
-    let result = cli_normalized.clone();
-    (result, cli_override && cli_normalized.is_some())
 }
 
 fn resolve_optional_override<T>(
