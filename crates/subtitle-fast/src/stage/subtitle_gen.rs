@@ -11,7 +11,9 @@ use tokio::sync::{Mutex, mpsc};
 
 use super::{PipelineStage, StageInput, StageOutput};
 use crate::settings::JsonDumpSettings;
-use crate::stage::detection::{SubtitleSegment, SubtitleStageError, SubtitleStageResult};
+use crate::stage::detection::{
+    SegmentDebugInfo, SubtitleSegment, SubtitleStageError, SubtitleStageResult,
+};
 use subtitle_fast_decoder::YPlaneFrame;
 use subtitle_fast_ocr::{LumaPlane, OcrEngine, OcrError, OcrRegion, OcrRequest, OcrResponse};
 use subtitle_fast_validator::subtitle_detection::{DetectionRegion, RoiConfig};
@@ -181,6 +183,7 @@ where
             start_frame_index,
             end_frame_index,
             regions,
+            debug,
         } = segment;
 
         let frame_timestamp = frame.timestamp();
@@ -232,6 +235,7 @@ where
                 text.as_str(),
                 confidence,
                 &region_for_dump,
+                debug,
             );
             json.record(entry).await.map_err(SubtitleGenError::Writer)?;
         }
@@ -529,6 +533,8 @@ struct SegmentDumpEntry {
     ocr_confidence: Option<f32>,
     text: String,
     region: RoiRect,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    debug: Option<SegmentDebugInfo>,
 }
 
 #[derive(Serialize)]
@@ -550,6 +556,7 @@ impl SegmentDumpEntry {
         text: &str,
         ocr_confidence: Option<f32>,
         region: &RoiConfig,
+        debug: Option<SegmentDebugInfo>,
     ) -> Self {
         Self {
             start_frame,
@@ -562,6 +569,7 @@ impl SegmentDumpEntry {
             ocr_confidence,
             text: text.to_string(),
             region: RoiRect::from(region),
+            debug,
         }
     }
 

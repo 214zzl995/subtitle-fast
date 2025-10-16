@@ -184,6 +184,7 @@ struct ActiveSubtitle {
     best_shot: DetectionShot,
     last_positive_shot: DetectionShot,
     regions: Vec<DetectionRegion>,
+    debug: Option<SegmentDebugInfo>,
 }
 
 struct SubtitleDetectionWorker {
@@ -263,8 +264,14 @@ impl SubtitleDetectionWorker {
             .await
             .map_err(SubtitleStageError::Detection)?;
 
+        if matches!(frame_index, 3590 | 3593 | 3597) {
+            println!(
+                "debug detection frame {}: has_subtitle={}, max_score={}",
+                frame_index, detection.has_subtitle, detection.max_score
+            );
+        }
+
         self.emit_frame(&frame, &detection, roi).await;
-        sample.finish().await;
 
         if detection.has_subtitle {
             self.handle_positive(frame_index, timestamp, frame, detection, history)
@@ -362,6 +369,7 @@ impl SubtitleDetectionWorker {
                     start_frame_index: active.start_frame_index,
                     end_frame_index: Some(summary.frame_index),
                     regions: active.regions.clone(),
+                    debug: active.debug.clone(),
                 };
                 self.window.clear();
                 return Ok(Some(segment));
@@ -383,6 +391,7 @@ impl SubtitleDetectionWorker {
                 start_frame_index: active.start_frame_index,
                 end_frame_index: Some(active.last_positive_shot.frame_index),
                 regions: active.regions.clone(),
+                debug: active.debug,
             };
             return Some(segment);
         }
@@ -419,6 +428,11 @@ impl SubtitleDetectionWorker {
             Some(obs) => obs,
             None => return Ok(None),
         };
+        let window_frames: Vec<u64> = self
+            .window
+            .iter()
+            .map(|obs| obs.shot.frame_index)
+            .collect();
         let last = match self.window.back() {
             Some(obs) => obs,
             None => return Ok(None),
@@ -439,9 +453,43 @@ impl SubtitleDetectionWorker {
             }
         }
 
+        let mut pool_indices = Vec::new();
+        for observation in &self.window {
+            pool_indices.extend(
+                observation
+                    .history
+                    .records()
+                    .iter()
+                    .map(|record| record.frame_index),
+            );
+            pool_indices.push(observation.shot.frame_index);
+        }
+        pool_indices.sort_unstable();
+        pool_indices.dedup();
+
+        let history_records = first_history
+            .records()
+            .iter()
+            .map(|record| record.frame_index)
+            .collect::<Vec<_>>();
+
+        let mut positives = Vec::new();
         let history_shot = self
-            .scan_history_backward(&first_history, roi, &mut combined_regions)
+            .scan_history_backward(
+                &first_history,
+                roi,
+                &mut combined_regions,
+                Some(&mut positives),
+            )
             .await?;
+
+        let debug_info = SegmentDebugInfo {
+            window: window_frames.clone(),
+            pool: pool_indices,
+            history: history_records,
+            positives,
+            selected: history_shot.as_ref().map(|shot| shot.frame_index),
+        };
         let (start_timestamp, start_frame_index);
         if let Some(history_shot) = history_shot {
             if history_shot.score > best_shot.score {
@@ -463,6 +511,7 @@ impl SubtitleDetectionWorker {
             best_shot,
             last_positive_shot: last_shot,
             regions: combined_regions,
+            debug: Some(debug_info),
         }))
     }
 
@@ -517,6 +566,7 @@ impl SubtitleDetectionWorker {
         history: &FrameHistory,
         roi: RoiConfig,
         regions: &mut Vec<DetectionRegion>,
+        mut debug_indices: Option<&mut Vec<u64>>,
     ) -> Result<Option<DetectionShot>, SubtitleStageError> {
         let mut last_positive: Option<DetectionShot> = None;
 
@@ -541,6 +591,9 @@ impl SubtitleDetectionWorker {
                     regions: detection.regions.clone(),
                     score: detection.max_score,
                 };
+                if let Some(indices) = debug_indices.as_deref_mut() {
+                    indices.push(shot.frame_index);
+                }
                 append_regions(regions, &detection.regions);
                 match &last_positive {
                     Some(existing) => {
@@ -706,6 +759,16 @@ pub struct SubtitleSegment {
     pub start_frame_index: Option<u64>,
     pub end_frame_index: Option<u64>,
     pub regions: Vec<DetectionRegion>,
+    pub debug: Option<SegmentDebugInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SegmentDebugInfo {
+    pub window: Vec<u64>,
+    pub pool: Vec<u64>,
+    pub history: Vec<u64>,
+    pub positives: Vec<u64>,
+    pub selected: Option<u64>,
 }
 
 fn frame_identifier(frame: &YPlaneFrame) -> u64 {

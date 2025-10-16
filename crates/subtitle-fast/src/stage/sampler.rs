@@ -47,39 +47,33 @@ impl SamplerContext {
 
 pub struct SampledFrame {
     pub frame_index: u64,
-    pub frame_type: FrameType,
-    frame: YPlaneFrame,
+    frame: Arc<YPlaneFrame>,
     history: FrameHistory,
     context: Arc<SamplerContext>,
-    completion: Option<mpsc::Sender<PoolEntry>>,
 }
 
 impl SampledFrame {
     fn new(
         frame_index: u64,
-        frame_type: FrameType,
-        frame: YPlaneFrame,
+        frame: Arc<YPlaneFrame>,
         history: FrameHistory,
         context: Arc<SamplerContext>,
-        completion: mpsc::Sender<PoolEntry>,
     ) -> Self {
         Self {
             frame_index,
-            frame_type,
             frame,
             history,
             context,
-            completion: Some(completion),
         }
     }
 
     #[allow(dead_code)]
     pub fn frame(&self) -> &YPlaneFrame {
-        &self.frame
+        self.frame.as_ref()
     }
 
     #[allow(dead_code)]
-    pub fn into_frame(self) -> YPlaneFrame {
+    pub fn into_frame(self) -> Arc<YPlaneFrame> {
         self.frame
     }
 
@@ -91,22 +85,6 @@ impl SampledFrame {
     #[allow(dead_code)]
     pub fn sampler_context(&self) -> &SamplerContext {
         &self.context
-    }
-
-    pub async fn finish(self) {
-        let SampledFrame {
-            frame_index,
-            frame_type,
-            frame,
-            history: _history,
-            context: _context,
-            completion,
-        } = self;
-
-        if let Some(tx) = completion {
-            let entry = PoolEntry::new(frame_index, frame_type, Arc::new(frame));
-            let _ = tx.send(entry).await;
-        }
     }
 }
 
@@ -138,39 +116,23 @@ impl PipelineStage<YPlaneResult<YPlaneFrame>> for FrameSampler {
 
         let samples_per_second = self.samples_per_second;
         let (tx, rx) = mpsc::channel::<SamplerResult>(SAMPLER_CHANNEL_CAPACITY);
-        let (completion_tx, mut completion_rx) = mpsc::channel::<PoolEntry>(MAX_POOL_CAPACITY);
 
         tokio::spawn(async move {
             let mut upstream = stream;
-            let mut worker = SamplerWorker::new(samples_per_second, completion_tx);
+            let mut worker = SamplerWorker::new(samples_per_second);
 
-            loop {
-                tokio::select! {
-                    Some(entry) = completion_rx.recv() => {
-                        worker.reclaim(entry);
-                        continue;
-                    }
-                    maybe_item = upstream.next() => {
-                        match maybe_item {
-                            Some(Ok(frame)) => {
-                                if worker.handle_frame(frame, &tx).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Some(Err(err)) => {
-                                let _ = tx.send(Err(err)).await;
-                                break;
-                            }
-                            None => break,
+            while let Some(maybe_item) = upstream.next().await {
+                match maybe_item {
+                    Ok(frame) => {
+                        if worker.handle_frame(frame, &tx).await.is_err() {
+                            break;
                         }
                     }
+                    Err(err) => {
+                        let _ = tx.send(Err(err)).await;
+                        break;
+                    }
                 }
-            }
-
-            worker.completion_tx.take();
-
-            while let Some(entry) = completion_rx.recv().await {
-                worker.reclaim(entry);
             }
         });
 
@@ -194,18 +156,16 @@ struct SamplerWorker {
     schedule: SampleSchedule,
     fps: FpsEstimator,
     context: Arc<SamplerContext>,
-    completion_tx: Option<mpsc::Sender<PoolEntry>>,
 }
 
 impl SamplerWorker {
-    fn new(samples_per_second: u32, completion_tx: mpsc::Sender<PoolEntry>) -> Self {
+    fn new(samples_per_second: u32) -> Self {
         Self {
             processed: 0,
             pool: SamplerPool::new(DEFAULT_POOL_CAPACITY),
             schedule: SampleSchedule::new(samples_per_second),
             fps: FpsEstimator::new(),
             context: Arc::new(SamplerContext::initial()),
-            completion_tx: Some(completion_tx),
         }
     }
 
@@ -232,36 +192,29 @@ impl SamplerWorker {
             self.update_tuning(fps);
         }
 
-        match frame_type {
-            FrameType::Skipped => {
-                let frame_arc = Arc::new(frame);
-                self.pool
-                    .push(PoolEntry::new(frame_index, frame_type, frame_arc));
-            }
-            FrameType::Sampled => {
-                let history = self.pool.snapshot();
-                let sample = SampledFrame::new(
-                    frame_index,
-                    frame_type,
-                    frame,
-                    history,
-                    self.context.clone(),
-                    self.completion_tx
-                        .as_ref()
-                        .expect("completion channel missing")
-                        .clone(),
-                );
-                if tx.send(Ok(sample)).await.is_err() {
-                    return Err(());
-                }
+        let frame_arc = Arc::new(frame);
+        let history = if matches!(frame_type, FrameType::Sampled) {
+            Some(self.pool.snapshot())
+        } else {
+            None
+        };
+
+        self.pool
+            .push(PoolEntry::new(frame_index, frame_type, Arc::clone(&frame_arc)));
+
+        if let Some(history) = history {
+            let sample = SampledFrame::new(
+                frame_index,
+                frame_arc,
+                history,
+                self.context.clone(),
+            );
+            if tx.send(Ok(sample)).await.is_err() {
+                return Err(());
             }
         }
 
         Ok(())
-    }
-
-    fn reclaim(&mut self, entry: PoolEntry) {
-        self.pool.push(entry);
     }
 
     fn update_tuning(&mut self, fps: f64) {
