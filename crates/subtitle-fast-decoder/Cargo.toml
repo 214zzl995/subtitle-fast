@@ -11,7 +11,6 @@ backend-videotoolbox = [
     "dep:mp4",
     "dep:rayon",
 ]
-backend-openh264 = ["dep:openh264", "dep:mp4", "dep:rayon"]
 backend-mft = []
 
 [dependencies]
@@ -22,7 +21,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"
 tokio-stream = "0.1"
 
 ffmpeg-next = { version = "8", optional = true }
-openh264 = { version = "0.9", optional = true }
 mp4 = { version = "0.14", optional = true }
 rayon = { version = "1.10", optional = true }
 

@@ -7,7 +7,6 @@ edition = "2024"
 default = [
     "backend-videotoolbox",
     "backend-ffmpeg",
-    "backend-openh264",
     "backend-mft",
     "detector-vision",
     "ocr-vision",
@@ -15,7 +14,6 @@ default = [
 ]
 backend-ffmpeg = ["subtitle-fast-decoder/backend-ffmpeg"]
 backend-videotoolbox = ["subtitle-fast-decoder/backend-videotoolbox"]
-backend-openh264 = ["subtitle-fast-decoder/backend-openh264"]
 backend-mft = ["subtitle-fast-decoder/backend-mft"]
 detector-vision = ["subtitle-fast-validator/detector-vision"]
 ocr-vision = ["subtitle-fast-ocr/engine-vision"]

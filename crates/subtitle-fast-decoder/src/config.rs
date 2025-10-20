@@ -14,7 +14,6 @@ pub enum Backend {
     Mock,
     Ffmpeg,
     VideoToolbox,
-    OpenH264,
     Mft,
 }
 
@@ -26,7 +25,6 @@ impl FromStr for Backend {
             "mock" => Ok(Backend::Mock),
             "ffmpeg" => Ok(Backend::Ffmpeg),
             "videotoolbox" => Ok(Backend::VideoToolbox),
-            "openh264" => Ok(Backend::OpenH264),
             "mft" => Ok(Backend::Mft),
             other => Err(YPlaneError::configuration(format!(
                 "unknown backend '{other}'"
@@ -41,7 +39,6 @@ impl Backend {
             Backend::Mock => "mock",
             Backend::Ffmpeg => "ffmpeg",
             Backend::VideoToolbox => "videotoolbox",
-            Backend::OpenH264 => "openh264",
             Backend::Mft => "mft",
         }
     }
@@ -74,10 +71,6 @@ fn append_platform_backends(backends: &mut Vec<Backend>) {
             backends.push(Backend::Ffmpeg);
         }
     }
-    #[cfg(feature = "backend-openh264")]
-    {
-        backends.push(Backend::OpenH264);
-    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -95,10 +88,6 @@ fn append_platform_backends(backends: &mut Vec<Backend>) {
     #[cfg(feature = "backend-videotoolbox")]
     {
         backends.push(Backend::VideoToolbox);
-    }
-    #[cfg(feature = "backend-openh264")]
-    {
-        backends.push(Backend::OpenH264);
     }
 }
 
@@ -203,21 +192,6 @@ impl Configuration {
                 #[cfg(not(feature = "backend-videotoolbox"))]
                 {
                     return Err(YPlaneError::unsupported("videotoolbox"));
-                }
-            }
-            Backend::OpenH264 => {
-                #[cfg(feature = "backend-openh264")]
-                {
-                    let path = self.input.clone().ok_or_else(|| {
-                        YPlaneError::configuration(
-                            "OpenH264 backend requires SUBFAST_INPUT to be set",
-                        )
-                    })?;
-                    return crate::backends::openh264::boxed_openh264(path, channel_capacity);
-                }
-                #[cfg(not(feature = "backend-openh264"))]
-                {
-                    return Err(YPlaneError::unsupported("openh264"));
                 }
             }
             Backend::Mft => {

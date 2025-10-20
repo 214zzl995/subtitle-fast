@@ -10,7 +10,7 @@ A Rust workspace for streaming Y-plane data from decoded H.264 frames. The works
 
 - `core`: Shared primitives, including the `YPlaneStreamProvider` trait, `YPlaneFrame` metadata, and error handling.
 - `config`: Runtime configuration, enabling backend selection via environment variables or direct API usage.
-- `backends`: Concrete backend modules. FFmpeg, VideoToolbox, and OpenH264 all feed Y-plane data into an async
+- `backends`: Concrete backend modules. FFmpeg, VideoToolbox, and Windows MFT all feed Y-plane data into an async
   Tokio stream.
 
 Backends are toggled through Cargo features on the library crate:
@@ -19,7 +19,7 @@ Backends are toggled through Cargo features on the library crate:
 | ------- | ----------- |
 | `backend-ffmpeg` | Uses `ffmpeg-next` bindings for pure-Rust decoding without invoking the CLI binary. |
 | `backend-videotoolbox` | Hardware-accelerated decoding on macOS using VideoToolbox via Objective-C bindings. |
-| `backend-openh264` | Multi-threaded decoding using the OpenH264 Rust bindings. |
+| `backend-mft` | Windows Media Foundation H.264 decoding for native Windows builds. |
 
 ## Running the CLI
 
