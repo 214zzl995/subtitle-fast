@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::f32;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use subtitle_fast_validator::subtitle_detection::{
 use subtitle_fast_validator::subtitle_detection::SubtitleDetectorKind;
 use subtitle_fast_validator::FrameValidator;
 
-const STABILITY_IOU_THRESHOLD: f32 = 0.5;
+const STABILITY_IOU_THRESHOLD: f32 = 0.6;
 const ROI_EXPANSION_PX: f32 = 6.0;
 
 pub const FAST_DETECTOR_KIND: SubtitleDetectorKind = SubtitleDetectorKind::LumaBand;
@@ -187,6 +187,18 @@ struct SampleObservation {
     history: FrameHistory,
 }
 
+#[derive(Clone)]
+struct TrackedRegion {
+    frame_index: u64,
+    region: DetectionRegion,
+}
+
+#[derive(Clone)]
+struct StableTrack {
+    regions: Vec<TrackedRegion>,
+    score: f32,
+}
+
 struct ActiveSubtitle {
     roi: RoiConfig,
     start_timestamp: Option<Duration>,
@@ -252,6 +264,44 @@ impl SubtitleDetectionWorker {
 
     async fn finalize_outputs(&mut self) -> std::io::Result<()> {
         self.debug.finalize().await
+    }
+
+    async fn filter_tracks_with_precise(
+        &self,
+        last_shot: &DetectionShot,
+        tracks: Vec<StableTrack>,
+        frame_dims: (u32, u32),
+    ) -> Result<Vec<StableTrack>, SubtitleStageError> {
+        let mut filtered = Vec::new();
+        for mut track in tracks {
+            let Some(last_entry) = track.regions.last() else {
+                continue;
+            };
+            let roi = roi_with_margin(last_entry.region.clone(), frame_dims.0, frame_dims.1);
+            let detection = self
+                .precise_validator
+                .process_frame_with_roi(last_shot.frame.clone(), Some(roi))
+                .await
+                .map_err(SubtitleStageError::Detection)?;
+            println!(
+                "[precise] frame={} roi=({}, {}, {}, {}) has_subtitle={}",
+                last_shot.frame_index,
+                roi.x,
+                roi.y,
+                roi.width,
+                roi.height,
+                detection.has_subtitle
+            );
+            if detection.has_subtitle {
+                if let Some(precise_region) = best_region(&detection) {
+                    if let Some(last) = track.regions.last_mut() {
+                        last.region = precise_region;
+                    }
+                }
+                filtered.push(track);
+            }
+        }
+        Ok(filtered)
     }
 
     async fn handle_sample(
@@ -340,15 +390,47 @@ impl SubtitleDetectionWorker {
             return Ok(None);
         }
 
-        let roi = match self.compute_roi() {
-            Some(roi) => roi,
+        let dims = match self.frame_dimensions {
+            Some(value) => value,
             None => {
                 self.window.pop_front();
                 return Ok(None);
             }
         };
 
-        match self.determine_start(roi).await? {
+        let mut stable_tracks = stable_region_tracks(&self.window);
+        if stable_tracks.is_empty() {
+            self.window.pop_front();
+            return Ok(None);
+        }
+
+        let last_observation = match self.window.back() {
+            Some(observation) => observation,
+            None => {
+                self.window.pop_front();
+                return Ok(None);
+            }
+        };
+
+        stable_tracks = self
+            .filter_tracks_with_precise(&last_observation.shot, stable_tracks, dims)
+            .await?;
+
+        if stable_tracks.is_empty() {
+            self.window.pop_front();
+            return Ok(None);
+        }
+
+        let roi_region = match merged_region_from_tracks(&stable_tracks) {
+            Some(region) => region,
+            None => {
+                self.window.pop_front();
+                return Ok(None);
+            }
+        };
+        let roi = roi_with_margin(roi_region, dims.0, dims.1);
+
+        match self.determine_start(roi, &stable_tracks).await? {
             Some(active) => {
                 self.active = Some(active);
                 self.window.clear();
@@ -411,32 +493,10 @@ impl SubtitleDetectionWorker {
         None
     }
 
-    fn compute_roi(&self) -> Option<RoiConfig> {
-        if self.window.is_empty() {
-            return None;
-        }
-        let dims = self.frame_dimensions?;
-        let mut merged = None;
-        let mut regions = Vec::new();
-        
-        for observation in &self.window {
-            regions.push(observation.shot.region.clone());
-        }
-        if !regions_are_stable(&regions) {
-            return None;
-        }
-        for region in regions {
-            merged = Some(match merged {
-                Some(existing) => merge_regions(&existing, &region),
-                None => region,
-            });
-        }
-        merged.map(|region| roi_with_margin(region, dims.0, dims.1))
-    }
-
     async fn determine_start(
         &mut self,
         roi: RoiConfig,
+        tracks: &[StableTrack],
     ) -> Result<Option<ActiveSubtitle>, SubtitleStageError> {
         let first = match self.window.front() {
             Some(obs) => obs,
@@ -450,17 +510,61 @@ impl SubtitleDetectionWorker {
 
         let first_shot = first.shot.clone();
         let first_history = first.history.clone();
-        let last_shot = last.shot.clone();
+        let mut last_shot = last.shot.clone();
 
-        let mut best_shot = first_shot.clone();
-        let mut combined_regions = Vec::new();
-        for observation in &self.window {
-            append_regions(&mut combined_regions, &observation.shot.regions);
-        }
-        for observation in &self.window {
-            if observation.shot.score > best_shot.score {
-                best_shot = observation.shot.clone();
+        let mut region_by_frame: HashMap<u64, DetectionRegion> = HashMap::new();
+        for track in tracks {
+            for entry in &track.regions {
+                region_by_frame
+                    .entry(entry.frame_index)
+                    .and_modify(|existing| {
+                        if entry.region.score > existing.score {
+                            *existing = entry.region.clone();
+                        }
+                    })
+                    .or_insert_with(|| entry.region.clone());
             }
+        }
+
+        let mut combined_regions = Vec::new();
+        for track in tracks {
+            for entry in &track.regions {
+                combined_regions.push(entry.region.clone());
+            }
+        }
+
+        let mut best_shot: Option<DetectionShot> = None;
+        for observation in &self.window {
+            let Some(region) = region_by_frame.get(&observation.shot.frame_index) else {
+                continue;
+            };
+            let mut shot = observation.shot.clone();
+            shot.region = region.clone();
+            shot.score = region.score;
+            shot.regions = vec![region.clone()];
+            if best_shot
+                .as_ref()
+                .map(|existing| existing.score < shot.score)
+                .unwrap_or(true)
+            {
+                best_shot = Some(shot);
+            }
+        }
+
+        let mut best_shot = best_shot.unwrap_or_else(|| {
+            let mut shot = first_shot.clone();
+            if let Some(region) = region_by_frame.get(&shot.frame_index) {
+                shot.region = region.clone();
+                shot.score = region.score;
+                shot.regions = vec![region.clone()];
+            }
+            shot
+        });
+
+        if let Some(region) = region_by_frame.get(&last_shot.frame_index) {
+            last_shot.region = region.clone();
+            last_shot.score = region.score;
+            last_shot.regions = vec![region.clone()];
         }
 
         let mut pool_indices = Vec::new();
@@ -818,19 +922,111 @@ fn best_region(result: &SubtitleDetectionResult) -> Option<DetectionRegion> {
         .cloned()
 }
 
-fn regions_are_stable(regions: &[DetectionRegion]) -> bool {
-    if regions.len() <= 1 {
-        return true;
+fn stable_region_tracks(window: &VecDeque<SampleObservation>) -> Vec<StableTrack> {
+    if window.is_empty() {
+        return Vec::new();
     }
-    for pair in regions.windows(2) {
-        if let [a, b] = pair {
-            let iou = region_iou(a, b);
-            if iou < STABILITY_IOU_THRESHOLD {
-                return false;
+
+    let mut iter = window.iter();
+    let first = match iter.next() {
+        Some(observation) => observation,
+        None => return Vec::new(),
+    };
+
+    let mut tracks: Vec<StableTrack> = tracked_regions_for_observation(first)
+        .into_iter()
+        .map(|region| StableTrack {
+            score: region.region.score,
+            regions: vec![region],
+        })
+        .collect();
+
+    if tracks.is_empty() {
+        return Vec::new();
+    }
+
+    for observation in iter {
+        let candidates = tracked_regions_for_observation(observation);
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        let mut next_tracks: Vec<StableTrack> = Vec::new();
+
+        for track in &tracks {
+            let Some(last_entry) = track.regions.last() else {
+                continue;
+            };
+
+            let mut extended = false;
+            for candidate in &candidates {
+                if region_iou(&last_entry.region, &candidate.region) >= STABILITY_IOU_THRESHOLD {
+                    let mut new_track = track.clone();
+                    new_track.regions.push(candidate.clone());
+                    new_track.score += candidate.region.score;
+                    next_tracks.push(new_track);
+                    extended = true;
+                }
+            }
+
+            if !extended {
+                // Track cannot be extended across the full window; drop it.
             }
         }
+
+        if next_tracks.is_empty() {
+            return Vec::new();
+        }
+
+        let mut deduped: Vec<StableTrack> = Vec::new();
+        for track in next_tracks {
+            let last = track
+                .regions
+                .last()
+                .expect("stable track must contain at least one region");
+            let mut merged = false;
+            for existing in &mut deduped {
+                let existing_last = existing
+                    .regions
+                    .last()
+                    .expect("stable track must contain at least one region");
+                if region_iou(&existing_last.region, &last.region) >= STABILITY_IOU_THRESHOLD {
+                    if track.score > existing.score {
+                        *existing = track.clone();
+                    }
+                    merged = true;
+                    break;
+                }
+            }
+            if !merged {
+                deduped.push(track);
+            }
+        }
+
+        tracks = deduped;
     }
-    true
+
+    tracks
+}
+
+fn tracked_regions_for_observation(observation: &SampleObservation) -> Vec<TrackedRegion> {
+    if observation.shot.regions.is_empty() {
+        vec![TrackedRegion {
+            frame_index: observation.shot.frame_index,
+            region: observation.shot.region.clone(),
+        }]
+    } else {
+        observation
+            .shot
+            .regions
+            .iter()
+            .cloned()
+            .map(|region| TrackedRegion {
+                frame_index: observation.shot.frame_index,
+                region,
+            })
+            .collect()
+    }
 }
 
 fn region_iou(a: &DetectionRegion, b: &DetectionRegion) -> f32 {
@@ -858,6 +1054,19 @@ fn region_iou(a: &DetectionRegion, b: &DetectionRegion) -> f32 {
     let b_area = b.width * b.height;
     let union = a_area + b_area - inter;
     if union <= 0.0 { 0.0 } else { inter / union }
+}
+
+fn merged_region_from_tracks(tracks: &[StableTrack]) -> Option<DetectionRegion> {
+    let mut merged: Option<DetectionRegion> = None;
+    for track in tracks {
+        for entry in &track.regions {
+            merged = Some(match merged {
+                Some(existing) => merge_regions(&existing, &entry.region),
+                None => entry.region.clone(),
+            });
+        }
+    }
+    merged
 }
 
 fn merge_regions(a: &DetectionRegion, b: &DetectionRegion) -> DetectionRegion {
