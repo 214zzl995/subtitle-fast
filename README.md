@@ -1,57 +1,93 @@
 # subtitle-fast
 
-A Rust workspace for streaming Y-plane data from decoded H.264 frames. The workspace currently contains:
+subtitle-fast is a Rust workspace for turning video files into subtitle tracks. The workspace is made of four crates that
+are combined by the CLI binary:
 
-- `subtitle-fast-decoder`: a library crate that exposes the `YPlaneStreamProvider` trait alongside several native decoding
-  backends.
-- `subtitle-fast`: a CLI crate that wires the decoder into a binary for manual backend testing.
+- [`subtitle-fast`](crates/subtitle-fast/README.md) – drives the async pipeline and owns CLI configuration.
+- [`subtitle-fast-decoder`](crates/subtitle-fast-decoder/README.md) – selects a decoding backend and exposes frames as a
+  luma (Y) plane stream.
+- [`subtitle-fast-validator`](crates/subtitle-fast-validator/README.md) – judges which frames contain subtitle bands and
+  reports candidate regions.
+- [`subtitle-fast-ocr`](crates/subtitle-fast-ocr/README.md) – converts cropped subtitle regions into text.
 
-## Architecture Overview
+Together these crates let the CLI stream frames, detect subtitle bands, push them through OCR, and emit `.srt` files plus
+optional debug material.
 
-- `core`: Shared primitives, including the `YPlaneStreamProvider` trait, `YPlaneFrame` metadata, and error handling.
-- `config`: Runtime configuration, enabling backend selection via environment variables or direct API usage.
-- `backends`: Concrete backend modules. FFmpeg, VideoToolbox, and Windows MFT all feed Y-plane data into an async
-  Tokio stream.
+## End-to-end data flow
 
-Backends are toggled through Cargo features on the library crate:
+Running the CLI walks through a fixed set of stages:
 
-| Feature | Description |
-| ------- | ----------- |
-| `backend-ffmpeg` | Uses `ffmpeg-next` bindings for pure-Rust decoding without invoking the CLI binary. |
-| `backend-videotoolbox` | Hardware-accelerated decoding on macOS using VideoToolbox via Objective-C bindings. |
-| `backend-mft` | Windows Media Foundation H.264 decoding for native Windows builds. |
+1. **Decoder selection** – the CLI constructs a decoder configuration from CLI flags, config files, and environment
+   variables, then instantiates the first available backend (FFmpeg, VideoToolbox, Windows MFT, or a mock fallback). The
+   decoder yields raw Y-plane frames with timestamps.
+2. **Frame preparation** – frames are sorted into presentation order and sampled at a configurable rate so later stages
+   only inspect the minimum number of frames required for stable detection.
+3. **Subtitle detection** – sampled frames flow into the validator crate, which scores each frame and maintains tracks of
+   regions that look like subtitle bands.
+4. **OCR + authoring** – confirmed tracks are expanded into OCR regions, recognised by the configured OCR backend, and
+   emitted as `.srt` cues (with optional JSON metadata and annotated images for debugging).
 
-## Running the CLI
+Each stage consumes an async stream of frames or regions and forwards a new stream downstream. Backpressure is preserved,
+so the decoder naturally slows down when OCR becomes the bottleneck.
 
-1. Enable the desired backend features on the workspace member. The CLI forwards feature flags to the decoder crate.
-2. Provide the input asset path as the first positional argument. Backend selection can be overridden with
-   `SUBFAST_BACKEND`, and file paths can be supplied via `SUBFAST_INPUT` when invoking the library directly.
-3. Run the binary:
+## Detection approach and limitations
+
+The validator crate focuses on a luma-band heuristic: it inspects a configurable strip near the bottom of each frame,
+looks for clusters of pixels whose brightness matches subtitle text, merges neighbouring components into lines, and keeps
+the most stable regions. The CLI then tracks those regions across consecutive frames to determine when subtitles appear or
+disappear.
+
+This strategy works well for broadcast-style subtitles but there is one notable gap today: if the video already contains a
+graphic that strongly resembles a subtitle and a genuine subtitle band later appears within that same area, the detector
+may treat the entire span as part of the static graphic. In that case the real subtitle band can be lost. Improving this
+behaviour would require a stronger separation between persistent overlays and newly arrived lines.
+
+## Configuration and models
+
+Configuration is merged from CLI flags, a `subtitle-fast.toml` file (if present or specified via `--config`), and
+platform-specific config directories. Paths are normalised, defaults are applied, and the resulting plan records where
+frames should be dumped, which OCR backend to use, and how aggressive detection should be.
+
+OCR model paths can be provided as local paths or HTTP(S)/`file://` URLs. Remote models are cached locally the first time
+they are used so subsequent runs start quickly.
+
+## Debugging aids
+
+When debug outputs are enabled (either via CLI or config), the pipeline can:
+
+- Persist sampled frames with detection overlays to disk for later visual inspection.
+- Dump per-frame and per-segment JSON files containing bounding boxes, intermediate scores, and the indices considered
+  when constructing each subtitle.
+
+These dumps are invaluable when tuning detector parameters or verifying OCR output.
+
+## Building and running
 
 ```bash
-cargo run --release -- <video-path>
+# Build with release optimisations and run the CLI. Provide an input path as the final argument.
+cargo run --release -- --output subtitles.srt path/to/video.mp4
 ```
 
-To run with a specific backend (for example, FFmpeg):
+Key CLI flags include:
 
-```bash
-SUBFAST_BACKEND=ffmpeg \
-cargo run --release --features backend-ffmpeg -- <video-path>
-```
+- `--backend` – lock decoding to a specific backend (`mock`, `ffmpeg`, `videotoolbox`, `mft`).
+- `--detection-samples-per-second` – tune the temporal sampling budget.
+- `--ocr-backend` plus `--ocr-mlx-model`/`--ocr-language` flags – steer OCR behaviour.
+- `--dump-dir` and `--dump-format` – emit annotated frames for visual inspection.
+
+Platform-specific decoding backends and OCR engines are controlled through Cargo features exposed by each crate. The
+workspace enables a "mock" backend automatically for CI environments and can be compiled with FFmpeg, VideoToolbox, or
+Windows MFT support when those features are toggled.
 
 ## Testing
 
-Integration tests live under the decoder crate and require backend-specific assets. For example, to exercise the FFmpeg
-backend:
+The decoder crate hosts integration tests that rely on backend-specific assets:
 
 ```bash
+# Example: run FFmpeg-backed tests once SUBFAST_TEST_ASSET is set to a valid H.264 clip
 SUBFAST_TEST_ASSET=/path/to/video.mp4 \
 cargo test -p subtitle-fast-decoder --features backend-ffmpeg
 ```
 
-Backends that rely on platform-specific APIs (e.g., VideoToolbox) will only run on compatible targets.
-
-## Continuous Integration
-
-See `.github/workflows/ci.yml` for a minimal GitHub Actions pipeline that exercises formatting and tests with a selected
-feature set.
+The CLI pipeline itself can be smoke-tested against short samples by invoking `cargo run --release` with the desired
+feature flags and CLI options.
