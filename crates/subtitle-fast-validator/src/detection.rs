@@ -1,13 +1,14 @@
 use crate::config::SubtitleDetectionOptions;
 use crate::subtitle_detection::{
     build_detector, LumaBandConfig, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
-    SubtitleDetectionResult, SubtitleDetector,
+    SubtitleDetectionResult, SubtitleDetector, SubtitleDetectorKind,
 };
 use std::time::Duration;
 use subtitle_fast_decoder::YPlaneFrame;
 use tokio::sync::Mutex;
 
 static REGION_MARGIN_PX: u32 = 5;
+const ACTIVE_DETECTOR: SubtitleDetectorKind = SubtitleDetectorKind::LumaBand;
 
 pub(crate) struct SubtitleDetectionPipeline {
     state: Mutex<SubtitleDetectionState>,
@@ -108,14 +109,14 @@ impl SubtitleDetectionState {
             if let Some(roi) = desired_roi {
                 detector_config.roi = roi;
             }
-            match build_detector(self.options.detector, detector_config) {
+            match build_detector(ACTIVE_DETECTOR, detector_config) {
                 Ok(detector) => {
                     self.detector = Some(detector);
                     self.init_error_logged = false;
                 }
                 Err(err) => {
                     if !self.init_error_logged {
-                        log_init_failure(self.options.detector, &err);
+                        log_init_failure(ACTIVE_DETECTOR, &err);
                         self.init_error_logged = true;
                     }
                     self.detector = None;

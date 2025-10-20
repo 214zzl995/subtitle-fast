@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tokio_stream::StreamExt;
 
-use crate::cli::{DetectionBackend, OcrBackend};
+use crate::cli::OcrBackend;
 use crate::settings::{DebugOutputSettings, DetectionSettings, EffectiveSettings};
 use crate::stage::detection::{
     DefaultSubtitleBandStrategy, SubtitleDetectionStage, SubtitleStageError,
@@ -20,7 +20,7 @@ use subtitle_fast_ocr::{NoopOcrEngine, OcrEngine, OcrError};
 #[cfg(all(target_os = "macos", feature = "ocr-vision"))]
 use subtitle_fast_ocr::{VisionOcrConfig, VisionOcrEngine};
 use subtitle_fast_validator::subtitle_detection::SubtitleDetectionError;
-use subtitle_fast_validator::{FrameValidator, FrameValidatorConfig, SubtitleDetectorKind};
+use subtitle_fast_validator::{FrameValidator, FrameValidatorConfig};
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -144,24 +144,11 @@ pub async fn run_pipeline(
     Ok(())
 }
 
-fn map_detection_backend(backend: DetectionBackend) -> SubtitleDetectorKind {
-    match backend {
-        DetectionBackend::Auto => SubtitleDetectorKind::Auto,
-        DetectionBackend::Vision => SubtitleDetectorKind::MacVision,
-        DetectionBackend::Luma => SubtitleDetectorKind::LumaBand,
-    }
-}
-
 fn build_validator(pipeline: &PipelineConfig) -> Result<FrameValidator, SubtitleDetectionError> {
     let mut config = FrameValidatorConfig::default();
     let detection = &mut config.detection;
-    detection.detector = map_detection_backend(pipeline.detection.backend);
-    if let Some(target) = pipeline.detection.luma_target {
-        detection.luma_band.target_luma = target;
-    }
-    if let Some(delta) = pipeline.detection.luma_delta {
-        detection.luma_band.delta = delta;
-    }
+    detection.luma_band.target_luma = pipeline.detection.luma_target;
+    detection.luma_band.delta = pipeline.detection.luma_delta;
     FrameValidator::new(config)
 }
 

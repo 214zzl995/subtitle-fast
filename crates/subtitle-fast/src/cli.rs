@@ -12,13 +12,6 @@ pub enum DumpFormat {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-pub enum DetectionBackend {
-    Auto,
-    Vision,
-    Luma,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum OcrBackend {
     Auto,
     Vision,
@@ -29,14 +22,11 @@ pub enum OcrBackend {
 #[derive(Debug, Default)]
 pub struct CliSources {
     pub dump_format_from_cli: bool,
-    pub detection_backend_from_cli: bool,
     pub detection_sps_from_cli: bool,
     pub ocr_backend_from_cli: bool,
     pub ocr_mlx_model_from_cli: bool,
     pub ocr_languages_from_cli: bool,
     pub ocr_auto_detect_language_from_cli: bool,
-    pub detection_luma_target_from_cli: bool,
-    pub detection_luma_delta_from_cli: bool,
     pub decoder_channel_capacity_from_cli: bool,
 }
 
@@ -44,14 +34,11 @@ impl CliSources {
     fn from_matches(matches: &ArgMatches) -> Self {
         Self {
             dump_format_from_cli: value_from_cli(matches, "dump_format"),
-            detection_backend_from_cli: value_from_cli(matches, "detection_backend"),
             detection_sps_from_cli: value_from_cli(matches, "detection_samples_per_second"),
             ocr_backend_from_cli: value_from_cli(matches, "ocr_backend"),
             ocr_mlx_model_from_cli: value_from_cli(matches, "ocr_mlx_model"),
             ocr_languages_from_cli: value_from_cli(matches, "ocr_languages"),
             ocr_auto_detect_language_from_cli: value_from_cli(matches, "ocr_auto_detect_language"),
-            detection_luma_target_from_cli: value_from_cli(matches, "detection_luma_target"),
-            detection_luma_delta_from_cli: value_from_cli(matches, "detection_luma_delta"),
             decoder_channel_capacity_from_cli: value_from_cli(matches, "decoder_channel_capacity"),
         }
     }
@@ -113,14 +100,6 @@ pub struct CliArgs {
         value_parser = clap::value_parser!(u32).range(1..)
     )]
     pub detection_samples_per_second: u32,
-
-    /// Preferred subtitle detection backend
-    #[arg(
-        long = "detection-backend",
-        value_enum,
-        default_value_t = DetectionBackend::Luma
-    )]
-    pub detection_backend: DetectionBackend,
 
     /// Preferred OCR backend
     #[arg(long = "ocr-backend", value_enum, default_value_t = OcrBackend::Auto)]

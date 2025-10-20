@@ -7,7 +7,8 @@ use clap::ValueEnum;
 use directories::{BaseDirs, ProjectDirs};
 use serde::Deserialize;
 
-use crate::cli::{CliArgs, CliSources, DetectionBackend, DumpFormat, OcrBackend};
+use crate::cli::{CliArgs, CliSources, DumpFormat, OcrBackend};
+use subtitle_fast_validator::subtitle_detection::{DEFAULT_LUMA_DELTA, DEFAULT_LUMA_TARGET};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -37,7 +38,6 @@ struct DebugDumpFileConfig {
 #[serde(default)]
 struct DetectionFileConfig {
     samples_per_second: Option<u32>,
-    backend: Option<String>,
     luma_target: Option<u8>,
     luma_delta: Option<u8>,
 }
@@ -87,9 +87,8 @@ pub struct ResolvedSettings {
 #[derive(Debug, Clone)]
 pub struct DetectionSettings {
     pub samples_per_second: u32,
-    pub backend: DetectionBackend,
-    pub luma_target: Option<u8>,
-    pub luma_delta: Option<u8>,
+    pub luma_target: u8,
+    pub luma_delta: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -367,13 +366,6 @@ fn merge(
         json: json_dump,
     };
 
-    let detection_backend = resolve_detection_backend(
-        cli.detection_backend,
-        detection_cfg.backend.clone(),
-        !sources.detection_backend_from_cli,
-        config_path.as_ref(),
-    )?;
-
     let detection_samples_per_second = resolve_detection_sps(
         cli.detection_samples_per_second,
         detection_cfg.samples_per_second,
@@ -381,17 +373,15 @@ fn merge(
         config_path.as_ref(),
     )?;
 
-    let detection_luma_target = resolve_optional_override(
-        cli.detection_luma_target,
-        detection_cfg.luma_target,
-        !sources.detection_luma_target_from_cli,
-    );
+    let detection_luma_target = cli
+        .detection_luma_target
+        .or(detection_cfg.luma_target)
+        .unwrap_or(DEFAULT_LUMA_TARGET);
 
-    let detection_luma_delta = resolve_optional_override(
-        cli.detection_luma_delta,
-        detection_cfg.luma_delta,
-        !sources.detection_luma_delta_from_cli,
-    );
+    let detection_luma_delta = cli
+        .detection_luma_delta
+        .or(detection_cfg.luma_delta)
+        .unwrap_or(DEFAULT_LUMA_DELTA);
 
     let ocr_backend = resolve_ocr_backend(
         cli.ocr_backend,
@@ -440,7 +430,6 @@ fn merge(
         debug: debug_output,
         detection: DetectionSettings {
             samples_per_second: detection_samples_per_second,
-            backend: detection_backend,
             luma_target: detection_luma_target,
             luma_delta: detection_luma_delta,
         },
@@ -521,31 +510,6 @@ fn parse_dump_format(value: &str, path: Option<&PathBuf>) -> Result<DumpFormat, 
     })
 }
 
-fn parse_detection_backend(
-    value: &str,
-    path: Option<&PathBuf>,
-) -> Result<DetectionBackend, ConfigError> {
-    DetectionBackend::from_str(value, false).map_err(|_| ConfigError::InvalidValue {
-        path: path.cloned(),
-        field: "detection_backend",
-        value: value.to_string(),
-    })
-}
-
-fn resolve_detection_backend(
-    cli_backend: DetectionBackend,
-    file_backend: Option<String>,
-    use_file: bool,
-    config_path: Option<&PathBuf>,
-) -> Result<DetectionBackend, ConfigError> {
-    if use_file {
-        if let Some(value) = normalize_string(file_backend) {
-            return parse_detection_backend(&value, config_path);
-        }
-    }
-    Ok(cli_backend)
-}
-
 fn parse_ocr_backend(value: &str, path: Option<&PathBuf>) -> Result<OcrBackend, ConfigError> {
     OcrBackend::from_str(value, false).map_err(|_| ConfigError::InvalidValue {
         path: path.cloned(),
@@ -589,11 +553,7 @@ fn resolve_detection_sps(
     Ok(cli_value)
 }
 
-fn resolve_optional_override<T>(
-    cli_value: Option<T>,
-    file_value: Option<T>,
-    use_file: bool,
-) -> Option<T> {
+fn resolve_optional_override<T>(cli_value: Option<T>, file_value: Option<T>, use_file: bool) -> Option<T> {
     if use_file {
         if file_value.is_some() {
             return file_value;

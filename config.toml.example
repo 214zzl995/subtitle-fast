@@ -18,9 +18,8 @@ pretty = true
 
 [detection]
 samples_per_second = 7
-backend = "auto"
-# luma_target = 230
-# luma_delta = 12
+luma_target = 230
+luma_delta = 12
 
 [ocr]
 backend = "auto"
