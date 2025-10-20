@@ -8,6 +8,7 @@ use crate::cli::OcrBackend;
 use crate::settings::{DebugOutputSettings, DetectionSettings, EffectiveSettings};
 use crate::stage::detection::{
     DefaultSubtitleBandStrategy, SubtitleDetectionStage, SubtitleStageError,
+    FAST_DETECTOR_KIND, PRECISE_DETECTOR_KIND,
 };
 use crate::stage::sampler::FrameSampler;
 use crate::stage::sorter::FrameSorter;
@@ -65,8 +66,8 @@ pub async fn run_pipeline(
     let initial_total_frames = provider.total_frames();
     let initial_stream = provider.into_stream();
 
-    let validator = match build_validator(_pipeline) {
-        Ok(validator) => validator,
+    let (fast_validator, precise_validator) = match build_validators(_pipeline) {
+        Ok(pair) => pair,
         Err(err) => return Err((map_detection_error(err), 0)),
     };
 
@@ -90,7 +91,8 @@ pub async fn run_pipeline(
         stream: detection_stream,
         total_frames: detection_total_frames,
     } = Box::new(SubtitleDetectionStage::new(
-        validator,
+        fast_validator,
+        precise_validator,
         _pipeline.detection.samples_per_second,
         Arc::new(DefaultSubtitleBandStrategy::default()),
         _pipeline.debug.image.clone(),
@@ -144,12 +146,25 @@ pub async fn run_pipeline(
     Ok(())
 }
 
-fn build_validator(pipeline: &PipelineConfig) -> Result<FrameValidator, SubtitleDetectionError> {
-    let mut config = FrameValidatorConfig::default();
-    let detection = &mut config.detection;
-    detection.luma_band.target_luma = pipeline.detection.luma_target;
-    detection.luma_band.delta = pipeline.detection.luma_delta;
-    FrameValidator::new(config)
+fn build_validators(
+    pipeline: &PipelineConfig,
+) -> Result<(FrameValidator, FrameValidator), SubtitleDetectionError> {
+    let mut base_config = FrameValidatorConfig::default();
+    {
+        let detection = &mut base_config.detection;
+        detection.luma_band.target_luma = pipeline.detection.luma_target;
+        detection.luma_band.delta = pipeline.detection.luma_delta;
+    }
+
+    let mut fast_config = base_config.clone();
+    fast_config.detection.detector = FAST_DETECTOR_KIND;
+
+    let mut precise_config = base_config;
+    precise_config.detection.detector = PRECISE_DETECTOR_KIND;
+
+    let fast = FrameValidator::new(fast_config)?;
+    let precise = FrameValidator::new(precise_config)?;
+    Ok((fast, precise))
 }
 
 fn log_generated_subtitle(subtitle: &GeneratedSubtitle) {

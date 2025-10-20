@@ -15,13 +15,17 @@ use super::{PipelineStage, StageInput, StageOutput};
 use crate::settings::{ImageDumpSettings, JsonDumpSettings};
 use crate::tools::YPlaneSaver;
 use subtitle_fast_decoder::{YPlaneError, YPlaneFrame};
-use subtitle_fast_validator::FrameValidator;
 use subtitle_fast_validator::subtitle_detection::{
     DetectionRegion, RoiConfig, SubtitleDetectionError, SubtitleDetectionResult,
 };
+use subtitle_fast_validator::subtitle_detection::SubtitleDetectorKind;
+use subtitle_fast_validator::FrameValidator;
 
 const STABILITY_IOU_THRESHOLD: f32 = 0.5;
 const ROI_EXPANSION_PX: f32 = 6.0;
+
+pub const FAST_DETECTOR_KIND: SubtitleDetectorKind = SubtitleDetectorKind::LumaBand;
+pub const PRECISE_DETECTOR_KIND: SubtitleDetectorKind = SubtitleDetectorKind::Auto;
 
 pub type SubtitleStageResult = Result<SubtitleSegment, SubtitleStageError>;
 
@@ -53,7 +57,8 @@ pub enum SubtitleStageError {
 }
 
 pub struct SubtitleDetectionStage {
-    validator: FrameValidator,
+    fast_validator: FrameValidator,
+    precise_validator: FrameValidator,
     samples_per_second: u32,
     strategy: Arc<dyn SubtitleBandStrategy>,
     image_settings: Option<ImageDumpSettings>,
@@ -62,14 +67,16 @@ pub struct SubtitleDetectionStage {
 
 impl SubtitleDetectionStage {
     pub fn new(
-        validator: FrameValidator,
+        fast_validator: FrameValidator,
+        precise_validator: FrameValidator,
         samples_per_second: u32,
         strategy: Arc<dyn SubtitleBandStrategy>,
         image_settings: Option<ImageDumpSettings>,
         json_settings: Option<JsonDumpSettings>,
     ) -> Self {
         Self {
-            validator,
+            fast_validator,
+            precise_validator,
             samples_per_second,
             strategy,
             image_settings,
@@ -91,7 +98,8 @@ impl PipelineStage<SamplerResult> for SubtitleDetectionStage {
             total_frames,
         } = input;
 
-        let validator = self.validator.clone();
+        let fast_validator = self.fast_validator.clone();
+        let precise_validator = self.precise_validator.clone();
         let samples_per_second = self.samples_per_second;
         let strategy = self.strategy.clone();
         let image_settings = self.image_settings.clone();
@@ -101,7 +109,8 @@ impl PipelineStage<SamplerResult> for SubtitleDetectionStage {
         tokio::spawn(async move {
             let mut upstream = stream;
             let mut worker = SubtitleDetectionWorker::new(
-                validator,
+                fast_validator,
+                precise_validator,
                 samples_per_second,
                 strategy,
                 image_settings,
@@ -145,7 +154,8 @@ impl PipelineStage<SamplerResult> for SubtitleDetectionStage {
                 eprintln!("debug finalize error: {err}");
             }
 
-            worker.validator.finalize().await;
+            worker.fast_validator.finalize().await;
+            worker.precise_validator.finalize().await;
         });
 
         let stream = Box::pin(futures_util::stream::unfold(rx, |mut receiver| async {
@@ -188,7 +198,8 @@ struct ActiveSubtitle {
 }
 
 struct SubtitleDetectionWorker {
-    validator: FrameValidator,
+    fast_validator: FrameValidator,
+    precise_validator: FrameValidator,
     window: VecDeque<SampleObservation>,
     required_consecutive: usize,
     active: Option<ActiveSubtitle>,
@@ -201,14 +212,16 @@ struct SubtitleDetectionWorker {
 
 impl SubtitleDetectionWorker {
     fn new(
-        validator: FrameValidator,
+        fast_validator: FrameValidator,
+        precise_validator: FrameValidator,
         samples_per_second: u32,
         strategy: Arc<dyn SubtitleBandStrategy>,
         image_settings: Option<ImageDumpSettings>,
         json_settings: Option<JsonDumpSettings>,
     ) -> Self {
         Self {
-            validator,
+            fast_validator,
+            precise_validator,
             window: VecDeque::new(),
             required_consecutive: 1,
             active: None,
@@ -259,7 +272,7 @@ impl SubtitleDetectionWorker {
         let roi = self.active.as_ref().map(|active| active.roi);
 
         let detection = self
-            .validator
+            .fast_validator
             .process_frame_with_roi(frame.clone(), roi)
             .await
             .map_err(SubtitleStageError::Detection)?;
@@ -405,6 +418,7 @@ impl SubtitleDetectionWorker {
         let dims = self.frame_dimensions?;
         let mut merged = None;
         let mut regions = Vec::new();
+        
         for observation in &self.window {
             regions.push(observation.shot.region.clone());
         }
@@ -528,7 +542,7 @@ impl SubtitleDetectionWorker {
             let frame = record.frame_handle();
             let frame_clone = frame.as_ref().clone();
             let detection = self
-                .validator
+                .fast_validator
                 .process_frame_with_roi(frame_clone.clone(), Some(active.roi))
                 .await
                 .map_err(SubtitleStageError::Detection)?;
@@ -577,7 +591,7 @@ impl SubtitleDetectionWorker {
             let frame = record.frame_handle();
             let frame_clone = frame.as_ref().clone();
             let detection = self
-                .validator
+                .fast_validator
                 .process_frame_with_roi(frame_clone.clone(), Some(roi))
                 .await
                 .map_err(SubtitleStageError::Detection)?;

@@ -8,8 +8,6 @@ use subtitle_fast_decoder::YPlaneFrame;
 use tokio::sync::Mutex;
 
 static REGION_MARGIN_PX: u32 = 5;
-const ACTIVE_DETECTOR: SubtitleDetectorKind = SubtitleDetectorKind::LumaBand;
-
 pub(crate) struct SubtitleDetectionPipeline {
     state: Mutex<SubtitleDetectionState>,
     enabled: bool,
@@ -63,6 +61,7 @@ impl SubtitleDetectionPipeline {
 
 struct SubtitleDetectionState {
     detector: Option<Box<dyn SubtitleDetector>>,
+    detector_kind: Option<SubtitleDetectorKind>,
     detector_dims: Option<(usize, usize, usize)>,
     detector_roi: Option<RoiConfig>,
     init_error_logged: bool,
@@ -73,6 +72,7 @@ impl SubtitleDetectionState {
     fn new(options: SubtitleDetectionOptions) -> Self {
         Self {
             detector: None,
+            detector_kind: None,
             detector_dims: None,
             detector_roi: None,
             init_error_logged: false,
@@ -95,11 +95,14 @@ impl SubtitleDetectionState {
             frame.stride(),
         );
         let desired_roi = roi_override.or(self.options.roi);
+        let detector_kind = self.options.detector;
         let needs_rebuild = self.detector_dims != Some(dims)
+            || self.detector_kind != Some(detector_kind)
             || self.detector_roi != desired_roi
             || self.detector.is_none();
         if needs_rebuild {
             self.detector_dims = Some(dims);
+            self.detector_kind = Some(detector_kind);
             self.detector_roi = desired_roi;
             let mut detector_config = SubtitleDetectionConfig::for_frame(dims.0, dims.1, dims.2);
             detector_config.luma_band = LumaBandConfig {
@@ -109,17 +112,18 @@ impl SubtitleDetectionState {
             if let Some(roi) = desired_roi {
                 detector_config.roi = roi;
             }
-            match build_detector(ACTIVE_DETECTOR, detector_config) {
+            match build_detector(detector_kind, detector_config) {
                 Ok(detector) => {
                     self.detector = Some(detector);
                     self.init_error_logged = false;
                 }
                 Err(err) => {
                     if !self.init_error_logged {
-                        log_init_failure(ACTIVE_DETECTOR, &err);
+                        log_init_failure(detector_kind, &err);
                         self.init_error_logged = true;
                     }
                     self.detector = None;
+                    self.detector_kind = None;
                     self.detector_dims = None;
                     self.detector_roi = None;
                     return Err(err);
@@ -150,6 +154,7 @@ impl SubtitleDetectionState {
             return;
         }
         self.detector = None;
+        self.detector_kind = None;
         self.detector_dims = None;
         self.detector_roi = None;
     }
@@ -210,7 +215,7 @@ fn duration_millis(duration: Duration) -> u64 {
 }
 
 fn log_init_failure(
-    kind: crate::subtitle_detection::SubtitleDetectorKind,
+    kind: SubtitleDetectorKind,
     err: &SubtitleDetectionError,
 ) {
     eprintln!(
