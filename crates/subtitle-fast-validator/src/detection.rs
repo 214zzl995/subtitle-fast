@@ -214,10 +214,7 @@ fn duration_millis(duration: Duration) -> u64 {
     }
 }
 
-fn log_init_failure(
-    kind: SubtitleDetectorKind,
-    err: &SubtitleDetectionError,
-) {
+fn log_init_failure(kind: SubtitleDetectorKind, err: &SubtitleDetectionError) {
     eprintln!(
         "subtitle detection initialization failed for backend '{}': {err}",
         kind.as_str()

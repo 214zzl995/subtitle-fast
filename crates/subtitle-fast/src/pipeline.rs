@@ -7,8 +7,8 @@ use tokio_stream::StreamExt;
 use crate::cli::OcrBackend;
 use crate::settings::{DebugOutputSettings, DetectionSettings, EffectiveSettings};
 use crate::stage::detection::{
-    DefaultSubtitleBandStrategy, SubtitleDetectionStage, SubtitleStageError,
-    FAST_DETECTOR_KIND, PRECISE_DETECTOR_KIND,
+    DefaultSubtitleBandStrategy, FAST_DETECTOR_KIND, PRECISE_DETECTOR_KIND, SubtitleDetectionStage,
+    SubtitleStageError,
 };
 use crate::stage::sampler::FrameSampler;
 use crate::stage::sorter::FrameSorter;

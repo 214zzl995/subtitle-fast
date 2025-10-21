@@ -553,7 +553,11 @@ fn resolve_detection_sps(
     Ok(cli_value)
 }
 
-fn resolve_optional_override<T>(cli_value: Option<T>, file_value: Option<T>, use_file: bool) -> Option<T> {
+fn resolve_optional_override<T>(
+    cli_value: Option<T>,
+    file_value: Option<T>,
+    use_file: bool,
+) -> Option<T> {
     if use_file {
         if file_value.is_some() {
             return file_value;

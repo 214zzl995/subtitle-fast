@@ -60,15 +60,15 @@ fn compiled_backends() -> Vec<Backend> {
 }
 
 #[cfg(target_os = "macos")]
-fn append_platform_backends(backends: &mut Vec<Backend>) {
+fn append_platform_backends(_backends: &mut Vec<Backend>) {
     #[cfg(feature = "backend-videotoolbox")]
     {
-        backends.push(Backend::VideoToolbox);
+        _backends.push(Backend::VideoToolbox);
     }
     #[cfg(feature = "backend-ffmpeg")]
     {
         if ffmpeg_runtime_available() {
-            backends.push(Backend::Ffmpeg);
+            _backends.push(Backend::Ffmpeg);
         }
     }
 }

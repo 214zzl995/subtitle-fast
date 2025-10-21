@@ -15,11 +15,11 @@ use super::{PipelineStage, StageInput, StageOutput};
 use crate::settings::{ImageDumpSettings, JsonDumpSettings};
 use crate::tools::YPlaneSaver;
 use subtitle_fast_decoder::{YPlaneError, YPlaneFrame};
+use subtitle_fast_validator::FrameValidator;
+use subtitle_fast_validator::subtitle_detection::SubtitleDetectorKind;
 use subtitle_fast_validator::subtitle_detection::{
     DetectionRegion, RoiConfig, SubtitleDetectionError, SubtitleDetectionResult,
 };
-use subtitle_fast_validator::subtitle_detection::SubtitleDetectorKind;
-use subtitle_fast_validator::FrameValidator;
 
 const STABILITY_IOU_THRESHOLD: f32 = 0.6;
 const ROI_EXPANSION_PX: f32 = 6.0;
@@ -285,12 +285,7 @@ impl SubtitleDetectionWorker {
                 .map_err(SubtitleStageError::Detection)?;
             println!(
                 "[precise] frame={} roi=({}, {}, {}, {}) has_subtitle={}",
-                last_shot.frame_index,
-                roi.x,
-                roi.y,
-                roi.width,
-                roi.height,
-                detection.has_subtitle
+                last_shot.frame_index, roi.x, roi.y, roi.width, roi.height, detection.has_subtitle
             );
             if detection.has_subtitle {
                 if let Some(precise_region) = best_region(&detection) {

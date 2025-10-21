@@ -199,16 +199,14 @@ impl SamplerWorker {
             None
         };
 
-        self.pool
-            .push(PoolEntry::new(frame_index, frame_type, Arc::clone(&frame_arc)));
+        self.pool.push(PoolEntry::new(
+            frame_index,
+            frame_type,
+            Arc::clone(&frame_arc),
+        ));
 
         if let Some(history) = history {
-            let sample = SampledFrame::new(
-                frame_index,
-                frame_arc,
-                history,
-                self.context.clone(),
-            );
+            let sample = SampledFrame::new(frame_index, frame_arc, history, self.context.clone());
             if tx.send(Ok(sample)).await.is_err() {
                 return Err(());
             }

@@ -181,9 +181,7 @@ impl SubtitleDetectionConfig {
     }
 }
 
-pub fn preflight_detection(
-    kind: SubtitleDetectorKind,
-) -> Result<(), SubtitleDetectionError> {
+pub fn preflight_detection(kind: SubtitleDetectorKind) -> Result<(), SubtitleDetectionError> {
     let probe_config = build_probe_config();
     match kind {
         SubtitleDetectorKind::Auto => preflight_auto(&probe_config),
@@ -200,9 +198,7 @@ fn build_probe_config() -> SubtitleDetectionConfig {
     SubtitleDetectionConfig::for_frame(640, 360, 640)
 }
 
-fn preflight_auto(
-    probe_config: &SubtitleDetectionConfig,
-) -> Result<(), SubtitleDetectionError> {
+fn preflight_auto(probe_config: &SubtitleDetectionConfig) -> Result<(), SubtitleDetectionError> {
     let mut last_err: Option<SubtitleDetectionError> = None;
     for &candidate in auto_backend_priority() {
         match ensure_backend_available(candidate, probe_config) {
