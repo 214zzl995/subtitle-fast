@@ -6,8 +6,6 @@ mod region;
 mod request;
 mod response;
 
-#[cfg(all(feature = "engine-mlx-vlm", target_os = "macos"))]
-pub use backends::mlx::MlxVlmOcrEngine;
 #[cfg(all(feature = "engine-vision", target_os = "macos"))]
 pub use backends::vision::{VisionOcrConfig, VisionOcrEngine};
 pub use engine::{NoopOcrEngine, OcrEngine};

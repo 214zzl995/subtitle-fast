@@ -17,6 +17,5 @@ The trait also offers a warm-up hook so engines can preload models or allocate r
 | Feature | Description |
 | ------- | ----------- |
 | `engine-vision` | Enables the Apple Vision OCR backend (macOS only). |
-| `engine-mlx-vlm` | Enables the MLX VLM backend (macOS only). |
 
 With neither feature enabled the crate only exposes `NoopOcrEngine`, which is useful for pipeline testing without OCR.

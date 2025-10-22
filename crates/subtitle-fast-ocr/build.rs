@@ -24,24 +24,7 @@ fn build_vision_bridge() {
 #[cfg(not(target_os = "macos"))]
 fn build_vision_bridge() {}
 
-#[cfg(target_os = "macos")]
-fn build_mlx_bridge() {
-    if env::var("CARGO_FEATURE_ENGINE_MLX_VLM").is_err() {
-        return;
-    }
-
-    println!("cargo:rerun-if-changed=src/backends/mlx/mlx_vlm_bridge.m");
-
-    let mut build = cc::Build::new();
-    build.file("src/backends/mlx/mlx_vlm_bridge.m");
-    build.compile("mlx_vlm_bridge");
-}
-
-#[cfg(not(target_os = "macos"))]
-fn build_mlx_bridge() {}
-
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     build_vision_bridge();
-    build_mlx_bridge();
 }

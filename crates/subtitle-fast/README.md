@@ -23,8 +23,6 @@ Each step runs asynchronously, allowing the CLI to keep decoding even when OCR i
 - Command-line flags take priority over configuration files and environment variables.
 - The CLI derives sensible defaults (for example seven detection samples per second) and stores them alongside the final
   plan so the UI can explain how each setting was chosen.
-- OCR model locations can be local paths or URLs. Remote models are downloaded to a cache directory on first use.
-
 ## Debug outputs
 
 When requested, the CLI can:
@@ -38,7 +36,7 @@ These diagnostics are invaluable when tuning detection thresholds or validating 
 
 - Decoder backends are toggled through features on `subtitle-fast-decoder` (`backend-ffmpeg`, `backend-videotoolbox`,
   `backend-mft`, or the always-available mock backend).
-- OCR support depends on the target: macOS builds can enable Apple Vision (`ocr-vision`) and MLX VLM (`ocr-mlx-vlm`).
+- OCR support depends on the target: macOS builds can enable Apple Vision (`ocr-vision`).
 - Debug helpers are available on all platforms and require no extra features.
 
 ## Running the binary

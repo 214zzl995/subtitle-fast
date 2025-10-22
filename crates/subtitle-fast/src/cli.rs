@@ -16,7 +16,6 @@ pub enum OcrBackend {
     Auto,
     Vision,
     Noop,
-    MlxVlm,
 }
 
 #[derive(Debug, Default)]
@@ -24,7 +23,6 @@ pub struct CliSources {
     pub dump_format_from_cli: bool,
     pub detection_sps_from_cli: bool,
     pub ocr_backend_from_cli: bool,
-    pub ocr_mlx_model_from_cli: bool,
     pub ocr_languages_from_cli: bool,
     pub ocr_auto_detect_language_from_cli: bool,
     pub decoder_channel_capacity_from_cli: bool,
@@ -36,7 +34,6 @@ impl CliSources {
             dump_format_from_cli: value_from_cli(matches, "dump_format"),
             detection_sps_from_cli: value_from_cli(matches, "detection_samples_per_second"),
             ocr_backend_from_cli: value_from_cli(matches, "ocr_backend"),
-            ocr_mlx_model_from_cli: value_from_cli(matches, "ocr_mlx_model"),
             ocr_languages_from_cli: value_from_cli(matches, "ocr_languages"),
             ocr_auto_detect_language_from_cli: value_from_cli(matches, "ocr_auto_detect_language"),
             decoder_channel_capacity_from_cli: value_from_cli(matches, "decoder_channel_capacity"),
@@ -104,10 +101,6 @@ pub struct CliArgs {
     /// Preferred OCR backend
     #[arg(long = "ocr-backend", value_enum, default_value_t = OcrBackend::Auto)]
     pub ocr_backend: OcrBackend,
-
-    /// Local model path for the mlx_vlm OCR backend
-    #[arg(long = "ocr-mlx-model", id = "ocr_mlx_model")]
-    pub ocr_mlx_model: Option<String>,
 
     /// Restrict OCR to the provided language (repeatable)
     #[arg(long = "ocr-language", id = "ocr_languages", value_name = "LANG")]

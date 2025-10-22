@@ -72,7 +72,7 @@ Key CLI flags include:
 
 - `--backend` – lock decoding to a specific backend (`mock`, `ffmpeg`, `videotoolbox`, `mft`).
 - `--detection-samples-per-second` – tune the temporal sampling budget.
-- `--ocr-backend` plus `--ocr-mlx-model`/`--ocr-language` flags – steer OCR behaviour.
+- `--ocr-backend` plus `--ocr-language` flags – steer OCR behaviour.
 - `--dump-dir` and `--dump-format` – emit annotated frames for visual inspection.
 
 Platform-specific decoding backends and OCR engines are controlled through Cargo features exposed by each crate. The

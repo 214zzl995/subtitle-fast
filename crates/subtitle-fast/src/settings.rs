@@ -46,7 +46,6 @@ struct DetectionFileConfig {
 #[serde(default)]
 struct OcrFileConfig {
     backend: Option<String>,
-    mlx_vlm_model: Option<String>,
     languages: Option<Vec<String>>,
     auto_detect_language: Option<bool>,
 }
@@ -81,7 +80,6 @@ pub struct EffectiveSettings {
 #[derive(Debug)]
 pub struct ResolvedSettings {
     pub settings: EffectiveSettings,
-    pub config_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -94,8 +92,6 @@ pub struct DetectionSettings {
 #[derive(Debug, Clone)]
 pub struct OcrSettings {
     pub backend: OcrBackend,
-    pub mlx_vlm_model: Option<String>,
-    pub mlx_vlm_model_from_cli: bool,
     pub languages: Vec<String>,
     pub auto_detect_language: bool,
 }
@@ -390,12 +386,6 @@ fn merge(
         config_path.as_ref(),
     )?;
 
-    let ocr_mlx_model = resolve_optional_override(
-        cli.ocr_mlx_model.clone(),
-        ocr_cfg.mlx_vlm_model.clone(),
-        !sources.ocr_mlx_model_from_cli,
-    );
-
     let ocr_languages = resolve_ocr_languages(
         &cli.ocr_languages,
         ocr_cfg.languages.clone(),
@@ -436,17 +426,12 @@ fn merge(
         decoder: decoder_settings,
         ocr: OcrSettings {
             backend: ocr_backend,
-            mlx_vlm_model: ocr_mlx_model,
-            mlx_vlm_model_from_cli: sources.ocr_mlx_model_from_cli,
             languages: ocr_languages,
             auto_detect_language,
         },
     };
 
-    Ok(ResolvedSettings {
-        settings,
-        config_dir,
-    })
+    Ok(ResolvedSettings { settings })
 }
 
 fn default_config_path() -> Option<PathBuf> {
@@ -551,19 +536,6 @@ fn resolve_detection_sps(
         }
     }
     Ok(cli_value)
-}
-
-fn resolve_optional_override<T>(
-    cli_value: Option<T>,
-    file_value: Option<T>,
-    use_file: bool,
-) -> Option<T> {
-    if use_file {
-        if file_value.is_some() {
-            return file_value;
-        }
-    }
-    cli_value
 }
 
 fn normalize_language_iter<I, S>(values: I) -> Vec<String>

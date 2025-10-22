@@ -23,7 +23,6 @@ luma_delta = 12
 
 [ocr]
 backend = "auto"
-# mlx_vlm_model = "/path/to/mlx-vlm-model.mlx"
 # languages = ["en-US", "zh-Hans"]
 # auto_detect_language = true
 
