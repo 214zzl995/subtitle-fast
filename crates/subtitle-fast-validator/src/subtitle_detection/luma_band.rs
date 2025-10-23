@@ -11,15 +11,27 @@ use super::{
 };
 use subtitle_fast_decoder::YPlaneFrame;
 
-const RLSA_H_GAP: usize = 18;
-const RLSA_V_GAP: usize = 3;
-const MIN_AREA: usize = 400;
+// Horizontal run-length smoothing gap for linking bright pixels.
+const RLSA_H_GAP: usize = 100;
+// Vertical gap threshold used by RLSA to bridge row-wise gaps.
+const RLSA_V_GAP: usize = 10;
+// Minimum connected-component area kept as a subtitle candidate.
+const MIN_AREA: usize = 300;
+// Reject components that occupy more than this fraction of the frame.
 const MAX_AREA_RATIO: f32 = 0.35;
+// Lower bound on width / height of candidate rectangles.
 const MIN_ASPECT_RATIO: f32 = 2.0;
+// Subdivision factor for evaluating fill variance.
 const VMR_K: usize = 4;
+// Max distance between vertical centers to consider the same line.
 const Y_MERGE_TOL: usize = 10;
+// Required vertical overlap ratio to force a same-line merge.
+const Y_OVERLAP_RATIO: f32 = 0.30;
+// IoU threshold when merging horizontally adjacent boxes.
 const IOU_MERGE: f32 = 0.15;
+// Allowable horizontal gap when merging neighboring boxes.
 const NEAR_GAP: usize = 16;
+// Clamp the number of boxes returned to the pipeline.
 const MAX_OUTPUT_REGIONS: usize = 4;
 
 #[derive(Clone, Copy)]
@@ -696,7 +708,17 @@ fn same_line(a: &Candidate, b: &Candidate) -> bool {
     let cy1 = a.y + a.height / 2;
     let cy2 = b.y + b.height / 2;
     let diff = if cy1 >= cy2 { cy1 - cy2 } else { cy2 - cy1 };
-    diff <= Y_MERGE_TOL
+    if diff <= Y_MERGE_TOL {
+        return true;
+    }
+    let y0 = cmp::max(a.y, b.y);
+    let y1 = cmp::min(a.y + a.height, b.y + b.height);
+    if y1 <= y0 {
+        return false;
+    }
+    let overlap = (y1 - y0) as f32;
+    let min_height = cmp::min(a.height, b.height).max(1) as f32;
+    (overlap / min_height) >= Y_OVERLAP_RATIO
 }
 
 fn merge_group(mut group: Vec<Candidate>, integral: &[u32], width: usize) -> Vec<Candidate> {

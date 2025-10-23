@@ -37,6 +37,11 @@ looks for clusters of pixels whose brightness matches subtitle text, merges neig
 the most stable regions. The CLI then tracks those regions across consecutive frames to determine when subtitles appear or
 disappear.
 
+Although this luma-band backend can deliver extremely high throughput, it remains experimental. Subtitle styles differ
+widely across sources, and the same parameters that excel on one show may fail to stabilise thin fonts, stylised karaoke,
+or unconventional layouts. Expect to revisit detector tuning for new content, and pair it with OCR or alternative
+detectors when consistency matters more than raw speed.
+
 This strategy works well for broadcast-style subtitles but there is one notable gap today: if the video already contains a
 graphic that strongly resembles a subtitle and a genuine subtitle band later appears within that same area, the detector
 may treat the entire span as part of the static graphic. In that case the real subtitle band can be lost. Improving this
