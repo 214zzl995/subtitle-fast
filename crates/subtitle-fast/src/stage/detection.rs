@@ -400,7 +400,11 @@ mod worker {
             let dims = (frame.width(), frame.height());
             self.frame_dimensions = Some(dims);
 
-            let roi = self.active.as_ref().map(|active| active.roi);
+            let roi = self
+                .active
+                .as_ref()
+                .map(|active| active.roi)
+                .or_else(|| Some(default_detection_roi()));
 
             let detection = self
                 .fast_validator
@@ -1039,11 +1043,20 @@ mod worker {
     }
 
     fn roi_from_region(region: &DetectionRegion) -> RoiConfig {
+    RoiConfig {
+        x: region.x,
+        y: region.y,
+        width: region.width.max(1.0),
+        height: region.height.max(1.0),
+    }
+}
+
+    fn default_detection_roi() -> RoiConfig {
         RoiConfig {
-            x: region.x,
-            y: region.y,
-            width: region.width.max(1.0),
-            height: region.height.max(1.0),
+            x: 0.0,
+            y: 0.8,
+            width: 1.0,
+            height: 0.2,
         }
     }
 

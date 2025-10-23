@@ -162,16 +162,15 @@ pub struct SubtitleDetectionConfig {
 
 impl SubtitleDetectionConfig {
     pub fn for_frame(frame_width: usize, frame_height: usize, stride: usize) -> Self {
-        let roi_y = 0.65f32;
         Self {
             frame_width,
             frame_height,
             stride,
             roi: RoiConfig {
-                x: 0.05,
-                y: roi_y,
-                width: 0.90,
-                height: (1.0 - roi_y).max(0.0),
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
             },
             luma_band: LumaBandConfig {
                 target_luma: DEFAULT_LUMA_TARGET,
