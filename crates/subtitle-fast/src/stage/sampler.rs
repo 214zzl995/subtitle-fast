@@ -5,7 +5,7 @@ use std::time::Duration;
 use futures_util::{StreamExt, stream::unfold};
 use tokio::sync::mpsc;
 
-use super::{PipelineStage, StageInput, StageOutput};
+use super::StreamBundle;
 use subtitle_fast_decoder::{YPlaneError, YPlaneFrame, YPlaneResult};
 
 const SAMPLER_CHANNEL_CAPACITY: usize = 1;
@@ -98,18 +98,12 @@ impl FrameSampler {
     }
 }
 
-impl PipelineStage<YPlaneResult<YPlaneFrame>> for FrameSampler {
-    type Output = SamplerResult;
-
-    fn name(&self) -> &'static str {
-        "frame_sampler"
-    }
-
-    fn apply(
-        self: Box<Self>,
-        input: StageInput<YPlaneResult<YPlaneFrame>>,
-    ) -> StageOutput<Self::Output> {
-        let StageInput {
+impl FrameSampler {
+    pub fn attach(
+        self,
+        input: StreamBundle<YPlaneResult<YPlaneFrame>>,
+    ) -> StreamBundle<SamplerResult> {
+        let StreamBundle {
             stream,
             total_frames,
         } = input;
@@ -143,10 +137,7 @@ impl PipelineStage<YPlaneResult<YPlaneFrame>> for FrameSampler {
             }
         }));
 
-        StageOutput {
-            stream,
-            total_frames,
-        }
+        StreamBundle::new(stream, total_frames)
     }
 }
 

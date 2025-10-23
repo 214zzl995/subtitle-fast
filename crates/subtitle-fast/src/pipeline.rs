@@ -13,7 +13,7 @@ use crate::stage::detection::{
 use crate::stage::sampler::FrameSampler;
 use crate::stage::sorter::FrameSorter;
 use crate::stage::subtitle_gen::{GeneratedSubtitle, SubtitleGen, SubtitleGenError};
-use crate::stage::{PipelineStage, StageInput, StageOutput};
+use crate::stage::StreamBundle;
 use subtitle_fast_decoder::{DynYPlaneProvider, YPlaneError};
 use subtitle_fast_ocr::{NoopOcrEngine, OcrEngine, OcrError};
 #[cfg(all(target_os = "macos", feature = "ocr-vision"))]
@@ -64,55 +64,35 @@ pub async fn run_pipeline(
         Err(err) => return Err((map_detection_error(err), 0)),
     };
 
-    let StageOutput {
-        stream: sorted_stream,
-        total_frames: sorted_total_frames,
-    } = Box::new(FrameSorter::new()).apply(StageInput {
-        stream: initial_stream,
-        total_frames: initial_total_frames,
-    });
+    let sorted = FrameSorter::new().attach(StreamBundle::new(initial_stream, initial_total_frames));
 
-    let StageOutput {
-        stream: sampled_stream,
-        total_frames: _sampled_total_frames,
-    } = Box::new(FrameSampler::new(_pipeline.detection.samples_per_second)).apply(StageInput {
-        stream: sorted_stream,
-        total_frames: sorted_total_frames,
-    });
+    let sampled =
+        FrameSampler::new(_pipeline.detection.samples_per_second).attach(sorted);
 
-    let StageOutput {
-        stream: detection_stream,
-        total_frames: detection_total_frames,
-    } = Box::new(SubtitleDetectionStage::new(
+    let detection = SubtitleDetectionStage::new(
         fast_validator,
         precise_validator,
         _pipeline.detection.samples_per_second,
         Arc::new(DefaultSubtitleBandStrategy::default()),
         _pipeline.debug.image.clone(),
         _pipeline.debug.json.clone(),
-    ))
-    .apply(StageInput {
-        stream: sampled_stream,
-        total_frames: _sampled_total_frames,
-    });
+    )
+    .attach(sampled);
 
     let ocr_engine = match build_ocr_engine(_pipeline) {
         Ok(engine) => engine,
         Err(err) => return Err((map_ocr_init_error(err), 0)),
     };
 
-    let StageOutput {
-        stream: mut gen_stream,
-        total_frames: _gen_total_frames,
-    } = Box::new(SubtitleGen::new(
+    let subtitles = SubtitleGen::new(
         ocr_engine,
         _pipeline.output.clone(),
         _pipeline.debug.json.clone(),
-    ))
-    .apply(StageInput {
-        stream: detection_stream,
-        total_frames: detection_total_frames,
-    });
+    )
+    .attach(detection);
+
+    let StreamBundle { stream, .. } = subtitles;
+    let mut gen_stream = stream;
 
     let mut failure: Option<(YPlaneError, u64)> = None;
 

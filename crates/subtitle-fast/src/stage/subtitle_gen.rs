@@ -9,7 +9,7 @@ use serde::Serialize;
 use tokio::fs;
 use tokio::sync::{Mutex, mpsc};
 
-use super::{PipelineStage, StageInput, StageOutput};
+use super::StreamBundle;
 use crate::settings::JsonDumpSettings;
 use crate::stage::detection::{
     SegmentDebugInfo, SubtitleSegment, SubtitleStageError, SubtitleStageResult,
@@ -58,32 +58,30 @@ where
             segments,
         }
     }
-}
 
-impl<E> PipelineStage<SubtitleStageResult> for SubtitleGen<E>
-where
-    E: OcrEngine + 'static + ?Sized,
-{
-    type Output = SubtitleGenResult;
-
-    fn name(&self) -> &'static str {
-        "subtitle_gen"
-    }
-
-    fn apply(self: Box<Self>, input: StageInput<SubtitleStageResult>) -> StageOutput<Self::Output> {
-        let StageInput {
+    pub fn attach(
+        self,
+        input: StreamBundle<SubtitleStageResult>,
+    ) -> StreamBundle<SubtitleGenResult> {
+        let StreamBundle {
             stream,
             total_frames,
         } = input;
+        let Self {
+            engine,
+            writer,
+            segments,
+        } = self;
 
-        let engine = self.engine.clone();
-        let writer = self.writer.clone();
-        let segments = self.segments.clone();
+        let engine_for_worker = engine.clone();
+        let writer_for_worker = writer.clone();
+        let segments_for_worker = segments.clone();
         let (tx, rx) = mpsc::channel::<SubtitleGenResult>(24);
 
         tokio::spawn(async move {
             let mut upstream = stream;
-            let mut worker = SubtitleGenWorker::new(engine, writer, segments);
+            let mut worker =
+                SubtitleGenWorker::new(engine_for_worker, writer_for_worker, segments_for_worker);
 
             while let Some(item) = upstream.next().await {
                 match item {
@@ -123,10 +121,7 @@ where
             }
         }));
 
-        StageOutput {
-            stream,
-            total_frames,
-        }
+        StreamBundle::new(stream, total_frames)
     }
 }
 

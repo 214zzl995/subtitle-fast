@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use futures_util::{Stream, StreamExt};
 
-use super::{PipelineStage, StageInput, StageOutput};
+use super::StreamBundle;
 use subtitle_fast_decoder::{YPlaneFrame, YPlaneResult};
 
 pub struct FrameSorter;
@@ -12,36 +12,24 @@ impl FrameSorter {
     pub fn new() -> Self {
         Self
     }
-}
 
-impl PipelineStage<YPlaneResult<YPlaneFrame>> for FrameSorter {
-    type Output = YPlaneResult<YPlaneFrame>;
-
-    fn name(&self) -> &'static str {
-        "frame_sorter"
-    }
-
-    fn apply(
-        self: Box<Self>,
-        input: StageInput<YPlaneResult<YPlaneFrame>>,
-    ) -> StageOutput<Self::Output> {
-        let StageInput {
-            stream: upstream,
+    pub fn attach(
+        self,
+        input: StreamBundle<YPlaneResult<YPlaneFrame>>,
+    ) -> StreamBundle<YPlaneResult<YPlaneFrame>> {
+        let StreamBundle {
+            stream,
             total_frames,
         } = input;
 
         let state = SorterState {
-            upstream,
+            upstream: stream,
             pool: FramePool::default(),
             finished: false,
         };
 
         let stream = Box::pin(futures_util::stream::unfold(state, SorterState::next));
-
-        StageOutput {
-            stream,
-            total_frames,
-        }
+        StreamBundle::new(stream, total_frames)
     }
 }
 
