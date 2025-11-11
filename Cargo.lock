@@ -1186,6 +1186,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "subtitle-fast-comparator"
+version = "0.1.0"
+dependencies = [
+ "subtitle-fast-decoder",
+ "subtitle-fast-validator",
+]
+
+[[package]]
 name = "subtitle-fast-decoder"
 version = "0.1.0"
 dependencies = [

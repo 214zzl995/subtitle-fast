@@ -170,8 +170,6 @@ impl SubtitleDetector for LumaBandDetector {
 
         merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
 
-        let max_score = merged.first().map(|c| c.score).unwrap_or(0.0);
-
         let mut regions = Vec::new();
         for cand in merged.iter().take(MAX_OUTPUT_REGIONS) {
             regions.push(DetectionRegion {
@@ -179,13 +177,13 @@ impl SubtitleDetector for LumaBandDetector {
                 y: (cand.y + self.roi.y) as f32,
                 width: cand.width as f32,
                 height: cand.height as f32,
-                score: cand.score,
+                score: 1.0,
             });
         }
 
         let result = SubtitleDetectionResult {
             has_subtitle: !regions.is_empty(),
-            max_score,
+            max_score: if regions.is_empty() { 0.0 } else { 1.0 },
             regions,
         };
         Ok(result)
