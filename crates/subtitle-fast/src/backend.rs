@@ -2,13 +2,13 @@ use std::time::Instant;
 
 use subtitle_fast_decoder::{Backend, Configuration, YPlaneError};
 
-use crate::pipeline;
+use crate::stage;
 
 #[derive(Clone)]
 pub struct ExecutionPlan {
     pub config: Configuration,
     pub backend_locked: bool,
-    pub pipeline: pipeline::PipelineConfig,
+    pub pipeline: stage::PipelineConfig,
 }
 
 pub async fn run(plan: ExecutionPlan) -> Result<(), YPlaneError> {
@@ -72,7 +72,7 @@ pub async fn run(plan: ExecutionPlan) -> Result<(), YPlaneError> {
             }
         };
 
-        match pipeline::run_pipeline(provider, &pipeline).await {
+        match stage::run_pipeline(provider, &pipeline).await {
             Ok(()) => return Ok(()),
             Err((err, processed)) => {
                 if processed == 0 && !backend_locked {

@@ -46,7 +46,7 @@ impl SamplerContext {
 }
 
 pub struct SampledFrame {
-    pub frame_index: u64,
+    frame_index: u64,
     frame: Arc<YPlaneFrame>,
     history: FrameHistory,
     context: Arc<SamplerContext>,
@@ -70,6 +70,11 @@ impl SampledFrame {
     #[allow(dead_code)]
     pub fn frame(&self) -> &YPlaneFrame {
         self.frame.as_ref()
+    }
+
+    #[allow(dead_code)]
+    pub fn frame_index(&self) -> u64 {
+        self.frame_index
     }
 
     #[allow(dead_code)]

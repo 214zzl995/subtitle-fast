@@ -56,15 +56,15 @@ impl FromStr for ComparatorKind {
 #[derive(Copy, Clone, Debug)]
 pub struct ComparatorSettings {
     pub kind: ComparatorKind,
-    pub target_luma: u8,
-    pub luma_delta: u8,
+    pub target: u8,
+    pub delta: u8,
 }
 
 impl ComparatorSettings {
     fn preprocess(&self) -> PreprocessSettings {
         PreprocessSettings {
-            target_luma: self.target_luma,
-            luma_delta: self.luma_delta,
+            target: self.target,
+            delta: self.delta,
         }
     }
 }

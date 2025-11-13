@@ -10,8 +10,8 @@ pub mod vision;
 #[cfg(all(feature = "detector-vision", target_os = "macos"))]
 pub use vision::VisionTextDetector;
 
-pub const DEFAULT_LUMA_TARGET: u8 = 230;
-pub const DEFAULT_LUMA_DELTA: u8 = 12;
+pub const DEFAULT_TARGET: u8 = 230;
+pub const DEFAULT_DELTA: u8 = 12;
 
 #[cfg(target_os = "macos")]
 const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[SubtitleDetectorKind::LumaBand];
@@ -72,8 +72,14 @@ impl SubtitleDetectionResult {
 
 #[derive(Debug, Clone, Copy)]
 pub struct LumaBandConfig {
-    pub target_luma: u8,
+    pub target: u8,
     pub delta: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GapFillMode {
+    Distance,
+    Closing,
 }
 
 trait DetectorBackend {
@@ -173,8 +179,8 @@ impl SubtitleDetectionConfig {
                 height: 1.0,
             },
             luma_band: LumaBandConfig {
-                target_luma: DEFAULT_LUMA_TARGET,
-                delta: DEFAULT_LUMA_DELTA,
+                target: DEFAULT_TARGET,
+                delta: DEFAULT_DELTA,
             },
         }
     }

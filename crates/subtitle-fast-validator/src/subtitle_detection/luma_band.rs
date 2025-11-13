@@ -1,20 +1,26 @@
 use std::cmp::{self, Ordering};
+use std::sync::Mutex;
 
 #[cfg(target_arch = "aarch64")]
 use std::arch::is_aarch64_feature_detected;
 #[cfg(target_arch = "x86_64")]
 use std::arch::is_x86_feature_detected;
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{
+    __m128i, __m256i, _mm256_and_si256, _mm256_andnot_si256, _mm256_cmpgt_epi8, _mm256_loadu_si256,
+    _mm256_set1_epi8, _mm256_storeu_si256, _mm256_xor_si256, _mm_loadu_si128, _mm_max_epu8,
+    _mm_min_epu8, _mm_set1_epi8, _mm_storeu_si128,
+};
+
+#[cfg(feature = "detector-parallel")]
+use rayon::prelude::*;
 
 use super::{
-    DetectionRegion, LumaBandConfig, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
-    SubtitleDetectionResult, SubtitleDetector,
+    DetectionRegion, GapFillMode, LumaBandConfig, RoiConfig, SubtitleDetectionConfig,
+    SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector,
 };
 use subtitle_fast_decoder::YPlaneFrame;
 
-// Horizontal run-length smoothing gap for linking bright pixels.
-const RLSA_H_GAP: usize = 100;
-// Vertical gap threshold used by RLSA to bridge row-wise gaps.
-const RLSA_V_GAP: usize = 10;
 // Minimum connected-component area kept as a subtitle candidate.
 const MIN_AREA: usize = 300;
 // Reject components that occupy more than this fraction of the frame.
@@ -33,6 +39,17 @@ const IOU_MERGE: f32 = 0.15;
 const NEAR_GAP: usize = 16;
 // Clamp the number of boxes returned to the pipeline.
 const MAX_OUTPUT_REGIONS: usize = 4;
+const MASK_DENSITY_THRESHOLD: f32 = 0.0015;
+const MASK_POPULATION_RATIO: f32 = 0.0004;
+const MIN_MASK_POPULATION: usize = 128;
+const ROW_DENSITY_THRESHOLD: f32 = 0.2;
+const MIN_BAND_ROWS: usize = 1;
+const MIN_ROW_BAND_PX: usize = 12;
+const HORIZONTAL_GAP: usize = 100;
+const VERTICAL_GAP: usize = 10;
+const ROW_PROJECTION_ENABLED: bool = true;
+const COMPONENTS_FALLBACK_ENABLED: bool = true;
+const GAP_FILL_MODE: GapFillMode = GapFillMode::Distance;
 
 #[derive(Clone, Copy)]
 struct RoiRect {
@@ -42,10 +59,152 @@ struct RoiRect {
     height: usize,
 }
 
+#[derive(Clone, Copy)]
+struct RectCandidate {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+}
+
+#[derive(Clone, Copy)]
+struct RowRun {
+    start: usize,
+    end: usize,
+    row: usize,
+    label: u32,
+}
+
+#[derive(Clone, Copy)]
+struct RawPtr<T>(*mut T);
+
+unsafe impl<T: Send> Send for RawPtr<T> {}
+unsafe impl<T: Send> Sync for RawPtr<T> {}
+
+impl<T: Send> RawPtr<T> {
+    unsafe fn write(&self, idx: usize, value: T) {
+        *self.0.add(idx) = value;
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RawConstPtr<T>(*const T);
+
+unsafe impl<T: Sync> Send for RawConstPtr<T> {}
+unsafe impl<T: Sync> Sync for RawConstPtr<T> {}
+
+impl<T: Sync + Copy> RawConstPtr<T> {
+    unsafe fn read(&self, idx: usize) -> T {
+        *self.0.add(idx)
+    }
+}
+
+#[derive(Default)]
+struct DetectorWorkspace {
+    mask: Vec<u8>,
+    integral: Vec<u32>,
+    row_prefix: Vec<u32>,
+    row_sums: Vec<u32>,
+    left_edges: Vec<usize>,
+    right_edges: Vec<usize>,
+    labels: Vec<u32>,
+    runs: Vec<RowRun>,
+    run_offsets: Vec<usize>,
+    morph_tmp: Vec<u8>,
+    morph_prefix: Vec<u8>,
+    morph_suffix: Vec<u8>,
+    horiz_dist: Vec<u16>,
+    morph_line: Vec<u8>,
+}
+
+impl DetectorWorkspace {
+    fn ensure_capacity(&mut self, width: usize, height: usize) {
+        let roi_pixels = width.saturating_mul(height);
+        if self.mask.len() < roi_pixels {
+            self.mask.resize(roi_pixels, 0);
+        }
+        if self.integral.len() < (width + 1).saturating_mul(height + 1) {
+            self.integral
+                .resize((width + 1).saturating_mul(height + 1), 0);
+        }
+        if self.row_prefix.len() < roi_pixels {
+            self.row_prefix.resize(roi_pixels, 0);
+        }
+        if self.row_sums.len() < height {
+            self.row_sums.resize(height, 0);
+        }
+        if self.left_edges.len() < height {
+            self.left_edges.resize(height, width);
+        }
+        if self.right_edges.len() < height {
+            self.right_edges.resize(height, 0);
+        }
+        if self.labels.len() < roi_pixels {
+            self.labels.resize(roi_pixels, 0);
+        }
+        if self.run_offsets.len() < height + 1 {
+            self.run_offsets.resize(height + 1, 0);
+        }
+        if self.morph_tmp.len() < roi_pixels {
+            self.morph_tmp.resize(roi_pixels, 0);
+        }
+        let max_line = width.max(height);
+        if self.morph_prefix.len() < max_line {
+            self.morph_prefix.resize(max_line, 0);
+        }
+        if self.morph_suffix.len() < max_line {
+            self.morph_suffix.resize(max_line, 0);
+        }
+        if self.horiz_dist.len() < roi_pixels {
+            self.horiz_dist.resize(roi_pixels, 0);
+        }
+        if self.morph_line.len() < max_line {
+            self.morph_line.resize(max_line, 0);
+        }
+    }
+
+    fn detection_buffers(&mut self, width: usize, height: usize) -> MainBuffers<'_> {
+        MainBuffers {
+            mask: &mut self.mask[..width * height],
+            integral: &mut self.integral[..(width + 1) * (height + 1)],
+            row_prefix: &mut self.row_prefix[..width * height],
+            row_sums: &mut self.row_sums[..height],
+            left_edges: &mut self.left_edges[..height],
+            right_edges: &mut self.right_edges[..height],
+            labels: &mut self.labels[..width * height],
+            horiz: &mut self.horiz_dist[..width * height],
+            runs: &mut self.runs,
+            offsets: &mut self.run_offsets[..height + 1],
+            morph_tmp: &mut self.morph_tmp[..width * height],
+            morph_prefix: &mut self.morph_prefix[..width.max(height)],
+            morph_suffix: &mut self.morph_suffix[..width.max(height)],
+            morph_line: &mut self.morph_line[..width.max(height)],
+        }
+    }
+}
+
+struct MainBuffers<'a> {
+    mask: &'a mut [u8],
+    integral: &'a mut [u32],
+    row_prefix: &'a mut [u32],
+    row_sums: &'a mut [u32],
+    left_edges: &'a mut [usize],
+    right_edges: &'a mut [usize],
+    labels: &'a mut [u32],
+    horiz: &'a mut [u16],
+    runs: &'a mut Vec<RowRun>,
+    offsets: &'a mut [usize],
+    morph_tmp: &'a mut [u8],
+    morph_prefix: &'a mut [u8],
+    morph_suffix: &'a mut [u8],
+    morph_line: &'a mut [u8],
+}
+
 pub struct LumaBandDetector {
     config: SubtitleDetectionConfig,
     roi: RoiRect,
     required_len: usize,
+    workspace: Mutex<DetectorWorkspace>,
 }
 
 impl LumaBandDetector {
@@ -56,6 +215,7 @@ impl LumaBandDetector {
             config,
             roi,
             required_len,
+            workspace: Mutex::new(DetectorWorkspace::default()),
         })
     }
 }
@@ -80,30 +240,91 @@ impl SubtitleDetector for LumaBandDetector {
         }
 
         if self.roi.width == 0 || self.roi.height == 0 {
-            let result = SubtitleDetectionResult {
-                has_subtitle: false,
-                max_score: 0.0,
-                regions: Vec::new(),
-            };
-            return Ok(result);
+            return Ok(SubtitleDetectionResult::empty());
         }
 
-        let mut mask = threshold_mask(y_plane, self.config.stride, self.roi, self.config.luma_band);
+        let mut workspace = self.workspace.lock().expect("workspace poisoned");
+        workspace.ensure_capacity(self.roi.width, self.roi.height);
+        let MainBuffers {
+            mask,
+            integral,
+            row_prefix,
+            row_sums,
+            left_edges,
+            right_edges,
+            labels,
+            horiz,
+            runs,
+            offsets,
+            morph_tmp,
+            morph_prefix,
+            morph_suffix,
+            morph_line,
+        } = workspace.detection_buffers(self.roi.width, self.roi.height);
+        mask.fill(0);
 
-        rlsa_horizontal(&mut mask, self.roi.width, self.roi.height, RLSA_H_GAP);
-        rlsa_vertical(&mut mask, self.roi.width, self.roi.height, RLSA_V_GAP);
+        threshold_mask(
+            y_plane,
+            self.config.stride,
+            self.roi,
+            &self.config.luma_band,
+            mask,
+        );
 
-        let components = connected_components(&mask, self.roi.width, self.roi.height);
-        if components.is_empty() {
-            let result = SubtitleDetectionResult {
-                has_subtitle: false,
-                max_score: 0.0,
-                regions: Vec::new(),
-            };
-            return Ok(result);
+        let roi_area = (self.roi.width * self.roi.height).max(1);
+        let mask_sum = mask_population(mask);
+        if sparse_mask_should_skip(mask_sum, roi_area) {
+            return Ok(SubtitleDetectionResult::empty());
         }
 
-        let integral = integral_image(&mask, self.roi.width, self.roi.height);
+        bridge_mask(
+            mask,
+            self.roi.width,
+            self.roi.height,
+            horiz,
+            labels,
+            morph_tmp,
+            morph_prefix,
+            morph_suffix,
+            morph_line,
+        );
+
+        let mask_view: &[u8] = mask;
+
+        let mut rects = Vec::new();
+        if ROW_PROJECTION_ENABLED {
+            rects.extend(row_projection_candidates(
+                mask_view,
+                self.roi.width,
+                self.roi.height,
+                row_sums,
+                left_edges,
+                right_edges,
+            ));
+        }
+
+        if rects.is_empty() && COMPONENTS_FALLBACK_ENABLED {
+            rects.extend(rle_component_candidates(
+                mask_view,
+                self.roi.width,
+                self.roi.height,
+                runs,
+                offsets,
+            ));
+        }
+
+        if rects.is_empty() {
+            return Ok(SubtitleDetectionResult::empty());
+        }
+
+        build_integral(
+            mask_view,
+            self.roi.width,
+            self.roi.height,
+            integral,
+            row_prefix,
+        );
+
         let frame_area = self
             .config
             .frame_width
@@ -111,38 +332,35 @@ impl SubtitleDetector for LumaBandDetector {
         let max_rect_area = frame_area * MAX_AREA_RATIO;
 
         let mut candidates = Vec::new();
-        for comp in components {
-            if comp.area < MIN_AREA {
+        for rect in rects {
+            if rect.width == 0 || rect.height == 0 {
                 continue;
             }
-            let width = comp.max_x - comp.min_x + 1;
-            let height = comp.max_y - comp.min_y + 1;
-            if width == 0 || height == 0 {
+            let area = rect.width * rect.height;
+            if area < MIN_AREA {
                 continue;
             }
-            let rect_area = (width * height) as f32;
-            if rect_area > max_rect_area {
+            if (area as f32) > max_rect_area {
                 continue;
             }
-            let aspect = width as f32 / height.max(1) as f32;
+            let aspect = rect.width as f32 / rect.height.max(1) as f32;
             if aspect < MIN_ASPECT_RATIO {
                 continue;
             }
-
             let (fill, vmr, score) = evaluate_region(
-                &integral,
+                integral,
                 self.roi.width,
-                comp.min_x,
-                comp.min_y,
-                width,
-                height,
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height,
                 VMR_K,
             );
             candidates.push(Candidate {
-                x: comp.min_x,
-                y: comp.min_y,
-                width,
-                height,
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
                 _fill: fill,
                 _vmr: vmr,
                 score,
@@ -150,22 +368,12 @@ impl SubtitleDetector for LumaBandDetector {
         }
 
         if candidates.is_empty() {
-            let result = SubtitleDetectionResult {
-                has_subtitle: false,
-                max_score: 0.0,
-                regions: Vec::new(),
-            };
-            return Ok(result);
+            return Ok(SubtitleDetectionResult::empty());
         }
 
-        let mut merged = merge_line_candidates(candidates, &integral, self.roi.width);
+        let mut merged = merge_line_candidates(candidates, integral, self.roi.width);
         if merged.is_empty() {
-            let result = SubtitleDetectionResult {
-                has_subtitle: false,
-                max_score: 0.0,
-                regions: Vec::new(),
-            };
-            return Ok(result);
+            return Ok(SubtitleDetectionResult::empty());
         }
 
         merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
@@ -181,12 +389,11 @@ impl SubtitleDetector for LumaBandDetector {
             });
         }
 
-        let result = SubtitleDetectionResult {
+        Ok(SubtitleDetectionResult {
             has_subtitle: !regions.is_empty(),
             max_score: if regions.is_empty() { 0.0 } else { 1.0 },
             regions,
-        };
-        Ok(result)
+        })
     }
 }
 
@@ -229,22 +436,33 @@ fn compute_roi_rect(
     })
 }
 
-fn threshold_mask(data: &[u8], stride: usize, roi: RoiRect, params: LumaBandConfig) -> Vec<u8> {
-    let mut mask = vec![0u8; roi.width * roi.height];
+fn threshold_mask(
+    data: &[u8],
+    stride: usize,
+    roi: RoiRect,
+    params: &LumaBandConfig,
+    mask: &mut [u8],
+) {
     if mask.is_empty() {
-        return mask;
+        return;
     }
 
-    let lo = params.target_luma.saturating_sub(params.delta);
-    let hi = params.target_luma.saturating_add(params.delta);
+    let lo = params.target.saturating_sub(params.delta);
+    let hi = params.target.saturating_add(params.delta);
 
     #[cfg(target_arch = "x86_64")]
     {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                threshold_mask_avx2(data, stride, roi, lo, hi, mask);
+            }
+            return;
+        }
         if is_x86_feature_detected!("sse2") {
             unsafe {
-                threshold_mask_sse2(data, stride, roi, lo, hi, &mut mask);
+                threshold_mask_sse2(data, stride, roi, lo, hi, mask);
             }
-            return mask;
+            return;
         }
     }
 
@@ -252,14 +470,13 @@ fn threshold_mask(data: &[u8], stride: usize, roi: RoiRect, params: LumaBandConf
     {
         if is_aarch64_feature_detected!("neon") {
             unsafe {
-                threshold_mask_neon(data, stride, roi, lo, hi, &mut mask);
+                threshold_mask_neon(data, stride, roi, lo, hi, mask);
             }
-            return mask;
+            return;
         }
     }
 
-    threshold_mask_scalar(data, stride, roi, lo, hi, &mut mask);
-    mask
+    threshold_mask_scalar(data, stride, roi, lo, hi, mask);
 }
 
 fn threshold_mask_scalar(
@@ -287,6 +504,45 @@ fn threshold_mask_scalar_row(src: &[u8], dst: &mut [u8], lo: u8, hi: u8) {
 }
 
 #[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn threshold_mask_avx2(
+    data: &[u8],
+    stride: usize,
+    roi: RoiRect,
+    lo: u8,
+    hi: u8,
+    mask: &mut [u8],
+) {
+    let width = roi.width;
+    let bias = _mm256_set1_epi8(-128);
+    let lo_vec = _mm256_xor_si256(_mm256_set1_epi8(lo as i8), bias);
+    let hi_vec = _mm256_xor_si256(_mm256_set1_epi8(hi as i8), bias);
+    let ones = _mm256_set1_epi8(1);
+    let all = _mm256_set1_epi8(-1);
+
+    for row in 0..roi.height {
+        let src_ptr = data.as_ptr().add((roi.y + row) * stride + roi.x);
+        let dst_ptr = mask.as_mut_ptr().add(row * width);
+        let mut x = 0usize;
+        while x + 32 <= width {
+            let pixels =
+                _mm256_xor_si256(_mm256_loadu_si256(src_ptr.add(x) as *const __m256i), bias);
+            let ge_lo = _mm256_andnot_si256(_mm256_cmpgt_epi8(lo_vec, pixels), all);
+            let le_hi = _mm256_andnot_si256(_mm256_cmpgt_epi8(pixels, hi_vec), all);
+            let mask_vec = _mm256_and_si256(_mm256_and_si256(ge_lo, le_hi), ones);
+            _mm256_storeu_si256(dst_ptr.add(x) as *mut __m256i, mask_vec);
+            x += 32;
+        }
+        if x < width {
+            let remaining = width - x;
+            let src_tail = std::slice::from_raw_parts(src_ptr.add(x), remaining);
+            let dst_tail = std::slice::from_raw_parts_mut(dst_ptr.add(x), remaining);
+            threshold_mask_scalar_row(src_tail, dst_tail, lo, hi);
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 unsafe fn threshold_mask_sse2(
     data: &[u8],
@@ -296,31 +552,23 @@ unsafe fn threshold_mask_sse2(
     hi: u8,
     mask: &mut [u8],
 ) {
-    use std::arch::x86_64::{
-        __m128i, _mm_and_si128, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_max_epu8, _mm_min_epu8,
-        _mm_set1_epi8, _mm_storeu_si128,
-    };
-
+    let width = roi.width;
     let lo_vec = _mm_set1_epi8(lo as i8);
     let hi_vec = _mm_set1_epi8(hi as i8);
     let ones = _mm_set1_epi8(1);
-    let width = roi.width;
 
     for row in 0..roi.height {
         let src_ptr = data.as_ptr().add((roi.y + row) * stride + roi.x);
         let dst_ptr = mask.as_mut_ptr().add(row * width);
-
         let mut x = 0usize;
         while x + 16 <= width {
             let pixels = _mm_loadu_si128(src_ptr.add(x) as *const __m128i);
             let ge_lo = _mm_cmpeq_epi8(pixels, _mm_max_epu8(pixels, lo_vec));
             let le_hi = _mm_cmpeq_epi8(pixels, _mm_min_epu8(pixels, hi_vec));
-            let mut mask_vec = _mm_and_si128(ge_lo, le_hi);
-            mask_vec = _mm_and_si128(mask_vec, ones);
+            let mask_vec = _mm_and_si128(_mm_and_si128(ge_lo, le_hi), ones);
             _mm_storeu_si128(dst_ptr.add(x) as *mut __m128i, mask_vec);
             x += 16;
         }
-
         if x < width {
             let remaining = width - x;
             let src_tail = std::slice::from_raw_parts(src_ptr.add(x), remaining);
@@ -352,17 +600,40 @@ unsafe fn threshold_mask_neon(
     for row in 0..roi.height {
         let src_ptr = data.as_ptr().add((roi.y + row) * stride + roi.x);
         let dst_ptr = mask.as_mut_ptr().add(row * width);
-
         let mut x = 0usize;
+        while x + 32 <= width {
+            let pixels0 = vld1q_u8(src_ptr.add(x));
+            let pixels1 = vld1q_u8(src_ptr.add(x + 16));
+            let mask0 = vandq_u8(
+                vandq_u8(
+                    vceqq_u8(pixels0, vmaxq_u8(pixels0, lo_vec)),
+                    vceqq_u8(pixels0, vminq_u8(pixels0, hi_vec)),
+                ),
+                ones,
+            );
+            let mask1 = vandq_u8(
+                vandq_u8(
+                    vceqq_u8(pixels1, vmaxq_u8(pixels1, lo_vec)),
+                    vceqq_u8(pixels1, vminq_u8(pixels1, hi_vec)),
+                ),
+                ones,
+            );
+            vst1q_u8(dst_ptr.add(x), mask0);
+            vst1q_u8(dst_ptr.add(x + 16), mask1);
+            x += 32;
+        }
         while x + 16 <= width {
             let pixels = vld1q_u8(src_ptr.add(x));
-            let ge_lo = vceqq_u8(pixels, vmaxq_u8(pixels, lo_vec));
-            let le_hi = vceqq_u8(pixels, vminq_u8(pixels, hi_vec));
-            let mask_vec = vandq_u8(vandq_u8(ge_lo, le_hi), ones);
+            let mask_vec = vandq_u8(
+                vandq_u8(
+                    vceqq_u8(pixels, vmaxq_u8(pixels, lo_vec)),
+                    vceqq_u8(pixels, vminq_u8(pixels, hi_vec)),
+                ),
+                ones,
+            );
             vst1q_u8(dst_ptr.add(x), mask_vec);
             x += 16;
         }
-
         if x < width {
             let remaining = width - x;
             let src_tail = std::slice::from_raw_parts(src_ptr.add(x), remaining);
@@ -372,238 +643,650 @@ unsafe fn threshold_mask_neon(
     }
 }
 
-fn rlsa_horizontal(mask: &mut [u8], width: usize, height: usize, gap: usize) {
+fn mask_population(mask: &[u8]) -> usize {
+    #[cfg(feature = "detector-parallel")]
+    {
+        return mask
+            .par_chunks(1024)
+            .map(|chunk| chunk.iter().map(|&b| b as usize).sum::<usize>())
+            .sum();
+    }
+
+    #[cfg(not(feature = "detector-parallel"))]
+    {
+        mask.iter().map(|&b| b as usize).sum()
+    }
+}
+
+fn sparse_mask_should_skip(mask_population: usize, roi_area: usize) -> bool {
+    let area = roi_area.max(1);
+    let density = mask_population as f32 / area as f32;
+    let min_population = min_mask_population(area);
+    // Skip only when both the relative density and absolute bright-pixel count
+    // indicate an empty frame to keep sparse-but-real bands alive.
+    density < MASK_DENSITY_THRESHOLD && mask_population < min_population
+}
+
+fn min_mask_population(roi_area: usize) -> usize {
+    let scaled = ((roi_area as f32) * MASK_POPULATION_RATIO).ceil() as usize;
+    cmp::max(MIN_MASK_POPULATION, scaled)
+}
+
+fn bridge_mask(
+    mask: &mut [u8],
+    width: usize,
+    height: usize,
+    horiz: &mut [u16],
+    labels: &mut [u32],
+    morph_plane: &mut [u8],
+    morph_prefix: &mut [u8],
+    morph_suffix: &mut [u8],
+    morph_line: &mut [u8],
+) {
+    match GAP_FILL_MODE {
+        GapFillMode::Distance => {
+            dp_bridge_horizontal(mask, width, height, HORIZONTAL_GAP, horiz);
+            dp_bridge_vertical(mask, width, height, VERTICAL_GAP, labels);
+        }
+        GapFillMode::Closing => {
+            vhgw_close_rows(
+                mask,
+                width,
+                height,
+                HORIZONTAL_GAP,
+                morph_plane,
+                morph_prefix,
+                morph_suffix,
+                morph_line,
+            );
+            vhgw_close_cols(
+                mask,
+                width,
+                height,
+                VERTICAL_GAP,
+                morph_plane,
+                morph_prefix,
+                morph_suffix,
+                morph_line,
+            );
+        }
+    }
+}
+
+fn dp_bridge_horizontal(
+    mask: &mut [u8],
+    width: usize,
+    height: usize,
+    gap: usize,
+    scratch: &mut [u16],
+) {
     if gap == 0 || width == 0 {
         return;
     }
-    for y in 0..height {
-        let start = y * width;
-        let row = &mut mask[start..start + width];
-        let mut x = 0usize;
-        while x < width {
-            if row[x] != 0 {
-                x += 1;
-                continue;
-            }
-            let mut span_end = x;
-            while span_end < width && row[span_end] == 0 {
-                span_end += 1;
-            }
-            let left_connected = x > 0 && row[x - 1] != 0;
-            let right_connected = span_end < width && row[span_end] != 0;
-            if left_connected && right_connected && (span_end - x) <= gap {
-                for value in &mut row[x..span_end] {
-                    *value = 1;
-                }
-            }
-            x = span_end;
+    let buf = &mut scratch[..width * height];
+    buf.fill(0);
+    let gap_u16 = gap.min(u16::MAX as usize) as u16;
+
+    #[cfg(feature = "detector-parallel")]
+    {
+        let mask_rows: &[u8] = mask;
+        mask_rows
+            .par_chunks(width)
+            .zip(buf.par_chunks_mut(width))
+            .for_each(|(src, dst)| horizontal_left_pass(src, dst, gap_u16));
+    }
+
+    #[cfg(not(feature = "detector-parallel"))]
+    {
+        for (row, row_data) in mask.chunks(width).enumerate() {
+            let buf_row = &mut buf[row * width..(row + 1) * width];
+            horizontal_left_pass(row_data, buf_row, gap_u16);
+        }
+    }
+
+    #[cfg(feature = "detector-parallel")]
+    {
+        let buf_rows: &[u16] = buf;
+        mask.par_chunks_mut(width)
+            .zip(buf_rows.par_chunks(width))
+            .for_each(|(row, buf_row)| horizontal_right_apply(row, buf_row, gap, gap_u16));
+    }
+
+    #[cfg(not(feature = "detector-parallel"))]
+    {
+        for (row, row_data) in mask.chunks_mut(width).enumerate() {
+            let buf_row = &buf[row * width..(row + 1) * width];
+            horizontal_right_apply(row_data, buf_row, gap, gap_u16);
         }
     }
 }
 
-fn rlsa_vertical(mask: &mut [u8], width: usize, height: usize, gap: usize) {
+fn horizontal_left_pass(row: &[u8], buf: &mut [u16], gap: u16) {
+    let mut last = 0u16;
+    for (value, slot) in row.iter().zip(buf.iter_mut()) {
+        if *value != 0 {
+            last = 0;
+            *slot = 0;
+        } else {
+            last = last.saturating_add(1).min(gap);
+            *slot = last;
+        }
+    }
+}
+
+fn horizontal_right_apply(row: &mut [u8], buf: &[u16], gap: usize, gap_u16: u16) {
+    let mut last = 0u16;
+    for idx in (0..row.len()).rev() {
+        if row[idx] != 0 {
+            last = 0;
+            continue;
+        }
+        last = last.saturating_add(1).min(gap_u16);
+        let left = buf[idx];
+        if left != 0 && last != 0 && (left as usize + last as usize) <= gap {
+            row[idx] = 1;
+        }
+    }
+}
+
+fn dp_bridge_vertical(
+    mask: &mut [u8],
+    width: usize,
+    height: usize,
+    gap: usize,
+    labels: &mut [u32],
+) {
     if gap == 0 || height == 0 {
         return;
     }
-    for x in 0..width {
-        let mut y = 0usize;
-        while y < height {
-            let idx = y * width + x;
-            if mask[idx] != 0 {
-                y += 1;
-                continue;
+    let buf = &mut labels[..width * height];
+    buf.fill(0);
+
+    #[cfg(feature = "detector-parallel")]
+    {
+        let mask_ptr = RawPtr(mask.as_mut_ptr());
+        let buf_ptr = RawPtr(buf.as_mut_ptr());
+        (0..width).into_par_iter().for_each(move |col| unsafe {
+            vertical_column_pass(mask_ptr, buf_ptr, width, height, gap, col);
+        });
+    }
+
+    #[cfg(not(feature = "detector-parallel"))]
+    {
+        for col in 0..width {
+            unsafe {
+                vertical_column_pass(
+                    RawPtr(mask.as_mut_ptr()),
+                    RawPtr(buf.as_mut_ptr()),
+                    width,
+                    height,
+                    gap,
+                    col,
+                );
             }
-            let mut span_end = y;
-            while span_end < height && mask[span_end * width + x] == 0 {
-                span_end += 1;
-            }
-            let top_connected = y > 0 && mask[(y - 1) * width + x] != 0;
-            let bottom_connected = span_end < height && mask[span_end * width + x] != 0;
-            if top_connected && bottom_connected && (span_end - y) <= gap {
-                for fill_y in y..span_end {
-                    mask[fill_y * width + x] = 1;
-                }
-            }
-            y = span_end;
         }
     }
 }
 
-#[derive(Clone, Copy)]
-struct ComponentStats {
-    area: usize,
-    min_x: usize,
-    max_x: usize,
-    min_y: usize,
-    max_y: usize,
-}
-
-impl ComponentStats {
-    fn new(x: usize, y: usize) -> Self {
-        Self {
-            area: 0,
-            min_x: x,
-            max_x: x,
-            min_y: y,
-            max_y: y,
-        }
-    }
-}
-
-fn connected_components(mask: &[u8], width: usize, height: usize) -> Vec<ComponentStats> {
-    if width == 0 || height == 0 {
-        return Vec::new();
-    }
-
-    let mut labels = vec![0u32; width * height];
-    let mut dsu = DisjointSet::new();
-
+unsafe fn vertical_column_pass(
+    mask_ptr: RawPtr<u8>,
+    buf_ptr: RawPtr<u32>,
+    width: usize,
+    height: usize,
+    gap: usize,
+    col: usize,
+) {
+    let gap_u32 = gap.min(u32::MAX as usize) as u32;
+    let mut last = 0u32;
     for y in 0..height {
-        for x in 0..width {
-            let idx = y * width + x;
-            if mask[idx] == 0 {
-                continue;
-            }
+        let idx = y * width + col;
+        let pixel = mask_ptr.0.add(idx);
+        if *pixel != 0 {
+            last = 0;
+            *buf_ptr.0.add(idx) = 0;
+        } else {
+            last = last.saturating_add(1).min(gap_u32);
+            *buf_ptr.0.add(idx) = last;
+        }
+    }
+    last = 0;
+    for y in (0..height).rev() {
+        let idx = y * width + col;
+        let pixel = mask_ptr.0.add(idx);
+        if *pixel != 0 {
+            last = 0;
+            continue;
+        }
+        last = last.saturating_add(1).min(gap_u32);
+        let up = *buf_ptr.0.add(idx);
+        if up != 0 && last != 0 && (up as usize + last as usize) <= gap {
+            *pixel = 1;
+        }
+    }
+}
 
-            let mut neighbors = [0u32; 4];
-            let mut count = 0usize;
+fn vhgw_close_rows(
+    mask: &mut [u8],
+    width: usize,
+    height: usize,
+    gap: usize,
+    tmp_plane: &mut [u8],
+    prefix: &mut [u8],
+    suffix: &mut [u8],
+    line: &mut [u8],
+) {
+    if gap == 0 || width == 0 {
+        return;
+    }
+    let plane = width * height;
+    let tmp = &mut tmp_plane[..plane];
+    tmp.fill(0);
+    let prefix_slice = &mut prefix[..width];
+    let suffix_slice = &mut suffix[..width];
+    let line_buf = &mut line[..width];
+    for (src, dst) in mask.chunks(width).zip(tmp.chunks_mut(width)) {
+        vhgw_close_line(src, dst, prefix_slice, suffix_slice, line_buf, gap);
+    }
 
-            if y > 0 {
-                let up = labels[idx - width];
-                if up != 0 {
-                    neighbors[count] = up;
-                    count += 1;
-                }
-            }
-            if x > 0 {
-                let left = labels[idx - 1];
-                if left != 0 {
-                    neighbors[count] = left;
-                    count += 1;
-                }
-            }
-            if y > 0 && x > 0 {
-                let up_left = labels[idx - width - 1];
-                if up_left != 0 {
-                    neighbors[count] = up_left;
-                    count += 1;
-                }
-            }
-            if y > 0 && x + 1 < width {
-                let up_right = labels[idx - width + 1];
-                if up_right != 0 {
-                    neighbors[count] = up_right;
-                    count += 1;
-                }
-            }
+    mask.copy_from_slice(tmp);
+}
 
-            let label = if count == 0 {
-                dsu.make_set()
+fn vhgw_close_cols(
+    mask: &mut [u8],
+    width: usize,
+    height: usize,
+    gap: usize,
+    tmp_plane: &mut [u8],
+    prefix: &mut [u8],
+    suffix: &mut [u8],
+    line: &mut [u8],
+) {
+    if gap == 0 || height == 0 {
+        return;
+    }
+    let plane = width * height;
+    let tmp = &mut tmp_plane[..plane];
+    let prefix_slice = &mut prefix[..height];
+    let suffix_slice = &mut suffix[..height];
+    let line_buf = &mut line[..height];
+    tmp.copy_from_slice(mask);
+    let mut column = vec![0u8; height];
+    let mut out = vec![0u8; height];
+
+    for col in 0..width {
+        for y in 0..height {
+            column[y] = tmp[y * width + col];
+        }
+        vhgw_close_line(&column, &mut out, prefix_slice, suffix_slice, line_buf, gap);
+        for y in 0..height {
+            mask[y * width + col] = out[y];
+        }
+    }
+}
+
+fn vhgw_close_line(
+    src: &[u8],
+    dst: &mut [u8],
+    prefix: &mut [u8],
+    suffix: &mut [u8],
+    scratch: &mut [u8],
+    gap: usize,
+) {
+    if src.is_empty() {
+        return;
+    }
+    vhgw_line_op(src, prefix, suffix, gap, true, scratch);
+    vhgw_line_op(scratch, prefix, suffix, gap, false, dst);
+}
+
+fn vhgw_line_op(
+    src: &[u8],
+    prefix: &mut [u8],
+    suffix: &mut [u8],
+    gap: usize,
+    is_dilation: bool,
+    dst: &mut [u8],
+) {
+    let window = gap.max(1);
+    let len = src.len();
+    let combine = if is_dilation { u8::max } else { u8::min };
+
+    let mut i = 0usize;
+    while i < len {
+        if i % window == 0 {
+            prefix[i] = src[i];
+        } else {
+            prefix[i] = combine(prefix[i - 1], src[i]);
+        }
+        i += 1;
+    }
+
+    if let Some(last) = len.checked_sub(1) {
+        let mut j = last as isize;
+        while j >= 0 {
+            let idx = j as usize;
+            if idx == last || ((idx + 1) % window == 0) {
+                suffix[idx] = src[idx];
             } else {
-                let base = neighbors[0];
-                for &n in neighbors.iter().take(count).skip(1) {
-                    dsu.union(base, n);
+                suffix[idx] = combine(suffix[idx + 1], src[idx]);
+            }
+            j -= 1;
+        }
+
+        for idx in 0..len {
+            let end = cmp::min(idx + window - 1, last);
+            let left = prefix[end];
+            let right = suffix[idx];
+            dst[idx] = combine(left, right);
+        }
+    }
+}
+
+fn row_projection_candidates(
+    mask: &[u8],
+    width: usize,
+    height: usize,
+    row_sums: &mut [u32],
+    left_edges: &mut [usize],
+    right_edges: &mut [usize],
+) -> Vec<RectCandidate> {
+    let mut rects = Vec::new();
+    if width == 0 || height == 0 {
+        return rects;
+    }
+
+    compute_row_stats(mask, width, row_sums, left_edges, right_edges);
+
+    let min_sum = (ROW_DENSITY_THRESHOLD * width as f32).ceil() as u32;
+    let min_rows = cmp::max(1, MIN_BAND_ROWS);
+
+    let mut row = 0usize;
+    while row < height {
+        while row < height && row_sums[row] < min_sum {
+            row += 1;
+        }
+        if row >= height {
+            break;
+        }
+        let start = row;
+        let mut left = width;
+        let mut right = 0usize;
+        while row < height && row_sums[row] >= min_sum {
+            left = left.min(left_edges[row]);
+            right = right.max(right_edges[row]);
+            row += 1;
+        }
+        let band_height = row - start;
+        if band_height >= min_rows && right > left {
+            let (top, bottom) = expand_row_band(start, row, height);
+            rects.push(RectCandidate {
+                x: left,
+                y: top,
+                width: right - left,
+                height: bottom.saturating_sub(top),
+            });
+        }
+    }
+
+    rects
+}
+
+fn expand_row_band(mut top: usize, mut bottom: usize, height: usize) -> (usize, usize) {
+    if bottom <= top {
+        bottom = cmp::min(top + 1, height);
+    }
+    if bottom <= top {
+        return (top, bottom);
+    }
+    while bottom - top < MIN_ROW_BAND_PX {
+        let mut expanded = false;
+        if top > 0 {
+            top -= 1;
+            expanded = true;
+        }
+        if bottom < height && bottom - top < MIN_ROW_BAND_PX {
+            bottom += 1;
+            expanded = true;
+        }
+        if !expanded {
+            break;
+        }
+    }
+    (top, bottom.min(height))
+}
+
+fn compute_row_stats(
+    mask: &[u8],
+    width: usize,
+    row_sums: &mut [u32],
+    left_edges: &mut [usize],
+    right_edges: &mut [usize],
+) {
+    #[cfg(feature = "detector-parallel")]
+    {
+        let mask_rows: &[u8] = mask;
+        row_sums
+            .par_iter_mut()
+            .zip(left_edges.par_iter_mut())
+            .zip(right_edges.par_iter_mut())
+            .enumerate()
+            .for_each(|(row, ((sum_slot, left_slot), right_slot))| {
+                let data = &mask_rows[row * width..(row + 1) * width];
+                let mut sum = 0u32;
+                let mut left = width;
+                let mut right = 0usize;
+                for (idx, &value) in data.iter().enumerate() {
+                    if value != 0 {
+                        left = left.min(idx);
+                        right = right.max(idx + 1);
+                    }
+                    sum += value as u32;
                 }
-                base
-            };
-            labels[idx] = label;
+                *sum_slot = sum;
+                *left_slot = left;
+                *right_slot = right;
+            });
+        return;
+    }
+
+    #[cfg(not(feature = "detector-parallel"))]
+    {
+        for (row, data) in mask.chunks(width).enumerate() {
+            let mut sum = 0u32;
+            let mut left = width;
+            let mut right = 0usize;
+            for (idx, &value) in data.iter().enumerate() {
+                if value != 0 {
+                    left = left.min(idx);
+                    right = right.max(idx + 1);
+                }
+                sum += value as u32;
+            }
+            row_sums[row] = sum;
+            left_edges[row] = left;
+            right_edges[row] = right;
+        }
+    }
+}
+
+fn rle_component_candidates(
+    mask: &[u8],
+    width: usize,
+    height: usize,
+    runs: &mut Vec<RowRun>,
+    offsets: &mut [usize],
+) -> Vec<RectCandidate> {
+    let mut rects = Vec::new();
+    if width == 0 || height == 0 {
+        return rects;
+    }
+
+    runs.clear();
+
+    let mut cursor = 0usize;
+    for row in 0..height {
+        offsets[row] = cursor;
+        let row_data = &mask[row * width..(row + 1) * width];
+        let mut x = 0usize;
+        while x < width {
+            while x < width && row_data[x] == 0 {
+                x += 1;
+            }
+            if x >= width {
+                break;
+            }
+            let start = x;
+            while x < width && row_data[x] != 0 {
+                x += 1;
+            }
+            runs.push(RowRun {
+                start,
+                end: x,
+                row,
+                label: 0,
+            });
+            cursor += 1;
+        }
+    }
+    offsets[height] = cursor;
+
+    if runs.is_empty() {
+        return rects;
+    }
+
+    let mut dsu = DisjointSet::new();
+    for run in runs.iter_mut() {
+        run.label = dsu.make_set();
+    }
+
+    for row in 1..height {
+        let mut prev = offsets[row - 1];
+        let prev_end = offsets[row];
+        let mut curr = offsets[row];
+        let curr_end = offsets[row + 1];
+
+        while prev < prev_end && curr < curr_end {
+            let run_a = runs[prev];
+            let run_b = runs[curr];
+            if runs_touch(&run_a, &run_b) {
+                dsu.union(run_a.label, run_b.label);
+            }
+            if run_a.end <= run_b.end {
+                prev += 1;
+            } else {
+                curr += 1;
+            }
         }
     }
 
     let mut stats = vec![None; dsu.len()];
-    let mut components = Vec::new();
+    for run in runs.iter() {
+        let root = dsu.find(run.label);
+        let entry =
+            stats[root as usize].get_or_insert_with(|| ComponentStats::new(run.start, run.row));
+        let width = run.end.saturating_sub(run.start);
+        entry.area += width;
+        entry.min_x = entry.min_x.min(run.start);
+        entry.max_x = entry.max_x.max(run.end.saturating_sub(1));
+        entry.min_y = entry.min_y.min(run.row);
+        entry.max_y = entry.max_y.max(run.row);
+    }
 
-    for y in 0..height {
-        for x in 0..width {
-            let idx = y * width + x;
-            let label = labels[idx];
-            if label == 0 {
-                continue;
+    for comp in stats.into_iter().flatten() {
+        rects.push(RectCandidate {
+            x: comp.min_x,
+            y: comp.min_y,
+            width: comp.max_x.saturating_sub(comp.min_x) + 1,
+            height: comp.max_y.saturating_sub(comp.min_y) + 1,
+        });
+    }
+
+    rects
+}
+
+fn runs_touch(a: &RowRun, b: &RowRun) -> bool {
+    let overlap = cmp::min(a.end, b.end).saturating_sub(cmp::max(a.start, b.start));
+    if overlap > 0 {
+        return true;
+    }
+    let gap = if a.end <= b.start {
+        b.start - a.end
+    } else {
+        a.start - b.end
+    };
+    gap <= 1
+}
+
+fn build_integral(
+    mask: &[u8],
+    width: usize,
+    height: usize,
+    integral: &mut [u32],
+    row_prefix: &mut [u32],
+) {
+    compute_horizontal_prefix(mask, width, row_prefix);
+    accumulate_columns(row_prefix, width, height, integral);
+}
+
+fn compute_horizontal_prefix(mask: &[u8], width: usize, row_prefix: &mut [u32]) {
+    #[cfg(feature = "detector-parallel")]
+    {
+        mask.par_chunks(width)
+            .zip(row_prefix.par_chunks_mut(width))
+            .for_each(|(src, dst)| {
+                let mut acc = 0u32;
+                for (idx, &value) in src.iter().enumerate() {
+                    acc += value as u32;
+                    dst[idx] = acc;
+                }
+            });
+        return;
+    }
+
+    #[cfg(not(feature = "detector-parallel"))]
+    {
+        for (row, src) in mask.chunks(width).enumerate() {
+            let dst = &mut row_prefix[row * width..(row + 1) * width];
+            let mut acc = 0u32;
+            for (idx, &value) in src.iter().enumerate() {
+                acc += value as u32;
+                dst[idx] = acc;
             }
-            let root = dsu.find(label);
-            labels[idx] = root;
-            let entry = stats[root as usize].get_or_insert_with(|| ComponentStats::new(x, y));
-            entry.area += 1;
-            entry.min_x = entry.min_x.min(x);
-            entry.max_x = entry.max_x.max(x);
-            entry.min_y = entry.min_y.min(y);
-            entry.max_y = entry.max_y.max(y);
-        }
-    }
-
-    for entry in stats.into_iter().flatten() {
-        components.push(entry);
-    }
-    components
-}
-
-#[derive(Default)]
-struct DisjointSet {
-    parent: Vec<u32>,
-    rank: Vec<u8>,
-}
-
-impl DisjointSet {
-    fn new() -> Self {
-        Self {
-            parent: vec![0],
-            rank: vec![0],
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.parent.len()
-    }
-
-    fn make_set(&mut self) -> u32 {
-        let idx = self.parent.len() as u32;
-        self.parent.push(idx);
-        self.rank.push(0);
-        idx
-    }
-
-    fn find(&mut self, x: u32) -> u32 {
-        let idx = x as usize;
-        let parent = self.parent[idx];
-        if parent == x {
-            return x;
-        }
-        let root = self.find(parent);
-        self.parent[idx] = root;
-        root
-    }
-
-    fn union(&mut self, a: u32, b: u32) {
-        let mut root_a = self.find(a);
-        let mut root_b = self.find(b);
-        if root_a == root_b {
-            return;
-        }
-        let rank_a = self.rank[root_a as usize];
-        let rank_b = self.rank[root_b as usize];
-        if rank_a < rank_b {
-            std::mem::swap(&mut root_a, &mut root_b);
-        }
-        self.parent[root_b as usize] = root_a;
-        if rank_a == rank_b {
-            self.rank[root_a as usize] = rank_a + 1;
         }
     }
 }
 
-fn integral_image(mask: &[u8], width: usize, height: usize) -> Vec<u32> {
+fn accumulate_columns(row_prefix: &[u32], width: usize, height: usize, integral: &mut [u32]) {
     let stride = width + 1;
-    let mut integral = vec![0u32; stride * (height + 1)];
-    for y in 0..height {
-        let mut row_sum = 0u32;
-        let src_offset = y * width;
-        let dst_offset = (y + 1) * stride;
-        for x in 0..width {
-            row_sum += mask[src_offset + x] as u32;
-            integral[dst_offset + x + 1] = integral[dst_offset - stride + x + 1] + row_sum;
+    integral.fill(0);
+
+    #[cfg(feature = "detector-parallel")]
+    {
+        let integral_ptr = RawPtr(integral.as_mut_ptr());
+        let prefix_ptr = RawConstPtr(row_prefix.as_ptr());
+        (0..width).into_par_iter().for_each(move |col| {
+            let mut acc = 0u32;
+            for row in 0..height {
+                let value = unsafe { prefix_ptr.read(row * width + col) };
+                acc += value;
+                let idx = (row + 1) * stride + (col + 1);
+                unsafe { integral_ptr.write(idx, acc) };
+            }
+        });
+        return;
+    }
+
+    #[cfg(not(feature = "detector-parallel"))]
+    {
+        for col in 0..width {
+            let mut acc = 0u32;
+            for row in 0..height {
+                acc += row_prefix[row * width + col];
+                let idx = (row + 1) * stride + (col + 1);
+                integral[idx] = acc;
+            }
         }
     }
-    integral
 }
 
 fn rect_sum(integral: &[u32], width: usize, x0: usize, y0: usize, x1: usize, y1: usize) -> u32 {
@@ -705,7 +1388,7 @@ fn merge_line_candidates(
 fn same_line(a: &Candidate, b: &Candidate) -> bool {
     let cy1 = a.y + a.height / 2;
     let cy2 = b.y + b.height / 2;
-    let diff = if cy1 >= cy2 { cy1 - cy2 } else { cy2 - cy1 };
+    let diff = cy1.abs_diff(cy2);
     if diff <= Y_MERGE_TOL {
         return true;
     }
@@ -779,5 +1462,114 @@ fn merge_candidates(a: &Candidate, b: &Candidate, integral: &[u32], width: usize
         _fill: fill,
         _vmr: vmr,
         score,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ComponentStats {
+    area: usize,
+    min_x: usize,
+    max_x: usize,
+    min_y: usize,
+    max_y: usize,
+}
+
+impl ComponentStats {
+    fn new(x: usize, y: usize) -> Self {
+        Self {
+            area: 0,
+            min_x: x,
+            max_x: x,
+            min_y: y,
+            max_y: y,
+        }
+    }
+}
+
+#[derive(Default)]
+struct DisjointSet {
+    parent: Vec<u32>,
+    rank: Vec<u8>,
+}
+
+impl DisjointSet {
+    fn new() -> Self {
+        Self {
+            parent: vec![0],
+            rank: vec![0],
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.parent.len()
+    }
+
+    fn make_set(&mut self) -> u32 {
+        let idx = self.parent.len() as u32;
+        self.parent.push(idx);
+        self.rank.push(0);
+        idx
+    }
+
+    fn find(&mut self, x: u32) -> u32 {
+        let idx = x as usize;
+        let parent = self.parent[idx];
+        if parent == x {
+            return x;
+        }
+        let root = self.find(parent);
+        self.parent[idx] = root;
+        root
+    }
+
+    fn union(&mut self, a: u32, b: u32) {
+        let mut root_a = self.find(a);
+        let mut root_b = self.find(b);
+        if root_a == root_b {
+            return;
+        }
+        let rank_a = self.rank[root_a as usize];
+        let rank_b = self.rank[root_b as usize];
+        if rank_a < rank_b {
+            std::mem::swap(&mut root_a, &mut root_b);
+        }
+        self.parent[root_b as usize] = root_a;
+        if rank_a == rank_b {
+            self.rank[root_a as usize] = rank_a + 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sparse_frames_with_too_few_pixels_are_skipped() {
+        let area = 1920 * 824;
+        assert!(sparse_mask_should_skip(200, area));
+    }
+
+    #[test]
+    fn sparse_frames_with_enough_pixels_continue() {
+        let area = 1920 * 824;
+        // Density is below MASK_DENSITY_THRESHOLD, but population exceeds the scaled watermark.
+        assert!(!sparse_mask_should_skip(1100, area));
+    }
+
+    #[test]
+    fn small_roi_uses_absolute_floor() {
+        let area = 200 * 100;
+        let min_pop = min_mask_population(area);
+        assert!(min_pop >= MIN_MASK_POPULATION);
+        assert!(!sparse_mask_should_skip(min_pop + 10, area));
+    }
+
+    #[test]
+    fn row_band_expands_to_min_height() {
+        let (top, bottom) = super::expand_row_band(800, 804, 824);
+        assert!(bottom - top >= MIN_ROW_BAND_PX);
+        assert!(top <= 800);
+        assert!(bottom >= 804);
     }
 }
