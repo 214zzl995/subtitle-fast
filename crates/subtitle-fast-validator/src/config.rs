@@ -26,7 +26,7 @@ impl Default for SubtitleDetectionOptions {
         Self {
             enabled: true,
             roi: None,
-            detector: SubtitleDetectorKind::LumaBand,
+            detector: SubtitleDetectorKind::IntegralBand,
             luma_band: LumaBandOptions::default(),
         }
     }

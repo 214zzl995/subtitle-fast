@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 
 use image::{Rgb, RgbImage};
 use subtitle_fast_decoder::YPlaneFrame;
+use subtitle_fast_validator::subtitle_detection::projection_band::ProjectionBandDetector;
 use subtitle_fast_validator::subtitle_detection::{
-    DetectionRegion, LumaBandConfig, LumaBandDetector, RoiConfig, SubtitleDetectionConfig,
-    SubtitleDetector,
+    DetectionRegion, IntegralBandDetector, LumaBandConfig, RoiConfig, SubtitleDetectionConfig,
+    SubtitleDetectionError, SubtitleDetector,
 };
 
 const TARGET: u8 = 235;
@@ -14,9 +15,11 @@ const DELTA: u8 = 12;
 const PRESETS: &[(usize, usize)] = &[(1920, 1080), (1920, 824)];
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    let detector_kind = parse_detector_arg(&args)?;
     let repo_root = repo_root();
     let yuv_dir = repo_root.join("demo/yuv");
-    let out_dir = repo_root.join("demo/output");
+    let out_dir = repo_root.join("demo/output").join(detector_kind.name());
     if !yuv_dir.exists() {
         return Err(format!("missing {:?}", yuv_dir).into());
     }
@@ -54,7 +57,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             target: TARGET,
             delta: DELTA,
         };
-        let detector = LumaBandDetector::new(config)?;
+        let detector = detector_kind.build(config)?;
         let result = detector.detect(&frame)?;
 
         let mut image = frame_to_image(&frame);
@@ -70,8 +73,33 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("no demo frames processed".into());
     }
 
-    println!("Generated {processed} PNG files in {:?}", out_dir);
+    println!(
+        "Generated {processed} PNG files in {:?} using {}",
+        out_dir,
+        detector_kind.name()
+    );
     Ok(())
+}
+
+fn parse_detector_arg(args: &[String]) -> Result<DemoDetectorKind, Box<dyn Error>> {
+    let mut detector = DemoDetectorKind::Projection;
+    let mut idx = 1usize;
+    while idx < args.len() {
+        let arg = &args[idx];
+        if let Some(value) = arg.strip_prefix("--detector=") {
+            detector = DemoDetectorKind::from_str(value)?;
+        } else if arg == "--detector" {
+            idx += 1;
+            if idx >= args.len() {
+                return Err("--detector requires a value".into());
+            }
+            detector = DemoDetectorKind::from_str(&args[idx])?;
+        } else {
+            return Err(format!("unknown argument: {arg}").into());
+        }
+        idx += 1;
+    }
+    Ok(detector)
 }
 
 fn repo_root() -> PathBuf {
@@ -116,21 +144,54 @@ fn draw_box(image: &mut RgbImage, region: &DetectionRegion) {
         return;
     }
     for x in x0..=x1 {
-        set_pixel(image, x, y0, Rgb([255, 0, 0]));
-        set_pixel(image, x, y1, Rgb([255, 0, 0]));
+        set_pixel(image, x, y0);
+        set_pixel(image, x, y1);
     }
     for y in y0..=y1 {
-        set_pixel(image, x0, y, Rgb([255, 0, 0]));
-        set_pixel(image, x1, y, Rgb([255, 0, 0]));
+        set_pixel(image, x0, y);
+        set_pixel(image, x1, y);
     }
 }
 
-fn set_pixel(image: &mut RgbImage, x: i32, y: i32, color: Rgb<u8>) {
+fn set_pixel(image: &mut RgbImage, x: i32, y: i32) {
     if x < 0 || y < 0 {
         return;
     }
     let (x, y) = (x as u32, y as u32);
     if x < image.width() && y < image.height() {
-        image.put_pixel(x, y, color);
+        image.put_pixel(x, y, Rgb([255, 0, 0]));
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DemoDetectorKind {
+    Integral,
+    Projection,
+}
+
+impl DemoDetectorKind {
+    fn from_str(value: &str) -> Result<Self, Box<dyn Error>> {
+        match value {
+            "integral" => Ok(Self::Integral),
+            "projection" => Ok(Self::Projection),
+            other => Err(format!("unknown detector '{other}'").into()),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Integral => "integral",
+            Self::Projection => "projection",
+        }
+    }
+
+    fn build(
+        &self,
+        config: SubtitleDetectionConfig,
+    ) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
+        match self {
+            Self::Integral => Ok(Box::new(IntegralBandDetector::new(config)?)),
+            Self::Projection => Ok(Box::new(ProjectionBandDetector::new(config)?)),
+        }
     }
 }
