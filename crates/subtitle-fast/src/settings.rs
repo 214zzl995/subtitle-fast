@@ -3,21 +3,17 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use clap::ValueEnum;
-use directories::{BaseDirs, ProjectDirs};
+use directories::ProjectDirs;
 use serde::Deserialize;
+use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET};
 
-use crate::cli::{CliArgs, CliSources, DumpFormat, OcrBackend};
-use subtitle_fast_validator::subtitle_detection::{DEFAULT_LUMA_DELTA, DEFAULT_LUMA_TARGET};
+use crate::cli::{CliArgs, CliSources};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct FileConfig {
-    output: Option<String>,
-    debug: Option<DebugDumpFileConfig>,
     detection: Option<DetectionFileConfig>,
     decoder: Option<DecoderFileConfig>,
-    ocr: Option<OcrFileConfig>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -29,52 +25,16 @@ struct DecoderFileConfig {
 
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(default)]
-struct DebugDumpFileConfig {
-    image: Option<ImageDumpFileConfig>,
-    json: Option<JsonDumpFileConfig>,
-}
-
-#[derive(Debug, Default, Deserialize, Clone)]
-#[serde(default)]
 struct DetectionFileConfig {
     samples_per_second: Option<u32>,
-    luma_target: Option<u8>,
-    luma_delta: Option<u8>,
-}
-
-#[derive(Debug, Default, Deserialize, Clone)]
-#[serde(default)]
-struct OcrFileConfig {
-    backend: Option<String>,
-    languages: Option<Vec<String>>,
-    auto_detect_language: Option<bool>,
-}
-
-#[derive(Debug, Default, Deserialize, Clone)]
-#[serde(default)]
-struct ImageDumpFileConfig {
-    enable: Option<bool>,
-    dir: Option<String>,
-    format: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize, Clone)]
-#[serde(default)]
-struct JsonDumpFileConfig {
-    enable: Option<bool>,
-    dir: Option<String>,
-    frames: Option<String>,
-    segments: Option<String>,
-    pretty: Option<bool>,
+    target: Option<u8>,
+    delta: Option<u8>,
 }
 
 #[derive(Debug)]
 pub struct EffectiveSettings {
-    pub output: PathBuf,
-    pub debug: DebugOutputSettings,
     pub detection: DetectionSettings,
     pub decoder: DecoderSettings,
-    pub ocr: OcrSettings,
 }
 
 #[derive(Debug)]
@@ -85,15 +45,8 @@ pub struct ResolvedSettings {
 #[derive(Debug, Clone)]
 pub struct DetectionSettings {
     pub samples_per_second: u32,
-    pub luma_target: u8,
-    pub luma_delta: u8,
-}
-
-#[derive(Debug, Clone)]
-pub struct OcrSettings {
-    pub backend: OcrBackend,
-    pub languages: Vec<String>,
-    pub auto_detect_language: bool,
+    pub target: u8,
+    pub delta: u8,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -101,31 +54,6 @@ pub struct DecoderSettings {
     pub backend: Option<String>,
     pub channel_capacity: Option<usize>,
 }
-
-#[derive(Debug, Clone, Default)]
-pub struct DebugOutputSettings {
-    pub image: Option<ImageDumpSettings>,
-    pub json: Option<JsonDumpSettings>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ImageDumpSettings {
-    pub dir: PathBuf,
-    pub format: DumpFormat,
-}
-
-#[derive(Debug, Clone)]
-pub struct JsonDumpSettings {
-    pub dir: PathBuf,
-    pub segments_filename: String,
-    pub frames_filename: String,
-    pub pretty: bool,
-}
-
-const DEFAULT_FRAMES_JSON: &str = "frames.json";
-const DEFAULT_SEGMENTS_JSON: &str = "segments.json";
-const DEFAULT_IMAGE_DUMP_DIR: &str = "dump/frames";
-const DEFAULT_JSON_DUMP_DIR: &str = "dump";
 
 #[derive(Debug)]
 pub enum ConfigError {
@@ -259,108 +187,13 @@ fn merge(
     file: FileConfig,
     config_path: Option<PathBuf>,
 ) -> Result<ResolvedSettings, ConfigError> {
-    let config_dir = config_path
-        .as_ref()
-        .and_then(|path| path.parent().map(|dir| dir.to_path_buf()));
-
     let FileConfig {
-        output: file_output,
-        debug: file_debug,
         detection: file_detection,
         decoder: file_decoder,
-        ocr: file_ocr,
     } = file;
 
-    let debug_cfg = file_debug.unwrap_or_default();
     let detection_cfg = file_detection.unwrap_or_default();
     let decoder_cfg = file_decoder.unwrap_or_default();
-    let ocr_cfg = file_ocr.unwrap_or_default();
-
-    let file_debug_image = debug_cfg.image.clone();
-    let file_debug_json = debug_cfg.json.clone();
-
-    let mut dump_format = cli.dump_format;
-    if !sources.dump_format_from_cli {
-        if let Some(format_str) = file_debug_image
-            .as_ref()
-            .and_then(|cfg| normalize_string(cfg.format.clone()))
-        {
-            dump_format = parse_dump_format(&format_str, config_path.as_ref())?;
-        }
-    }
-
-    let image_enabled_config = file_debug_image
-        .as_ref()
-        .and_then(|cfg| cfg.enable)
-        .unwrap_or(false);
-    let image_enabled = cli.dump_dir.is_some() || image_enabled_config;
-
-    let image_dir_path = if image_enabled {
-        if let Some(dir) = cli.dump_dir.clone() {
-            Some(expand_pathbuf(dir))
-        } else if let Some(path) = file_debug_image
-            .as_ref()
-            .and_then(|cfg| normalize_string(cfg.dir.clone()))
-            .and_then(|dir| resolve_path_from_config(dir, config_dir.as_deref()))
-        {
-            Some(path)
-        } else {
-            Some(
-                resolve_path_from_config(DEFAULT_IMAGE_DUMP_DIR.to_string(), config_dir.as_deref())
-                    .unwrap_or_else(|| PathBuf::from(DEFAULT_IMAGE_DUMP_DIR)),
-            )
-        }
-    } else {
-        None
-    };
-
-    let image_dump = image_dir_path.clone().map(|dir| ImageDumpSettings {
-        dir,
-        format: dump_format,
-    });
-
-    let json_enabled = file_debug_json
-        .as_ref()
-        .and_then(|cfg| cfg.enable)
-        .unwrap_or(false);
-
-    let json_dump = if json_enabled {
-        let resolved_dir = file_debug_json
-            .as_ref()
-            .and_then(|cfg| normalize_string(cfg.dir.clone()))
-            .and_then(|value| resolve_path_from_config(value, config_dir.as_deref()))
-            .unwrap_or_else(|| {
-                resolve_path_from_config(DEFAULT_JSON_DUMP_DIR.to_string(), config_dir.as_deref())
-                    .unwrap_or_else(|| PathBuf::from(DEFAULT_JSON_DUMP_DIR))
-            });
-
-        let frames_filename = file_debug_json
-            .as_ref()
-            .and_then(|cfg| normalize_string(cfg.frames.clone()))
-            .unwrap_or_else(|| DEFAULT_FRAMES_JSON.to_string());
-        let segments_filename = file_debug_json
-            .as_ref()
-            .and_then(|cfg| normalize_string(cfg.segments.clone()))
-            .unwrap_or_else(|| DEFAULT_SEGMENTS_JSON.to_string());
-        let pretty = file_debug_json
-            .as_ref()
-            .and_then(|cfg| cfg.pretty)
-            .unwrap_or(true);
-
-        Some(JsonDumpSettings {
-            dir: resolved_dir,
-            segments_filename,
-            frames_filename,
-            pretty,
-        })
-    } else {
-        None
-    };
-
-    let debug_output = DebugOutputSettings {
-        image: image_dump,
-        json: json_dump,
-    };
 
     let detection_samples_per_second = resolve_detection_sps(
         cli.detection_samples_per_second,
@@ -369,34 +202,18 @@ fn merge(
         config_path.as_ref(),
     )?;
 
-    let detection_luma_target = cli
-        .detection_luma_target
-        .or(detection_cfg.luma_target)
-        .unwrap_or(DEFAULT_LUMA_TARGET);
-
-    let detection_luma_delta = cli
-        .detection_luma_delta
-        .or(detection_cfg.luma_delta)
-        .unwrap_or(DEFAULT_LUMA_DELTA);
-
-    let ocr_backend = resolve_ocr_backend(
-        cli.ocr_backend,
-        ocr_cfg.backend.clone(),
-        !sources.ocr_backend_from_cli,
-        config_path.as_ref(),
+    let detector_target = resolve_detector_u8(
+        cli.detector_target,
+        detection_cfg.target,
+        !sources.detector_target_from_cli,
+        DEFAULT_TARGET,
     )?;
-
-    let ocr_languages = resolve_ocr_languages(
-        &cli.ocr_languages,
-        ocr_cfg.languages.clone(),
-        !sources.ocr_languages_from_cli,
-    );
-
-    let auto_detect_language = resolve_auto_detect_language(
-        cli.ocr_auto_detect_language,
-        ocr_cfg.auto_detect_language,
-        !sources.ocr_auto_detect_language_from_cli,
-    );
+    let detector_delta = resolve_detector_u8(
+        cli.detector_delta,
+        detection_cfg.delta,
+        !sources.detector_delta_from_cli,
+        DEFAULT_DELTA,
+    )?;
 
     let decoder_channel_capacity = resolve_decoder_capacity(
         cli.decoder_channel_capacity,
@@ -408,27 +225,18 @@ fn merge(
     let decoder_backend = normalize_string(cli.backend.clone())
         .or_else(|| normalize_string(decoder_cfg.backend.clone()));
 
-    let output_path = resolve_output_path(cli.output.clone(), file_output, config_dir.as_deref())?;
-
     let decoder_settings = DecoderSettings {
         backend: decoder_backend,
         channel_capacity: decoder_channel_capacity,
     };
 
     let settings = EffectiveSettings {
-        output: output_path,
-        debug: debug_output,
         detection: DetectionSettings {
             samples_per_second: detection_samples_per_second,
-            luma_target: detection_luma_target,
-            luma_delta: detection_luma_delta,
+            target: detector_target,
+            delta: detector_delta,
         },
         decoder: decoder_settings,
-        ocr: OcrSettings {
-            backend: ocr_backend,
-            languages: ocr_languages,
-            auto_detect_language,
-        },
     };
 
     Ok(ResolvedSettings { settings })
@@ -454,69 +262,6 @@ fn normalize_string(value: Option<String>) -> Option<String> {
     })
 }
 
-fn expand_pathbuf(path: PathBuf) -> PathBuf {
-    match path.to_str() {
-        Some(s) => expand_home_path(s),
-        None => path,
-    }
-}
-
-fn resolve_path_from_config(value: String, base: Option<&Path>) -> Option<PathBuf> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let expanded = expand_home_path(trimmed);
-    if expanded.is_absolute() || base.is_none() {
-        Some(expanded)
-    } else {
-        Some(base.unwrap().join(expanded))
-    }
-}
-
-fn expand_home_path(value: &str) -> PathBuf {
-    if value == "~" {
-        if let Some(base) = BaseDirs::new() {
-            return base.home_dir().to_path_buf();
-        }
-    } else if let Some(stripped) = value.strip_prefix("~/") {
-        if let Some(base) = BaseDirs::new() {
-            return base.home_dir().join(stripped);
-        }
-    }
-    PathBuf::from(value)
-}
-
-fn parse_dump_format(value: &str, path: Option<&PathBuf>) -> Result<DumpFormat, ConfigError> {
-    DumpFormat::from_str(value, false).map_err(|_| ConfigError::InvalidValue {
-        path: path.cloned(),
-        field: "dump_format",
-        value: value.to_string(),
-    })
-}
-
-fn parse_ocr_backend(value: &str, path: Option<&PathBuf>) -> Result<OcrBackend, ConfigError> {
-    OcrBackend::from_str(value, false).map_err(|_| ConfigError::InvalidValue {
-        path: path.cloned(),
-        field: "ocr_backend",
-        value: value.to_string(),
-    })
-}
-
-fn resolve_ocr_backend(
-    cli_backend: OcrBackend,
-    file_backend: Option<String>,
-    use_file: bool,
-    config_path: Option<&PathBuf>,
-) -> Result<OcrBackend, ConfigError> {
-    if use_file {
-        if let Some(value) = normalize_string(file_backend) {
-            return parse_ocr_backend(&value, config_path);
-        }
-    }
-    Ok(cli_backend)
-}
-
 fn resolve_detection_sps(
     cli_value: u32,
     file_value: Option<u32>,
@@ -538,62 +283,21 @@ fn resolve_detection_sps(
     Ok(cli_value)
 }
 
-fn normalize_language_iter<I, S>(values: I) -> Vec<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let mut normalized = Vec::new();
-    for value in values {
-        let trimmed = value.as_ref().trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let candidate = trimmed.to_string();
-        if normalized
-            .iter()
-            .any(|existing: &String| existing.as_str().eq_ignore_ascii_case(&candidate))
-        {
-            continue;
-        }
-        normalized.push(candidate);
-    }
-    normalized
-}
-
-fn resolve_ocr_languages(
-    cli_languages: &[String],
-    file_languages: Option<Vec<String>>,
+fn resolve_detector_u8(
+    cli_value: Option<u8>,
+    file_value: Option<u8>,
     use_file: bool,
-) -> Vec<String> {
-    if !cli_languages.is_empty() && !use_file {
-        return normalize_language_iter(cli_languages.iter());
-    }
-    if use_file {
-        if let Some(list) = file_languages {
-            let normalized = normalize_language_iter(list);
-            if !normalized.is_empty() {
-                return normalized;
-            }
-        }
-    }
-    normalize_language_iter(cli_languages.iter())
-}
-
-fn resolve_auto_detect_language(
-    cli_value: Option<bool>,
-    file_value: Option<bool>,
-    use_file: bool,
-) -> bool {
+    default: u8,
+) -> Result<u8, ConfigError> {
     if let Some(value) = cli_value {
-        return value;
+        return Ok(value);
     }
     if use_file {
         if let Some(value) = file_value {
-            return value;
+            return Ok(value);
         }
     }
-    file_value.unwrap_or(true)
+    Ok(default)
 }
 
 fn resolve_decoder_capacity(
@@ -623,35 +327,4 @@ fn resolve_decoder_capacity(
         }
     }
     Ok(capacity)
-}
-
-fn resolve_output_path(
-    cli_value: PathBuf,
-    file_value: Option<String>,
-    config_dir: Option<&Path>,
-) -> Result<PathBuf, ConfigError> {
-    let _ = file_value;
-    let _ = config_dir;
-    let mut path = expand_pathbuf(cli_value);
-
-    // If CLI path points to an existing directory, join default filename.
-    if path.metadata().map(|meta| meta.is_dir()).unwrap_or(false) {
-        path = path.join("subtitles.srt");
-    } else if path.file_name().is_none() {
-        path.push("subtitles.srt");
-    }
-
-    ensure_srt_extension(&mut path);
-    Ok(path)
-}
-
-fn ensure_srt_extension(path: &mut PathBuf) {
-    let is_srt = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("srt"))
-        .unwrap_or(false);
-    if !is_srt {
-        path.set_extension("srt");
-    }
 }

@@ -3,17 +3,17 @@ use subtitle_fast_validator::subtitle_detection::RoiConfig;
 
 #[derive(Copy, Clone, Debug)]
 pub struct PreprocessSettings {
-    pub target_luma: u8,
-    pub luma_delta: u8,
+    pub target: u8,
+    pub delta: u8,
 }
 
 impl PreprocessSettings {
     pub fn target_f32(&self) -> f32 {
-        self.target_luma as f32 / 255.0
+        self.target as f32 / 255.0
     }
 
     pub fn delta_f32(&self) -> f32 {
-        self.luma_delta.max(1) as f32 / 255.0
+        self.delta.max(1) as f32 / 255.0
     }
 }
 
@@ -53,13 +53,10 @@ pub fn extract_masked_patch(
     let mut original = Vec::with_capacity(width * height);
     let mut masked = Vec::with_capacity(width * height);
     let mut mask = Vec::with_capacity(width * height);
-    let lo = settings
-        .target_luma
-        .saturating_sub(settings.luma_delta.max(1)) as f32
-        / 255.0;
+    let lo = settings.target.saturating_sub(settings.delta.max(1)) as f32 / 255.0;
     let hi = settings
-        .target_luma
-        .saturating_add(settings.luma_delta.max(1))
+        .target
+        .saturating_add(settings.delta.max(1))
         .min(255) as f32
         / 255.0;
     for y in y0..y1 {

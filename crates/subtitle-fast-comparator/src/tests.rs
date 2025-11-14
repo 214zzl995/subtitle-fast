@@ -23,8 +23,8 @@ fn full_roi() -> RoiConfig {
 #[test]
 fn spectral_hash_identical_frames_match() {
     let comparator = SpectralHashComparator::new(PreprocessSettings {
-        target_luma: 210,
-        luma_delta: 20,
+        target: 210,
+        delta: 20,
     });
     let frame = frame_from_pixels(8, 8, &[200; 64]);
     let roi = full_roi();
@@ -37,8 +37,8 @@ fn spectral_hash_identical_frames_match() {
 #[test]
 fn spectral_hash_detects_changes() {
     let comparator = SpectralHashComparator::new(PreprocessSettings {
-        target_luma: 210,
-        luma_delta: 20,
+        target: 210,
+        delta: 20,
     });
     let frame_a = frame_from_pixels(8, 8, &[200; 64]);
     let mut data_b = vec![200u8; 64];
@@ -56,8 +56,8 @@ fn spectral_hash_detects_changes() {
 #[test]
 fn structural_dssim_tracks_similarity() {
     let comparator = StructuralDssimComparator::new(PreprocessSettings {
-        target_luma: 180,
-        luma_delta: 30,
+        target: 180,
+        delta: 30,
     });
     let frame_a = frame_from_pixels(10, 6, &[190; 60]);
     let frame_b = frame_from_pixels(10, 6, &[185; 60]);
@@ -71,8 +71,8 @@ fn structural_dssim_tracks_similarity() {
 #[test]
 fn hybrid_mask_handles_shift() {
     let comparator = HybridMaskComparator::new(PreprocessSettings {
-        target_luma: 200,
-        luma_delta: 25,
+        target: 200,
+        delta: 25,
     });
     let mut base = vec![20u8; 12 * 8];
     for y in 2..6 {
@@ -99,8 +99,8 @@ fn hybrid_mask_handles_shift() {
 #[test]
 fn chamfer_edge_penalizes_different_strokes() {
     let comparator = ChamferEdgeComparator::new(PreprocessSettings {
-        target_luma: 220,
-        luma_delta: 20,
+        target: 220,
+        delta: 20,
     });
     let mut thick = vec![10u8; 16 * 12];
     for y in 4..8 {

@@ -11,28 +11,16 @@ use super::{
 };
 use subtitle_fast_decoder::YPlaneFrame;
 
-// Horizontal run-length smoothing gap for linking bright pixels.
-const RLSA_H_GAP: usize = 100;
-// Vertical gap threshold used by RLSA to bridge row-wise gaps.
-const RLSA_V_GAP: usize = 10;
-// Minimum connected-component area kept as a subtitle candidate.
-const MIN_AREA: usize = 300;
-// Reject components that occupy more than this fraction of the frame.
+const RLSA_H_GAP: usize = 200;
+const RLSA_V_GAP: usize = 20;
+const MIN_AREA: usize = 400;
 const MAX_AREA_RATIO: f32 = 0.35;
-// Lower bound on width / height of candidate rectangles.
 const MIN_ASPECT_RATIO: f32 = 2.0;
-// Subdivision factor for evaluating fill variance.
 const VMR_K: usize = 4;
-// Max distance between vertical centers to consider the same line.
 const Y_MERGE_TOL: usize = 10;
-// Required vertical overlap ratio to force a same-line merge.
-const Y_OVERLAP_RATIO: f32 = 0.30;
-// IoU threshold when merging horizontally adjacent boxes.
 const IOU_MERGE: f32 = 0.15;
-// Allowable horizontal gap when merging neighboring boxes.
 const NEAR_GAP: usize = 16;
-// Clamp the number of boxes returned to the pipeline.
-const MAX_OUTPUT_REGIONS: usize = 4;
+const MAX_OUTPUT_REGIONS: usize = 5;
 
 #[derive(Clone, Copy)]
 struct RoiRect {
@@ -42,13 +30,13 @@ struct RoiRect {
     height: usize,
 }
 
-pub struct LumaBandDetector {
+pub struct IntegralBandDetector {
     config: SubtitleDetectionConfig,
     roi: RoiRect,
     required_len: usize,
 }
 
-impl LumaBandDetector {
+impl IntegralBandDetector {
     pub fn new(config: SubtitleDetectionConfig) -> Result<Self, SubtitleDetectionError> {
         let required_len = required_len(&config)?;
         let roi = compute_roi_rect(config.frame_width, config.frame_height, config.roi)?;
@@ -60,7 +48,7 @@ impl LumaBandDetector {
     }
 }
 
-impl SubtitleDetector for LumaBandDetector {
+impl SubtitleDetector for IntegralBandDetector {
     fn ensure_available(config: &SubtitleDetectionConfig) -> Result<(), SubtitleDetectionError> {
         required_len(config)?;
         let _ = compute_roi_rect(config.frame_width, config.frame_height, config.roi)?;
@@ -89,7 +77,6 @@ impl SubtitleDetector for LumaBandDetector {
         }
 
         let mut mask = threshold_mask(y_plane, self.config.stride, self.roi, self.config.luma_band);
-
         rlsa_horizontal(&mut mask, self.roi.width, self.roi.height, RLSA_H_GAP);
         rlsa_vertical(&mut mask, self.roi.width, self.roi.height, RLSA_V_GAP);
 
@@ -148,7 +135,6 @@ impl SubtitleDetector for LumaBandDetector {
                 score,
             });
         }
-
         if candidates.is_empty() {
             let result = SubtitleDetectionResult {
                 has_subtitle: false,
@@ -170,6 +156,8 @@ impl SubtitleDetector for LumaBandDetector {
 
         merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
 
+        let max_score = merged.first().map(|c| c.score).unwrap_or(0.0);
+
         let mut regions = Vec::new();
         for cand in merged.iter().take(MAX_OUTPUT_REGIONS) {
             regions.push(DetectionRegion {
@@ -177,13 +165,13 @@ impl SubtitleDetector for LumaBandDetector {
                 y: (cand.y + self.roi.y) as f32,
                 width: cand.width as f32,
                 height: cand.height as f32,
-                score: 1.0,
+                score: cand.score,
             });
         }
 
         let result = SubtitleDetectionResult {
             has_subtitle: !regions.is_empty(),
-            max_score: if regions.is_empty() { 0.0 } else { 1.0 },
+            max_score,
             regions,
         };
         Ok(result)
@@ -235,8 +223,8 @@ fn threshold_mask(data: &[u8], stride: usize, roi: RoiRect, params: LumaBandConf
         return mask;
     }
 
-    let lo = params.target_luma.saturating_sub(params.delta);
-    let hi = params.target_luma.saturating_add(params.delta);
+    let lo = params.target.saturating_sub(params.delta);
+    let hi = params.target.saturating_add(params.delta);
 
     #[cfg(target_arch = "x86_64")]
     {
@@ -450,116 +438,25 @@ impl ComponentStats {
     }
 }
 
-fn connected_components(mask: &[u8], width: usize, height: usize) -> Vec<ComponentStats> {
-    if width == 0 || height == 0 {
-        return Vec::new();
-    }
-
-    let mut labels = vec![0u32; width * height];
-    let mut dsu = DisjointSet::new();
-
-    for y in 0..height {
-        for x in 0..width {
-            let idx = y * width + x;
-            if mask[idx] == 0 {
-                continue;
-            }
-
-            let mut neighbors = [0u32; 4];
-            let mut count = 0usize;
-
-            if y > 0 {
-                let up = labels[idx - width];
-                if up != 0 {
-                    neighbors[count] = up;
-                    count += 1;
-                }
-            }
-            if x > 0 {
-                let left = labels[idx - 1];
-                if left != 0 {
-                    neighbors[count] = left;
-                    count += 1;
-                }
-            }
-            if y > 0 && x > 0 {
-                let up_left = labels[idx - width - 1];
-                if up_left != 0 {
-                    neighbors[count] = up_left;
-                    count += 1;
-                }
-            }
-            if y > 0 && x + 1 < width {
-                let up_right = labels[idx - width + 1];
-                if up_right != 0 {
-                    neighbors[count] = up_right;
-                    count += 1;
-                }
-            }
-
-            let label = if count == 0 {
-                dsu.make_set()
-            } else {
-                let base = neighbors[0];
-                for &n in neighbors.iter().take(count).skip(1) {
-                    dsu.union(base, n);
-                }
-                base
-            };
-            labels[idx] = label;
-        }
-    }
-
-    let mut stats = vec![None; dsu.len()];
-    let mut components = Vec::new();
-
-    for y in 0..height {
-        for x in 0..width {
-            let idx = y * width + x;
-            let label = labels[idx];
-            if label == 0 {
-                continue;
-            }
-            let root = dsu.find(label);
-            labels[idx] = root;
-            let entry = stats[root as usize].get_or_insert_with(|| ComponentStats::new(x, y));
-            entry.area += 1;
-            entry.min_x = entry.min_x.min(x);
-            entry.max_x = entry.max_x.max(x);
-            entry.min_y = entry.min_y.min(y);
-            entry.max_y = entry.max_y.max(y);
-        }
-    }
-
-    for entry in stats.into_iter().flatten() {
-        components.push(entry);
-    }
-    components
+#[derive(Clone, Copy)]
+struct RowRun {
+    y: usize,
+    start: usize,
+    end: usize,
 }
 
 #[derive(Default)]
-struct DisjointSet {
+struct RunDsu {
     parent: Vec<u32>,
     rank: Vec<u8>,
 }
 
-impl DisjointSet {
-    fn new() -> Self {
+impl RunDsu {
+    fn new(len: usize) -> Self {
         Self {
-            parent: vec![0],
-            rank: vec![0],
+            parent: (0..len as u32).collect(),
+            rank: vec![0; len],
         }
-    }
-
-    fn len(&self) -> usize {
-        self.parent.len()
-    }
-
-    fn make_set(&mut self) -> u32 {
-        let idx = self.parent.len() as u32;
-        self.parent.push(idx);
-        self.rank.push(0);
-        idx
     }
 
     fn find(&mut self, x: u32) -> u32 {
@@ -589,6 +486,66 @@ impl DisjointSet {
             self.rank[root_a as usize] = rank_a + 1;
         }
     }
+}
+
+fn connected_components(mask: &[u8], width: usize, height: usize) -> Vec<ComponentStats> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+
+    let mut runs = Vec::new();
+    let mut row_offsets = vec![0usize; height + 1];
+    for y in 0..height {
+        row_offsets[y] = runs.len();
+        let row = &mask[y * width..(y + 1) * width];
+        let mut x = 0usize;
+        while x < width {
+            if row[x] == 0 {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            while x < width && row[x] != 0 {
+                x += 1;
+            }
+            runs.push(RowRun { y, start, end: x });
+        }
+    }
+    row_offsets[height] = runs.len();
+
+    if runs.is_empty() {
+        return Vec::new();
+    }
+
+    let mut dsu = RunDsu::new(runs.len());
+    for y in 1..height {
+        let prev_start = row_offsets[y - 1];
+        let prev_end = row_offsets[y];
+        let curr_start = row_offsets[y];
+        let curr_end = row_offsets[y + 1];
+        for curr_idx in curr_start..curr_end {
+            let curr = runs[curr_idx];
+            for prev_idx in prev_start..prev_end {
+                let prev = runs[prev_idx];
+                if prev.y + 1 == curr.y && prev.end > curr.start && curr.end > prev.start {
+                    dsu.union(curr_idx as u32, prev_idx as u32);
+                }
+            }
+        }
+    }
+
+    let mut stats = vec![None; runs.len()];
+    for (idx, run) in runs.iter().enumerate() {
+        let root = dsu.find(idx as u32) as usize;
+        let entry = stats[root].get_or_insert_with(|| ComponentStats::new(run.start, run.y));
+        entry.area += run.end - run.start;
+        entry.min_x = entry.min_x.min(run.start);
+        entry.max_x = entry.max_x.max(run.end.saturating_sub(1));
+        entry.min_y = entry.min_y.min(run.y);
+        entry.max_y = entry.max_y.max(run.y);
+    }
+
+    stats.into_iter().flatten().collect()
 }
 
 fn integral_image(mask: &[u8], width: usize, height: usize) -> Vec<u32> {
@@ -706,17 +663,7 @@ fn same_line(a: &Candidate, b: &Candidate) -> bool {
     let cy1 = a.y + a.height / 2;
     let cy2 = b.y + b.height / 2;
     let diff = if cy1 >= cy2 { cy1 - cy2 } else { cy2 - cy1 };
-    if diff <= Y_MERGE_TOL {
-        return true;
-    }
-    let y0 = cmp::max(a.y, b.y);
-    let y1 = cmp::min(a.y + a.height, b.y + b.height);
-    if y1 <= y0 {
-        return false;
-    }
-    let overlap = (y1 - y0) as f32;
-    let min_height = cmp::min(a.height, b.height).max(1) as f32;
-    (overlap / min_height) >= Y_OVERLAP_RATIO
+    diff <= Y_MERGE_TOL
 }
 
 fn merge_group(mut group: Vec<Candidate>, integral: &[u32], width: usize) -> Vec<Candidate> {

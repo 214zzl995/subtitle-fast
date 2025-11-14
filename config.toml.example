@@ -2,29 +2,10 @@
 # Input video path must still be provided on the command line.
 # Every CLI flag overrides the corresponding setting here.
 
-# Final subtitle output path (optional).
-# output = "/path/to/subtitles.srt"
-
-[debug.image]
-# dir = "/path/to/debug/frames"
-# format must be one of: jpeg | png | webp | yuv
-format = "jpeg"
-
-[debug.json]
-# dir = "/path/to/debug"
-frames = "frames.json"
-segments = "segments.json"
-pretty = true
-
 [detection]
 samples_per_second = 7
-luma_target = 230
-luma_delta = 12
-
-[ocr]
-backend = "auto"
-# languages = ["en-US", "zh-Hans"]
-# auto_detect_language = true
+target = 230
+delta = 12
 
 [decoder]
 # backend = "ffmpeg"
