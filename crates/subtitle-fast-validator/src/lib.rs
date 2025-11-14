@@ -1,6 +1,3 @@
-#[cfg(target_os = "windows")]
-compile_error!("TODO: subtitle-fast-validator is not yet implemented on Windows.");
-
 pub mod subtitle_detection;
 
 mod config;
