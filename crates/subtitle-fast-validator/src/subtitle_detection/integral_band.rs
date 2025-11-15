@@ -6,8 +6,9 @@ use std::arch::is_aarch64_feature_detected;
 use std::arch::is_x86_feature_detected;
 
 use super::{
-    DetectionRegion, LumaBandConfig, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
-    SubtitleDetectionResult, SubtitleDetector,
+    log_region_debug, DetectionRegion, LumaBandConfig, RoiConfig, SubtitleDetectionConfig,
+    SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector, MIN_REGION_HEIGHT_PX,
+    MIN_REGION_WIDTH_PX,
 };
 use subtitle_fast_decoder::YPlaneFrame;
 
@@ -107,6 +108,30 @@ impl SubtitleDetector for IntegralBandDetector {
             if width == 0 || height == 0 {
                 continue;
             }
+            if height < MIN_REGION_HEIGHT_PX {
+                log_region_debug(
+                    "integral",
+                    "reject_short_component",
+                    comp.min_x,
+                    comp.min_y,
+                    width,
+                    height,
+                    0.0,
+                );
+                continue;
+            }
+            if width < MIN_REGION_WIDTH_PX {
+                log_region_debug(
+                    "integral",
+                    "reject_narrow_component",
+                    comp.min_x,
+                    comp.min_y,
+                    width,
+                    height,
+                    0.0,
+                );
+                continue;
+            }
             let rect_area = (width * height) as f32;
             if rect_area > max_rect_area {
                 continue;
@@ -160,6 +185,15 @@ impl SubtitleDetector for IntegralBandDetector {
 
         let mut regions = Vec::new();
         for cand in merged.iter().take(MAX_OUTPUT_REGIONS) {
+            log_region_debug(
+                "integral",
+                "accept_region",
+                cand.x,
+                cand.y,
+                cand.width,
+                cand.height,
+                cand.score,
+            );
             regions.push(DetectionRegion {
                 x: (cand.x + self.roi.x) as f32,
                 y: (cand.y + self.roi.y) as f32,

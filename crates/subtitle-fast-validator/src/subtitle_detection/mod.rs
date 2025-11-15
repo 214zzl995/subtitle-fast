@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::env;
 use subtitle_fast_decoder::YPlaneFrame;
 use thiserror::Error;
 
@@ -14,6 +15,9 @@ pub use vision::VisionTextDetector;
 
 pub const DEFAULT_TARGET: u8 = 230;
 pub const DEFAULT_DELTA: u8 = 12;
+pub const MIN_REGION_HEIGHT_PX: usize = 24;
+pub const MIN_REGION_WIDTH_PX: usize = 24;
+const REGION_DEBUG_ENV: &str = "REGION_DEBUG";
 
 #[cfg(target_os = "macos")]
 const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[
@@ -306,6 +310,28 @@ pub fn build_detector(
 
 fn auto_backend_priority() -> &'static [SubtitleDetectorKind] {
     AUTO_DETECTOR_PRIORITY
+}
+
+fn region_debug_enabled() -> bool {
+    env::var_os(REGION_DEBUG_ENV).is_some()
+}
+
+pub(crate) fn log_region_debug(
+    detector: &str,
+    event: &str,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    score: f32,
+) {
+    if !region_debug_enabled() {
+        return;
+    }
+    eprintln!(
+        "[region-debug][{}] {} x={} y={} w={} h={} score={:.3}",
+        detector, event, x, y, width, height, score
+    );
 }
 
 fn build_auto(

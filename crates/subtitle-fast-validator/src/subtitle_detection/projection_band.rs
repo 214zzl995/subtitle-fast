@@ -2,13 +2,13 @@ use std::cmp;
 use std::ops::Range;
 
 use super::{
-    DetectionRegion, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
-    SubtitleDetectionResult, SubtitleDetector,
+    log_region_debug, DetectionRegion, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
+    SubtitleDetectionResult, SubtitleDetector, MIN_REGION_HEIGHT_PX, MIN_REGION_WIDTH_PX,
 };
 use subtitle_fast_decoder::YPlaneFrame;
 
 const ROW_DENSITY_THRESHOLD: f32 = 0.08;
-const MIN_BAND_HEIGHT: usize = 4;
+const MIN_BAND_HEIGHT: usize = 8;
 const MAX_BANDS: usize = 5;
 const MIN_FILL: f32 = 0.25;
 const H_GAP: usize = 80;
@@ -134,6 +134,15 @@ impl SubtitleDetector for ProjectionBandDetector {
         let mut regions = Vec::new();
         for cand in local_candidates {
             let activation = candidate_mass(&cand);
+            log_region_debug(
+                "projection",
+                "accept_region",
+                cand.x,
+                cand.y,
+                cand.width,
+                cand.height,
+                activation,
+            );
             regions.push(DetectionRegion {
                 x: (cand.x + self.roi.x) as f32,
                 y: (cand.y + self.roi.y) as f32,
@@ -166,7 +175,16 @@ fn candidate_mass(candidate: &RegionCandidate) -> f32 {
 
 fn analyze_band(mask: &[u8], width: usize, band: Range<usize>) -> Vec<RegionCandidate> {
     let height = band.end.saturating_sub(band.start);
-    if height == 0 {
+    if height == 0 || height < MIN_REGION_HEIGHT_PX {
+        log_region_debug(
+            "projection",
+            "reject_band_short",
+            0,
+            band.start,
+            width,
+            height,
+            0.0,
+        );
         return Vec::new();
     }
     let mut min_x = width;
@@ -247,6 +265,18 @@ fn analyze_band(mask: &[u8], width: usize, band: Range<usize>) -> Vec<RegionCand
         if fill < MIN_FILL {
             continue;
         }
+        if seg_width < MIN_REGION_WIDTH_PX {
+            log_region_debug(
+                "projection",
+                "reject_narrow_band",
+                seg.start,
+                band.start,
+                seg_width,
+                height,
+                fill,
+            );
+            continue;
+        }
         candidates.push(RegionCandidate {
             x: seg.start,
             y: band.start,
@@ -254,6 +284,15 @@ fn analyze_band(mask: &[u8], width: usize, band: Range<usize>) -> Vec<RegionCand
             height,
             score: fill,
         });
+        log_region_debug(
+            "projection",
+            "candidate_band",
+            seg.start,
+            band.start,
+            seg_width,
+            height,
+            fill,
+        );
     }
     candidates
 }
@@ -274,6 +313,30 @@ fn rle_candidates(mask: &[u8], width: usize, height: usize) -> Vec<RegionCandida
         if area == 0 {
             continue;
         }
+        if h < MIN_REGION_HEIGHT_PX {
+            log_region_debug(
+                "projection",
+                "reject_short_component",
+                comp.min_x,
+                comp.min_y,
+                w,
+                h,
+                0.0,
+            );
+            continue;
+        }
+        if w < MIN_REGION_WIDTH_PX {
+            log_region_debug(
+                "projection",
+                "reject_narrow_component",
+                comp.min_x,
+                comp.min_y,
+                w,
+                h,
+                0.0,
+            );
+            continue;
+        }
         let fill = comp.area as f32 / area as f32;
         if fill < MIN_FILL {
             continue;
@@ -285,6 +348,15 @@ fn rle_candidates(mask: &[u8], width: usize, height: usize) -> Vec<RegionCandida
             height: h,
             score: fill,
         });
+        log_region_debug(
+            "projection",
+            "candidate_rle",
+            comp.min_x,
+            comp.min_y,
+            w,
+            h,
+            fill,
+        );
     }
     candidates
 }
