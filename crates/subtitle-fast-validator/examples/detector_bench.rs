@@ -23,6 +23,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let mut stats: HashMap<&'static str, DetectorStats> = HashMap::new();
+    let mut projection_perf = ProjectionPerf::default();
     let mut processed = 0usize;
     for entry in fs::read_dir(&cli.yuv_dir)? {
         let path = entry?.path();
@@ -74,10 +75,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     success = false;
                 }
             }
-            stats
-                .entry(detector_kind.name())
-                .or_default()
-                .record(duration, success);
+            let entry = stats.entry(detector_kind.name()).or_default();
+            entry.record(duration, success);
+            if matches!(detector_kind, DetectorKind::Projection) {
+                projection_perf.record(duration);
+            }
         }
         processed += 1;
     }
@@ -97,6 +99,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 stat.failures,
             );
         }
+    }
+    if projection_perf.frames > 0 {
+        projection_perf.print_report();
     }
 
     Ok(())
@@ -243,5 +248,29 @@ impl DetectorStats {
         } else {
             self.total.as_secs_f64() * 1000.0 / self.frames as f64
         }
+    }
+}
+
+#[derive(Default)]
+struct ProjectionPerf {
+    total: Duration,
+    frames: u64,
+}
+
+impl ProjectionPerf {
+    fn record(&mut self, duration: Duration) {
+        self.frames += 1;
+        self.total += duration;
+    }
+
+    fn print_report(&self) {
+        if self.frames == 0 {
+            return;
+        }
+        let avg_ms = (self.total.as_secs_f64() * 1000.0) / self.frames as f64;
+        eprintln!(
+            "[projection][bench-perf] frames={} avg={:.3}ms",
+            self.frames, avg_ms
+        );
     }
 }

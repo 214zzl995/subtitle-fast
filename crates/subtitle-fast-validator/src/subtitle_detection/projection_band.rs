@@ -1,8 +1,7 @@
 use std::cmp;
-use std::env;
 use std::ops::Range;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+
+const BYTE_BITS: usize = 8;
 
 use super::{
     log_region_debug, DetectionRegion, LumaBandConfig, RoiConfig, SubtitleDetectionConfig,
@@ -19,10 +18,174 @@ const H_GAP: usize = 80;
 const V_GAP: usize = 12;
 const BAND_SPLIT_MIN_GAP: usize = 32;
 const BAND_SPLIT_GAP_RATIO: f32 = 0.2;
-const PROJECTION_PERF_ENV: &str = "PROJECTION_PERF";
-static PROJECTION_PERF_STATS: OnceLock<Mutex<ProjectionPerfStats>> = OnceLock::new();
-static PROJECTION_PERF_GUARD: OnceLock<ProjectionPerfGuard> = OnceLock::new();
 
+#[derive(Clone)]
+struct PackedMask {
+    width: usize,
+    height: usize,
+    stride: usize,
+    data: Vec<u8>,
+}
+
+impl PackedMask {
+    fn new(width: usize, height: usize) -> Self {
+        let stride = (width + (BYTE_BITS - 1)) / BYTE_BITS;
+        let data = vec![0u8; stride.saturating_mul(height)];
+        Self {
+            width,
+            height,
+            stride,
+            data,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    fn row(&self, y: usize) -> &[u8] {
+        let offset = y * self.stride;
+        &self.data[offset..offset + self.stride]
+    }
+
+    fn row_mut(&mut self, y: usize) -> &mut [u8] {
+        let offset = y * self.stride;
+        &mut self.data[offset..offset + self.stride]
+    }
+
+    fn row_iter(&self, y: usize) -> BitIter<'_> {
+        BitIter::new(self.row(y), self.width)
+    }
+
+    fn set_bit(&mut self, x: usize, y: usize) {
+        let idx = y * self.stride + x / BYTE_BITS;
+        let mask = 1u8 << (x % BYTE_BITS);
+        self.data[idx] |= mask;
+    }
+
+    fn fill_range(&mut self, y: usize, start: usize, end: usize) {
+        if y >= self.height {
+            return;
+        }
+        let width = self.width;
+        let start = start.min(width);
+        let end = end.min(width);
+        if start >= end {
+            return;
+        }
+
+        let start_byte = start / BYTE_BITS;
+        let end_byte = (end - 1) / BYTE_BITS;
+        let row_offset = y * self.stride;
+
+        if start_byte == end_byte {
+            let bits = ((1u16 << (end - start)) - 1) << (start % BYTE_BITS);
+            self.data[row_offset + start_byte] |= bits as u8;
+            return;
+        }
+
+        let start_mask = (!0u8) << (start % BYTE_BITS);
+        let end_mask = if end % BYTE_BITS == 0 {
+            0xFF
+        } else {
+            (1u16 << (end % BYTE_BITS)) as u8 - 1
+        };
+        self.data[row_offset + start_byte] |= start_mask;
+        self.data[row_offset + end_byte] |= end_mask;
+
+        if end_byte > start_byte + 1 {
+            let middle = &mut self.data[row_offset + start_byte + 1..row_offset + end_byte];
+            middle.fill(0xFF);
+        }
+    }
+
+    fn fill_column_range(&mut self, x: usize, start_y: usize, end_y: usize) {
+        if x >= self.width {
+            return;
+        }
+        let end_y = end_y.min(self.height);
+        let start_y = start_y.min(end_y);
+        for y in start_y..end_y {
+            self.set_bit(x, y);
+        }
+    }
+
+    fn count_ones_row(&self, y: usize) -> usize {
+        if self.width == 0 {
+            return 0;
+        }
+        let row = self.row(y);
+        let mut total = 0usize;
+        let remainder = self.width % BYTE_BITS;
+        for (i, &byte) in row.iter().enumerate() {
+            let masked = if remainder != 0 && i + 1 == row.len() {
+                byte & ((1u16 << remainder) as u8 - 1)
+            } else {
+                byte
+            };
+            total += masked.count_ones() as usize;
+        }
+        total
+    }
+}
+
+struct BitIter<'a> {
+    bytes: &'a [u8],
+    bit_len: usize,
+    byte_idx: usize,
+    current: u16,
+    base: usize,
+}
+
+impl<'a> BitIter<'a> {
+    fn new(bytes: &'a [u8], bit_len: usize) -> Self {
+        Self {
+            bytes,
+            bit_len,
+            byte_idx: 0,
+            current: 0,
+            base: 0,
+        }
+    }
+
+    fn load_next(&mut self) -> bool {
+        if self.byte_idx >= self.bytes.len() {
+            return false;
+        }
+        let mut byte = self.bytes[self.byte_idx] as u16;
+        let bits_left = self
+            .bit_len
+            .saturating_sub(self.byte_idx.saturating_mul(BYTE_BITS));
+        if bits_left < BYTE_BITS {
+            let mask = (1u16 << bits_left) - 1;
+            byte &= mask;
+        }
+        self.base = self.byte_idx * BYTE_BITS;
+        self.byte_idx += 1;
+        self.current = byte;
+        true
+    }
+}
+
+impl<'a> Iterator for BitIter<'a> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.current != 0 {
+                let tz = self.current.trailing_zeros() as usize;
+                let idx = self.base + tz;
+                self.current &= self.current - 1;
+                if idx < self.bit_len {
+                    return Some(idx);
+                }
+            }
+            if !self.load_next() {
+                return None;
+            }
+        }
+    }
+}
 #[derive(Clone, Copy)]
 struct RoiRect {
     x: usize,
@@ -48,11 +211,11 @@ impl ProjectionBandDetector {
         })
     }
 
-    fn threshold_mask(&self, data: &[u8]) -> Vec<u8> {
+    fn threshold_mask(&self, data: &[u8]) -> PackedMask {
         threshold_mask(self.roi, data, self.config.stride, self.config.luma_band)
     }
 
-    fn find_candidates(&self, mask: &[u8]) -> Vec<RegionCandidate> {
+    fn find_candidates(&self, mask: &PackedMask) -> Vec<RegionCandidate> {
         let width = self.roi.width;
         let height = self.roi.height;
         if width == 0 || height == 0 {
@@ -62,8 +225,7 @@ impl ProjectionBandDetector {
         let mut total_density = 0f32;
         let width_f = width.max(1) as f32;
         for y in 0..height {
-            let row = &mask[y * width..(y + 1) * width];
-            let ones = count_ones_row(row);
+            let ones = mask.count_ones_row(y);
             row_density[y] = ones as f32 / width_f;
             total_density += row_density[y];
         }
@@ -85,7 +247,7 @@ impl ProjectionBandDetector {
             if end - start < MIN_BAND_HEIGHT {
                 continue;
             }
-            let mut band_candidates = analyze_band(mask, width, start..end);
+            let mut band_candidates = analyze_band(mask, start..end);
             candidates.append(&mut band_candidates);
         }
         candidates.sort_by(|a, b| {
@@ -107,7 +269,6 @@ impl SubtitleDetector for ProjectionBandDetector {
         &self,
         frame: &YPlaneFrame,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
-        let perf_start = projection_perf_enabled().then(Instant::now);
         let data = frame.data();
         if data.len() < self.required_len {
             return Err(SubtitleDetectionError::InsufficientData {
@@ -116,11 +277,11 @@ impl SubtitleDetector for ProjectionBandDetector {
             });
         }
         let mut mask = self.threshold_mask(data);
-        gap_bridge_horizontal(&mut mask, self.roi.width, self.roi.height, H_GAP);
-        gap_bridge_vertical(&mut mask, self.roi.width, self.roi.height, V_GAP);
+        gap_bridge_horizontal(&mut mask, H_GAP);
+        gap_bridge_vertical(&mut mask, V_GAP);
         let mut local_candidates = self.find_candidates(&mask);
         if local_candidates.is_empty() {
-            local_candidates = rle_candidates(&mask, self.roi.width, self.roi.height);
+            local_candidates = rle_candidates(&mask);
         }
         if local_candidates.is_empty() {
             return Ok(SubtitleDetectionResult::empty());
@@ -150,9 +311,6 @@ impl SubtitleDetector for ProjectionBandDetector {
             max_score: regions.first().map(|r| r.score).unwrap_or(0.0),
             regions,
         };
-        if let Some(start) = perf_start {
-            projection_perf_record(start.elapsed());
-        }
         Ok(result)
     }
 }
@@ -171,65 +329,8 @@ fn candidate_mass(candidate: &RegionCandidate) -> f32 {
     candidate.score * area as f32
 }
 
-fn projection_perf_enabled() -> bool {
-    env::var_os(PROJECTION_PERF_ENV).is_some()
-}
-
-fn projection_perf_record(duration: Duration) {
-    if !projection_perf_enabled() {
-        return;
-    }
-    PROJECTION_PERF_GUARD.get_or_init(|| ProjectionPerfGuard);
-    let stats_lock =
-        PROJECTION_PERF_STATS.get_or_init(|| Mutex::new(ProjectionPerfStats::default()));
-    if let Ok(mut stats) = stats_lock.lock() {
-        stats.frames += 1;
-        stats.total += duration;
-    }
-}
-
-#[derive(Default)]
-struct ProjectionPerfStats {
-    total: Duration,
-    frames: u64,
-}
-
-struct ProjectionPerfGuard;
-
-impl Drop for ProjectionPerfGuard {
-    fn drop(&mut self) {
-        if !projection_perf_enabled() {
-            return;
-        }
-        if let Some(stats_lock) = PROJECTION_PERF_STATS.get() {
-            if let Ok(stats) = stats_lock.lock() {
-                if stats.frames > 0 {
-                    let avg_ms = (stats.total.as_secs_f64() * 1000.0) / stats.frames as f64;
-                    eprintln!(
-                        "[projection][perf] frames={} avg={:.3}ms",
-                        stats.frames, avg_ms
-                    );
-                }
-            }
-        }
-    }
-}
-
-fn count_ones_row(row: &[u8]) -> usize {
-    let mut total = 0usize;
-    let mut chunks = row.chunks_exact(16);
-    for chunk in &mut chunks {
-        let arr: [u8; 16] = chunk.try_into().unwrap();
-        let value = u128::from_le_bytes(arr);
-        total += value.count_ones() as usize;
-    }
-    for &byte in chunks.remainder() {
-        total += (byte != 0) as usize;
-    }
-    total
-}
-
-fn analyze_band(mask: &[u8], width: usize, band: Range<usize>) -> Vec<RegionCandidate> {
+fn analyze_band(mask: &PackedMask, band: Range<usize>) -> Vec<RegionCandidate> {
+    let width = mask.width;
     let height = band.end.saturating_sub(band.start);
     if height == 0 || height < MIN_REGION_HEIGHT_PX {
         log_region_debug(
@@ -247,18 +348,15 @@ fn analyze_band(mask: &[u8], width: usize, band: Range<usize>) -> Vec<RegionCand
     let mut max_x = 0usize;
     let mut column_counts = vec![0u16; width];
     for row in band.clone() {
-        let row_slice = &mask[row * width..(row + 1) * width];
-        accumulate_columns(row_slice, &mut column_counts);
         let mut row_first = None;
         let mut row_last = None;
-        for (x, &value) in row_slice.iter().enumerate() {
-            if value != 0 {
-                column_counts[x] = column_counts[x].saturating_add(1);
-                if row_first.is_none() {
-                    row_first = Some(x);
-                }
-                row_last = Some(x + 1);
+        let mut iter = mask.row_iter(row);
+        while let Some(x) = iter.next() {
+            column_counts[x] = column_counts[x].saturating_add(1);
+            if row_first.is_none() {
+                row_first = Some(x);
             }
+            row_last = Some(x + 1);
         }
         if let Some(first) = row_first {
             min_x = min_x.min(first);
@@ -354,14 +452,8 @@ fn analyze_band(mask: &[u8], width: usize, band: Range<usize>) -> Vec<RegionCand
     candidates
 }
 
-fn threshold_row(src: &[u8], dst: &mut [u8], lo: u8, hi: u8) {
-    for (value, out) in src.iter().zip(dst.iter_mut()) {
-        *out = u8::from(*value >= lo && *value <= hi);
-    }
-}
-
-fn threshold_mask(roi: RoiRect, data: &[u8], stride: usize, params: LumaBandConfig) -> Vec<u8> {
-    let mut mask = vec![0u8; roi.width * roi.height];
+fn threshold_mask(roi: RoiRect, data: &[u8], stride: usize, params: LumaBandConfig) -> PackedMask {
+    let mut mask = PackedMask::new(roi.width, roi.height);
     if mask.is_empty() {
         return mask;
     }
@@ -369,130 +461,82 @@ fn threshold_mask(roi: RoiRect, data: &[u8], stride: usize, params: LumaBandConf
     let hi = params.target.saturating_add(params.delta);
 
     #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("sse2") {
-            unsafe {
-                threshold_mask_sse2(data, stride, roi, lo, hi, &mut mask);
+    let has_sse2 = std::arch::is_x86_feature_detected!("sse2");
+
+    for row in 0..roi.height {
+        let src_offset = (roi.y + row) * stride + roi.x;
+        let src = &data[src_offset..src_offset + roi.width];
+        let dst = mask.row_mut(row);
+
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            if has_sse2 {
+                let consumed = threshold_pack_row_sse2(src, dst, lo, hi);
+                let byte_offset = consumed / BYTE_BITS;
+                if consumed < roi.width {
+                    threshold_pack_row_scalar(&src[consumed..], &mut dst[byte_offset..], lo, hi);
+                }
+                continue;
             }
-            return mask;
         }
+
+        threshold_pack_row_scalar(src, dst, lo, hi);
     }
 
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            unsafe {
-                threshold_mask_neon(data, stride, roi, lo, hi, &mut mask);
-            }
-            return mask;
-        }
-    }
-
-    threshold_mask_scalar(data, stride, roi, lo, hi, &mut mask);
     mask
 }
 
-fn threshold_mask_scalar(
-    data: &[u8],
-    stride: usize,
-    roi: RoiRect,
-    lo: u8,
-    hi: u8,
-    mask: &mut [u8],
-) {
-    for row in 0..roi.height {
-        let src_offset = (roi.y + row) * stride + roi.x;
-        let dst_offset = row * roi.width;
-        let src = &data[src_offset..src_offset + roi.width];
-        let dst = &mut mask[dst_offset..dst_offset + roi.width];
-        threshold_row(src, dst, lo, hi);
+fn threshold_pack_row_scalar(src: &[u8], dst: &mut [u8], lo: u8, hi: u8) {
+    let mut byte = 0u8;
+    let mut bit_idx = 0usize;
+    let mut dst_idx = 0usize;
+    for &value in src {
+        if value >= lo && value <= hi {
+            byte |= 1 << bit_idx;
+        }
+        bit_idx += 1;
+        if bit_idx == BYTE_BITS {
+            dst[dst_idx] = byte;
+            dst_idx += 1;
+            bit_idx = 0;
+            byte = 0;
+        }
+    }
+    if bit_idx != 0 {
+        dst[dst_idx] = byte;
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
-unsafe fn threshold_mask_sse2(
-    data: &[u8],
-    stride: usize,
-    roi: RoiRect,
-    lo: u8,
-    hi: u8,
-    mask: &mut [u8],
-) {
+unsafe fn threshold_pack_row_sse2(src: &[u8], dst: &mut [u8], lo: u8, hi: u8) -> usize {
     use std::arch::x86_64::{
         __m128i, _mm_and_si128, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_max_epu8, _mm_min_epu8,
-        _mm_set1_epi8, _mm_storeu_si128,
+        _mm_movemask_epi8, _mm_set1_epi8,
     };
 
     let lo_vec = _mm_set1_epi8(lo as i8);
     let hi_vec = _mm_set1_epi8(hi as i8);
-    let ones = _mm_set1_epi8(1);
-    let width = roi.width;
-
-    for row in 0..roi.height {
-        let src_ptr = data.as_ptr().add((roi.y + row) * stride + roi.x);
-        let dst_ptr = mask.as_mut_ptr().add(row * width);
-        let mut x = 0usize;
-        while x + 16 <= width {
-            let pixels = _mm_loadu_si128(src_ptr.add(x) as *const __m128i);
-            let ge_lo = _mm_cmpeq_epi8(pixels, _mm_max_epu8(pixels, lo_vec));
-            let le_hi = _mm_cmpeq_epi8(pixels, _mm_min_epu8(pixels, hi_vec));
-            let mut mask_vec = _mm_and_si128(ge_lo, le_hi);
-            mask_vec = _mm_and_si128(mask_vec, ones);
-            _mm_storeu_si128(dst_ptr.add(x) as *mut __m128i, mask_vec);
-            x += 16;
+    let mut x = 0usize;
+    let mut out_idx = 0usize;
+    while x + 16 <= src.len() {
+        let pixels = _mm_loadu_si128(src.as_ptr().add(x) as *const __m128i);
+        let ge_lo = _mm_cmpeq_epi8(pixels, _mm_max_epu8(pixels, lo_vec));
+        let le_hi = _mm_cmpeq_epi8(pixels, _mm_min_epu8(pixels, hi_vec));
+        let mask_vec = _mm_and_si128(ge_lo, le_hi);
+        let bits = _mm_movemask_epi8(mask_vec) as u32;
+        dst[out_idx] = (bits & 0xFF) as u8;
+        if out_idx + 1 < dst.len() {
+            dst[out_idx + 1] = ((bits >> BYTE_BITS) & 0xFF) as u8;
         }
-        if x < width {
-            let rem = width - x;
-            let src_tail = std::slice::from_raw_parts(src_ptr.add(x), rem);
-            let dst_tail = std::slice::from_raw_parts_mut(dst_ptr.add(x), rem);
-            threshold_row(src_tail, dst_tail, lo, hi);
-        }
+        x += 16;
+        out_idx += 2;
     }
+    x
 }
 
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn threshold_mask_neon(
-    data: &[u8],
-    stride: usize,
-    roi: RoiRect,
-    lo: u8,
-    hi: u8,
-    mask: &mut [u8],
-) {
-    use std::arch::aarch64::{
-        uint8x16_t, vandq_u8, vceqq_u8, vdupq_n_u8, vld1q_u8, vmaxq_u8, vminq_u8, vst1q_u8,
-    };
-
-    let lo_vec: uint8x16_t = vdupq_n_u8(lo);
-    let hi_vec: uint8x16_t = vdupq_n_u8(hi);
-    let ones: uint8x16_t = vdupq_n_u8(1);
-    let width = roi.width;
-
-    for row in 0..roi.height {
-        let src_ptr = data.as_ptr().add((roi.y + row) * stride + roi.x);
-        let dst_ptr = mask.as_mut_ptr().add(row * width);
-        let mut x = 0usize;
-        while x + 16 <= width {
-            let pixels = vld1q_u8(src_ptr.add(x));
-            let ge_lo = vceqq_u8(pixels, vmaxq_u8(pixels, lo_vec));
-            let le_hi = vceqq_u8(pixels, vminq_u8(pixels, hi_vec));
-            let mask_vec = vandq_u8(vandq_u8(ge_lo, le_hi), ones);
-            vst1q_u8(dst_ptr.add(x), mask_vec);
-            x += 16;
-        }
-        if x < width {
-            let rem = width - x;
-            let src_tail = std::slice::from_raw_parts(src_ptr.add(x), rem);
-            let dst_tail = std::slice::from_raw_parts_mut(dst_ptr.add(x), rem);
-            threshold_row(src_tail, dst_tail, lo, hi);
-        }
-    }
-}
-
-fn rle_candidates(mask: &[u8], width: usize, height: usize) -> Vec<RegionCandidate> {
-    let stats = connected_components(mask, width, height);
+fn rle_candidates(mask: &PackedMask) -> Vec<RegionCandidate> {
+    let stats = connected_components(mask);
     let mut candidates = Vec::new();
     for comp in stats {
         let w = comp.max_x.saturating_sub(comp.min_x) + 1;
@@ -620,7 +664,9 @@ impl RunDsu {
     }
 }
 
-fn connected_components(mask: &[u8], width: usize, height: usize) -> Vec<ComponentStats> {
+fn connected_components(mask: &PackedMask) -> Vec<ComponentStats> {
+    let width = mask.width;
+    let height = mask.height;
     if width == 0 || height == 0 {
         return Vec::new();
     }
@@ -628,18 +674,32 @@ fn connected_components(mask: &[u8], width: usize, height: usize) -> Vec<Compone
     let mut row_offsets = vec![0usize; height + 1];
     for y in 0..height {
         row_offsets[y] = runs.len();
-        let row = &mask[y * width..(y + 1) * width];
-        let mut x = 0usize;
-        while x < width {
-            if row[x] == 0 {
-                x += 1;
-                continue;
+        let mut iter = mask.row_iter(y);
+        let mut current: Option<RowRun> = None;
+        while let Some(x) = iter.next() {
+            match &mut current {
+                Some(run) if x == run.end => {
+                    run.end += 1;
+                }
+                Some(run) => {
+                    runs.push(*run);
+                    *run = RowRun {
+                        y,
+                        start: x,
+                        end: x + 1,
+                    };
+                }
+                None => {
+                    current = Some(RowRun {
+                        y,
+                        start: x,
+                        end: x + 1,
+                    });
+                }
             }
-            let start = x;
-            while x < width && row[x] != 0 {
-                x += 1;
-            }
-            runs.push(RowRun { y, start, end: x });
+        }
+        if let Some(run) = current.take() {
+            runs.push(run);
         }
     }
     row_offsets[height] = runs.len();
@@ -677,150 +737,41 @@ fn connected_components(mask: &[u8], width: usize, height: usize) -> Vec<Compone
     stats.into_iter().flatten().collect()
 }
 
-fn accumulate_columns(row: &[u8], counts: &mut [u16]) {
-    if row.is_empty() {
+fn gap_bridge_horizontal(mask: &mut PackedMask, gap: usize) {
+    if gap == 0 || mask.width == 0 {
         return;
     }
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("sse2") {
-            unsafe {
-                accumulate_columns_sse2(row, counts);
+    for y in 0..mask.height {
+        let hits: Vec<usize> = mask.row_iter(y).collect();
+        let Some(mut prev) = hits.first().copied() else {
+            continue;
+        };
+        for &curr in hits.iter().skip(1) {
+            let span = curr.saturating_sub(prev).saturating_sub(1);
+            if span <= gap {
+                mask.fill_range(y, prev + 1, curr);
             }
-            return;
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            unsafe {
-                accumulate_columns_neon(row, counts);
-            }
-            return;
-        }
-    }
-    accumulate_columns_scalar(row, counts);
-}
-
-fn accumulate_columns_scalar(row: &[u8], counts: &mut [u16]) {
-    for (dst, &value) in counts.iter_mut().zip(row.iter()) {
-        *dst = dst.saturating_add(value as u16);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse2")]
-unsafe fn accumulate_columns_sse2(row: &[u8], counts: &mut [u16]) {
-    use std::arch::x86_64::{
-        __m128i, _mm_add_epi16, _mm_cvtepu8_epi16, _mm_loadu_si128, _mm_srli_si128,
-        _mm_storeu_si128,
-    };
-    let len = row.len();
-    let mut x = 0usize;
-    while x + 16 <= len {
-        let pixels = _mm_loadu_si128(row.as_ptr().add(x) as *const __m128i);
-        let low = _mm_cvtepu8_epi16(pixels);
-        let high = _mm_cvtepu8_epi16(_mm_srli_si128(pixels, 8));
-        let dst_ptr = counts.as_mut_ptr().add(x) as *mut __m128i;
-        let dst_hi_ptr = counts.as_mut_ptr().add(x + 8) as *mut __m128i;
-        let sum_low = _mm_add_epi16(_mm_loadu_si128(dst_ptr), low);
-        let sum_high = _mm_add_epi16(_mm_loadu_si128(dst_hi_ptr), high);
-        _mm_storeu_si128(dst_ptr, sum_low);
-        _mm_storeu_si128(dst_hi_ptr, sum_high);
-        x += 16;
-    }
-    if x < len {
-        let remaining = len - x;
-        let tail_src = std::slice::from_raw_parts(row.as_ptr().add(x), remaining);
-        let tail_dst = std::slice::from_raw_parts_mut(counts.as_mut_ptr().add(x), remaining);
-        for (dst, &value) in tail_dst.iter_mut().zip(tail_src.iter()) {
-            *dst = dst.saturating_add(value as u16);
+            prev = curr;
         }
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn accumulate_columns_neon(row: &[u8], counts: &mut [u16]) {
-    use std::arch::aarch64::{
-        uint16x8_t, uint8x16_t, vaddq_u16, vget_high_u8, vget_low_u8, vld1q_u16, vld1q_u8,
-        vmovl_u8, vst1q_u16,
-    };
-    let len = row.len();
-    let mut x = 0usize;
-    while x + 16 <= len {
-        let pixels: uint8x16_t = vld1q_u8(row.as_ptr().add(x));
-        let low: uint16x8_t = vmovl_u8(vget_low_u8(pixels));
-        let high: uint16x8_t = vmovl_u8(vget_high_u8(pixels));
-        let dst_ptr = counts.as_mut_ptr().add(x);
-        let curr_low = vld1q_u16(dst_ptr);
-        let curr_high = vld1q_u16(dst_ptr.add(8));
-        vst1q_u16(dst_ptr, vaddq_u16(curr_low, low));
-        vst1q_u16(dst_ptr.add(8), vaddq_u16(curr_high, high));
-        x += 16;
-    }
-    if x < len {
-        let remaining = len - x;
-        let tail_src = std::slice::from_raw_parts(row.as_ptr().add(x), remaining);
-        let tail_dst = std::slice::from_raw_parts_mut(counts.as_mut_ptr().add(x), remaining);
-        for (dst, &value) in tail_dst.iter_mut().zip(tail_src.iter()) {
-            *dst = dst.saturating_add(value as u16);
-        }
-    }
-}
-
-fn gap_bridge_horizontal(mask: &mut [u8], width: usize, height: usize, gap: usize) {
-    if gap == 0 || width == 0 {
+fn gap_bridge_vertical(mask: &mut PackedMask, gap: usize) {
+    if gap == 0 || mask.height == 0 {
         return;
     }
-    for y in 0..height {
-        let row = &mut mask[y * width..(y + 1) * width];
-        let mut x = 0usize;
-        while x < width {
-            if row[x] != 0 {
-                x += 1;
-                continue;
-            }
-            let mut span_end = x;
-            while span_end < width && row[span_end] == 0 {
-                span_end += 1;
-            }
-            let left_connected = x > 0 && row[x - 1] != 0;
-            let right_connected = span_end < width && row[span_end] != 0;
-            if left_connected && right_connected && (span_end - x) <= gap {
-                for cell in &mut row[x..span_end] {
-                    *cell = 1;
+    let width = mask.width;
+    let mut last_hit: Vec<Option<usize>> = vec![None; width];
+    for y in 0..mask.height {
+        let hits: Vec<usize> = mask.row_iter(y).collect();
+        for x in hits {
+            if let Some(prev_y) = last_hit[x] {
+                let span = y.saturating_sub(prev_y).saturating_sub(1);
+                if span <= gap {
+                    mask.fill_column_range(x, prev_y + 1, y);
                 }
             }
-            x = span_end;
-        }
-    }
-}
-
-fn gap_bridge_vertical(mask: &mut [u8], width: usize, height: usize, gap: usize) {
-    if gap == 0 || height == 0 {
-        return;
-    }
-    for x in 0..width {
-        let mut y = 0usize;
-        while y < height {
-            let idx = y * width + x;
-            if mask[idx] != 0 {
-                y += 1;
-                continue;
-            }
-            let mut span_end = y;
-            while span_end < height && mask[span_end * width + x] == 0 {
-                span_end += 1;
-            }
-            let top_connected = y > 0 && mask[(y - 1) * width + x] != 0;
-            let bottom_connected = span_end < height && mask[span_end * width + x] != 0;
-            if top_connected && bottom_connected && (span_end - y) <= gap {
-                for fill_y in y..span_end {
-                    mask[fill_y * width + x] = 1;
-                }
-            }
-            y = span_end;
+            last_hit[x] = Some(y);
         }
     }
 }
@@ -860,4 +811,57 @@ fn compute_roi_rect(
         width: (end_x - start_x) as usize,
         height: (end_y - start_y) as usize,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rows_to_mask(rows: &[&[u8]]) -> PackedMask {
+        let height = rows.len();
+        let width = rows.first().map(|r| r.len()).unwrap_or(0);
+        let mut mask = PackedMask::new(width, height);
+        for (y, row) in rows.iter().enumerate() {
+            for (x, &v) in row.iter().enumerate() {
+                if v != 0 {
+                    mask.set_bit(x, y);
+                }
+            }
+        }
+        mask
+    }
+
+    fn mask_to_rows(mask: &PackedMask) -> Vec<Vec<u8>> {
+        let mut rows = Vec::new();
+        for y in 0..mask.height {
+            let mut row = vec![0u8; mask.width];
+            for idx in mask.row_iter(y) {
+                row[idx] = 1;
+            }
+            rows.push(row);
+        }
+        rows
+    }
+
+    #[test]
+    fn horizontal_gap_bridge_fills_short_spans() {
+        let mut mask = rows_to_mask(&[&[1, 0, 0, 1], &[0, 0, 0, 0]]);
+        gap_bridge_horizontal(&mut mask, 2);
+        let rows = mask_to_rows(&mask);
+        assert_eq!(rows[0], vec![1, 1, 1, 1]);
+        assert_eq!(rows[1], vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn vertical_gap_bridge_respects_limit() {
+        let mut mask = rows_to_mask(&[&[1, 0], &[0, 0], &[1, 0]]);
+        gap_bridge_vertical(&mut mask, 1);
+        let rows = mask_to_rows(&mask);
+        assert_eq!(rows, vec![vec![1, 0], vec![1, 0], vec![1, 0]]);
+
+        let mut mask = rows_to_mask(&[&[1, 0], &[0, 0], &[0, 0], &[1, 0]]);
+        gap_bridge_vertical(&mut mask, 1);
+        let rows = mask_to_rows(&mask);
+        assert_eq!(rows, vec![vec![1, 0], vec![0, 0], vec![0, 0], vec![1, 0]]);
+    }
 }
