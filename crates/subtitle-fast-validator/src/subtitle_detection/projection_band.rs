@@ -1,9 +1,13 @@
 use std::cmp;
+use std::env;
 use std::ops::Range;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use super::{
-    log_region_debug, DetectionRegion, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
-    SubtitleDetectionResult, SubtitleDetector, MIN_REGION_HEIGHT_PX, MIN_REGION_WIDTH_PX,
+    log_region_debug, DetectionRegion, LumaBandConfig, RoiConfig, SubtitleDetectionConfig,
+    SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector, MIN_REGION_HEIGHT_PX,
+    MIN_REGION_WIDTH_PX,
 };
 use subtitle_fast_decoder::YPlaneFrame;
 
@@ -15,6 +19,9 @@ const H_GAP: usize = 80;
 const V_GAP: usize = 12;
 const BAND_SPLIT_MIN_GAP: usize = 32;
 const BAND_SPLIT_GAP_RATIO: f32 = 0.2;
+const PROJECTION_PERF_ENV: &str = "PROJECTION_PERF";
+static PROJECTION_PERF_STATS: OnceLock<Mutex<ProjectionPerfStats>> = OnceLock::new();
+static PROJECTION_PERF_GUARD: OnceLock<ProjectionPerfGuard> = OnceLock::new();
 
 #[derive(Clone, Copy)]
 struct RoiRect {
@@ -42,22 +49,7 @@ impl ProjectionBandDetector {
     }
 
     fn threshold_mask(&self, data: &[u8]) -> Vec<u8> {
-        let mut mask = vec![0u8; self.roi.width * self.roi.height];
-        if mask.is_empty() {
-            return mask;
-        }
-        let stride = self.config.stride;
-        let params = self.config.luma_band;
-        let lo = params.target.saturating_sub(params.delta);
-        let hi = params.target.saturating_add(params.delta);
-        for row in 0..self.roi.height {
-            let src_offset = (self.roi.y + row) * stride + self.roi.x;
-            let dst_offset = row * self.roi.width;
-            let src = &data[src_offset..src_offset + self.roi.width];
-            let dst = &mut mask[dst_offset..dst_offset + self.roi.width];
-            threshold_row(src, dst, lo, hi);
-        }
-        mask
+        threshold_mask(self.roi, data, self.config.stride, self.config.luma_band)
     }
 
     fn find_candidates(&self, mask: &[u8]) -> Vec<RegionCandidate> {
@@ -68,10 +60,11 @@ impl ProjectionBandDetector {
         }
         let mut row_density = vec![0f32; height];
         let mut total_density = 0f32;
+        let width_f = width.max(1) as f32;
         for y in 0..height {
             let row = &mask[y * width..(y + 1) * width];
-            let ones = row.iter().filter(|&&b| b != 0).count();
-            row_density[y] = ones as f32 / width.max(1) as f32;
+            let ones = count_ones_row(row);
+            row_density[y] = ones as f32 / width_f;
             total_density += row_density[y];
         }
         let avg_density = total_density / height.max(1) as f32;
@@ -114,6 +107,7 @@ impl SubtitleDetector for ProjectionBandDetector {
         &self,
         frame: &YPlaneFrame,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
+        let perf_start = projection_perf_enabled().then(Instant::now);
         let data = frame.data();
         if data.len() < self.required_len {
             return Err(SubtitleDetectionError::InsufficientData {
@@ -151,11 +145,15 @@ impl SubtitleDetector for ProjectionBandDetector {
                 score: activation,
             });
         }
-        Ok(SubtitleDetectionResult {
+        let result = SubtitleDetectionResult {
             has_subtitle: !regions.is_empty(),
             max_score: regions.first().map(|r| r.score).unwrap_or(0.0),
             regions,
-        })
+        };
+        if let Some(start) = perf_start {
+            projection_perf_record(start.elapsed());
+        }
+        Ok(result)
     }
 }
 
@@ -171,6 +169,64 @@ struct RegionCandidate {
 fn candidate_mass(candidate: &RegionCandidate) -> f32 {
     let area = candidate.width.saturating_mul(candidate.height).max(1);
     candidate.score * area as f32
+}
+
+fn projection_perf_enabled() -> bool {
+    env::var_os(PROJECTION_PERF_ENV).is_some()
+}
+
+fn projection_perf_record(duration: Duration) {
+    if !projection_perf_enabled() {
+        return;
+    }
+    PROJECTION_PERF_GUARD.get_or_init(|| ProjectionPerfGuard);
+    let stats_lock =
+        PROJECTION_PERF_STATS.get_or_init(|| Mutex::new(ProjectionPerfStats::default()));
+    if let Ok(mut stats) = stats_lock.lock() {
+        stats.frames += 1;
+        stats.total += duration;
+    }
+}
+
+#[derive(Default)]
+struct ProjectionPerfStats {
+    total: Duration,
+    frames: u64,
+}
+
+struct ProjectionPerfGuard;
+
+impl Drop for ProjectionPerfGuard {
+    fn drop(&mut self) {
+        if !projection_perf_enabled() {
+            return;
+        }
+        if let Some(stats_lock) = PROJECTION_PERF_STATS.get() {
+            if let Ok(stats) = stats_lock.lock() {
+                if stats.frames > 0 {
+                    let avg_ms = (stats.total.as_secs_f64() * 1000.0) / stats.frames as f64;
+                    eprintln!(
+                        "[projection][perf] frames={} avg={:.3}ms",
+                        stats.frames, avg_ms
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn count_ones_row(row: &[u8]) -> usize {
+    let mut total = 0usize;
+    let mut chunks = row.chunks_exact(16);
+    for chunk in &mut chunks {
+        let arr: [u8; 16] = chunk.try_into().unwrap();
+        let value = u128::from_le_bytes(arr);
+        total += value.count_ones() as usize;
+    }
+    for &byte in chunks.remainder() {
+        total += (byte != 0) as usize;
+    }
+    total
 }
 
 fn analyze_band(mask: &[u8], width: usize, band: Range<usize>) -> Vec<RegionCandidate> {
@@ -192,6 +248,7 @@ fn analyze_band(mask: &[u8], width: usize, band: Range<usize>) -> Vec<RegionCand
     let mut column_counts = vec![0u16; width];
     for row in band.clone() {
         let row_slice = &mask[row * width..(row + 1) * width];
+        accumulate_columns(row_slice, &mut column_counts);
         let mut row_first = None;
         let mut row_last = None;
         for (x, &value) in row_slice.iter().enumerate() {
@@ -300,6 +357,137 @@ fn analyze_band(mask: &[u8], width: usize, band: Range<usize>) -> Vec<RegionCand
 fn threshold_row(src: &[u8], dst: &mut [u8], lo: u8, hi: u8) {
     for (value, out) in src.iter().zip(dst.iter_mut()) {
         *out = u8::from(*value >= lo && *value <= hi);
+    }
+}
+
+fn threshold_mask(roi: RoiRect, data: &[u8], stride: usize, params: LumaBandConfig) -> Vec<u8> {
+    let mut mask = vec![0u8; roi.width * roi.height];
+    if mask.is_empty() {
+        return mask;
+    }
+    let lo = params.target.saturating_sub(params.delta);
+    let hi = params.target.saturating_add(params.delta);
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("sse2") {
+            unsafe {
+                threshold_mask_sse2(data, stride, roi, lo, hi, &mut mask);
+            }
+            return mask;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                threshold_mask_neon(data, stride, roi, lo, hi, &mut mask);
+            }
+            return mask;
+        }
+    }
+
+    threshold_mask_scalar(data, stride, roi, lo, hi, &mut mask);
+    mask
+}
+
+fn threshold_mask_scalar(
+    data: &[u8],
+    stride: usize,
+    roi: RoiRect,
+    lo: u8,
+    hi: u8,
+    mask: &mut [u8],
+) {
+    for row in 0..roi.height {
+        let src_offset = (roi.y + row) * stride + roi.x;
+        let dst_offset = row * roi.width;
+        let src = &data[src_offset..src_offset + roi.width];
+        let dst = &mut mask[dst_offset..dst_offset + roi.width];
+        threshold_row(src, dst, lo, hi);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn threshold_mask_sse2(
+    data: &[u8],
+    stride: usize,
+    roi: RoiRect,
+    lo: u8,
+    hi: u8,
+    mask: &mut [u8],
+) {
+    use std::arch::x86_64::{
+        __m128i, _mm_and_si128, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_max_epu8, _mm_min_epu8,
+        _mm_set1_epi8, _mm_storeu_si128,
+    };
+
+    let lo_vec = _mm_set1_epi8(lo as i8);
+    let hi_vec = _mm_set1_epi8(hi as i8);
+    let ones = _mm_set1_epi8(1);
+    let width = roi.width;
+
+    for row in 0..roi.height {
+        let src_ptr = data.as_ptr().add((roi.y + row) * stride + roi.x);
+        let dst_ptr = mask.as_mut_ptr().add(row * width);
+        let mut x = 0usize;
+        while x + 16 <= width {
+            let pixels = _mm_loadu_si128(src_ptr.add(x) as *const __m128i);
+            let ge_lo = _mm_cmpeq_epi8(pixels, _mm_max_epu8(pixels, lo_vec));
+            let le_hi = _mm_cmpeq_epi8(pixels, _mm_min_epu8(pixels, hi_vec));
+            let mut mask_vec = _mm_and_si128(ge_lo, le_hi);
+            mask_vec = _mm_and_si128(mask_vec, ones);
+            _mm_storeu_si128(dst_ptr.add(x) as *mut __m128i, mask_vec);
+            x += 16;
+        }
+        if x < width {
+            let rem = width - x;
+            let src_tail = std::slice::from_raw_parts(src_ptr.add(x), rem);
+            let dst_tail = std::slice::from_raw_parts_mut(dst_ptr.add(x), rem);
+            threshold_row(src_tail, dst_tail, lo, hi);
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn threshold_mask_neon(
+    data: &[u8],
+    stride: usize,
+    roi: RoiRect,
+    lo: u8,
+    hi: u8,
+    mask: &mut [u8],
+) {
+    use std::arch::aarch64::{
+        uint8x16_t, vandq_u8, vceqq_u8, vdupq_n_u8, vld1q_u8, vmaxq_u8, vminq_u8, vst1q_u8,
+    };
+
+    let lo_vec: uint8x16_t = vdupq_n_u8(lo);
+    let hi_vec: uint8x16_t = vdupq_n_u8(hi);
+    let ones: uint8x16_t = vdupq_n_u8(1);
+    let width = roi.width;
+
+    for row in 0..roi.height {
+        let src_ptr = data.as_ptr().add((roi.y + row) * stride + roi.x);
+        let dst_ptr = mask.as_mut_ptr().add(row * width);
+        let mut x = 0usize;
+        while x + 16 <= width {
+            let pixels = vld1q_u8(src_ptr.add(x));
+            let ge_lo = vceqq_u8(pixels, vmaxq_u8(pixels, lo_vec));
+            let le_hi = vceqq_u8(pixels, vminq_u8(pixels, hi_vec));
+            let mask_vec = vandq_u8(vandq_u8(ge_lo, le_hi), ones);
+            vst1q_u8(dst_ptr.add(x), mask_vec);
+            x += 16;
+        }
+        if x < width {
+            let rem = width - x;
+            let src_tail = std::slice::from_raw_parts(src_ptr.add(x), rem);
+            let dst_tail = std::slice::from_raw_parts_mut(dst_ptr.add(x), rem);
+            threshold_row(src_tail, dst_tail, lo, hi);
+        }
     }
 }
 
@@ -487,6 +675,98 @@ fn connected_components(mask: &[u8], width: usize, height: usize) -> Vec<Compone
         entry.max_y = entry.max_y.max(run.y);
     }
     stats.into_iter().flatten().collect()
+}
+
+fn accumulate_columns(row: &[u8], counts: &mut [u16]) {
+    if row.is_empty() {
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("sse2") {
+            unsafe {
+                accumulate_columns_sse2(row, counts);
+            }
+            return;
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                accumulate_columns_neon(row, counts);
+            }
+            return;
+        }
+    }
+    accumulate_columns_scalar(row, counts);
+}
+
+fn accumulate_columns_scalar(row: &[u8], counts: &mut [u16]) {
+    for (dst, &value) in counts.iter_mut().zip(row.iter()) {
+        *dst = dst.saturating_add(value as u16);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn accumulate_columns_sse2(row: &[u8], counts: &mut [u16]) {
+    use std::arch::x86_64::{
+        __m128i, _mm_add_epi16, _mm_cvtepu8_epi16, _mm_loadu_si128, _mm_srli_si128,
+        _mm_storeu_si128,
+    };
+    let len = row.len();
+    let mut x = 0usize;
+    while x + 16 <= len {
+        let pixels = _mm_loadu_si128(row.as_ptr().add(x) as *const __m128i);
+        let low = _mm_cvtepu8_epi16(pixels);
+        let high = _mm_cvtepu8_epi16(_mm_srli_si128(pixels, 8));
+        let dst_ptr = counts.as_mut_ptr().add(x) as *mut __m128i;
+        let dst_hi_ptr = counts.as_mut_ptr().add(x + 8) as *mut __m128i;
+        let sum_low = _mm_add_epi16(_mm_loadu_si128(dst_ptr), low);
+        let sum_high = _mm_add_epi16(_mm_loadu_si128(dst_hi_ptr), high);
+        _mm_storeu_si128(dst_ptr, sum_low);
+        _mm_storeu_si128(dst_hi_ptr, sum_high);
+        x += 16;
+    }
+    if x < len {
+        let remaining = len - x;
+        let tail_src = std::slice::from_raw_parts(row.as_ptr().add(x), remaining);
+        let tail_dst = std::slice::from_raw_parts_mut(counts.as_mut_ptr().add(x), remaining);
+        for (dst, &value) in tail_dst.iter_mut().zip(tail_src.iter()) {
+            *dst = dst.saturating_add(value as u16);
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn accumulate_columns_neon(row: &[u8], counts: &mut [u16]) {
+    use std::arch::aarch64::{
+        uint16x8_t, uint8x16_t, vaddq_u16, vget_high_u8, vget_low_u8, vld1q_u16, vld1q_u8,
+        vmovl_u8, vst1q_u16,
+    };
+    let len = row.len();
+    let mut x = 0usize;
+    while x + 16 <= len {
+        let pixels: uint8x16_t = vld1q_u8(row.as_ptr().add(x));
+        let low: uint16x8_t = vmovl_u8(vget_low_u8(pixels));
+        let high: uint16x8_t = vmovl_u8(vget_high_u8(pixels));
+        let dst_ptr = counts.as_mut_ptr().add(x);
+        let curr_low = vld1q_u16(dst_ptr);
+        let curr_high = vld1q_u16(dst_ptr.add(8));
+        vst1q_u16(dst_ptr, vaddq_u16(curr_low, low));
+        vst1q_u16(dst_ptr.add(8), vaddq_u16(curr_high, high));
+        x += 16;
+    }
+    if x < len {
+        let remaining = len - x;
+        let tail_src = std::slice::from_raw_parts(row.as_ptr().add(x), remaining);
+        let tail_dst = std::slice::from_raw_parts_mut(counts.as_mut_ptr().add(x), remaining);
+        for (dst, &value) in tail_dst.iter_mut().zip(tail_src.iter()) {
+            *dst = dst.saturating_add(value as u16);
+        }
+    }
 }
 
 fn gap_bridge_horizontal(mask: &mut [u8], width: usize, height: usize, gap: usize) {
