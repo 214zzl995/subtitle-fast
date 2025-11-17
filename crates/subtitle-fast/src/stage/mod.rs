@@ -1,3 +1,4 @@
+pub mod comparator;
 pub mod detector;
 pub mod progress;
 pub mod sampler;
@@ -9,6 +10,7 @@ use futures_util::Stream;
 use tokio_stream::StreamExt;
 
 use crate::settings::{DetectionSettings, EffectiveSettings};
+use comparator::{ComparatorStage, ComparatorStageError, ExtractionError};
 use detector::{Detector, DetectorError};
 use progress::Progress;
 use sampler::FrameSampler;
@@ -60,23 +62,31 @@ pub async fn run_pipeline(
 
     let detected = detector_stage.attach(sampled);
 
-    let monitored = Progress::new("pipeline").attach(detected);
+    let comparator_stage =
+        ComparatorStage::new(pipeline.detection.target, pipeline.detection.delta);
+    let featured = comparator_stage.attach(detected);
+
+    let monitored = Progress::new("pipeline").attach(featured);
 
     let StreamBundle { stream, .. } = monitored;
-    let mut detection_stream = stream;
-    let mut processed_candidates: u64 = 0;
+    let mut feature_stream = stream;
+    let mut processed_samples: u64 = 0;
 
-    while let Some(event) = detection_stream.next().await {
+    while let Some(event) = feature_stream.next().await {
         match event {
-            Ok(_candidate) => {
-                processed_candidates = processed_candidates.saturating_add(1);
+            Ok(_sample) => {
+                processed_samples = processed_samples.saturating_add(1);
             }
-            Err(DetectorError::Sampler(err)) => {
-                return Err((err, processed_candidates));
+            Err(ComparatorStageError::Detection(DetectorError::Sampler(err))) => {
+                return Err((err, processed_samples));
             }
-            Err(DetectorError::Detection(err)) => {
+            Err(ComparatorStageError::Detection(DetectorError::Detection(err))) => {
                 let yplane_err = detection_error_to_yplane(err);
-                return Err((yplane_err, processed_candidates));
+                return Err((yplane_err, processed_samples));
+            }
+            Err(ComparatorStageError::Extraction(err)) => {
+                let yplane_err = extraction_error_to_yplane(err);
+                return Err((yplane_err, processed_samples));
             }
         }
     }
@@ -86,4 +96,12 @@ pub async fn run_pipeline(
 
 fn detection_error_to_yplane(err: SubtitleDetectionError) -> YPlaneError {
     YPlaneError::configuration(format!("subtitle detection error: {err}"))
+}
+
+fn extraction_error_to_yplane(err: ExtractionError) -> YPlaneError {
+    match err {
+        ExtractionError::MissingFeature { region_index } => YPlaneError::configuration(format!(
+            "comparator failed to extract features for region {region_index}"
+        )),
+    }
 }
