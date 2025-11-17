@@ -1,4 +1,4 @@
-#![cfg(feature = "backend-videotoolbox")]
+#[cfg(all(target_os = "macos", feature = "backend-videotoolbox"))]
 
 use crate::core::{
     DynYPlaneProvider, YPlaneError, YPlaneResult, YPlaneStream, YPlaneStreamProvider,

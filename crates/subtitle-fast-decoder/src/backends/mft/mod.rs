@@ -1,4 +1,4 @@
-#![cfg(feature = "backend-mft")]
+#[cfg(all(target_os = "windows", feature = "backend-mft"))]
 
 use crate::core::{
     DynYPlaneProvider, YPlaneError, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
@@ -237,7 +237,7 @@ mod platform {
 
 #[cfg(not(target_os = "windows"))]
 mod platform {
-    use super::*;
+    use crate::{DynYPlaneProvider, YPlaneError, YPlaneResult, YPlaneStream, YPlaneStreamProvider};
     use std::path::Path;
 
     pub struct MftProvider;
