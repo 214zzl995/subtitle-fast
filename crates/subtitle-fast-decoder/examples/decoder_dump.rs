@@ -8,8 +8,8 @@ use png::{BitDepth, ColorType, Encoder};
 use subtitle_fast_decoder::{Backend, Configuration, YPlaneFrame};
 use tokio_stream::StreamExt;
 
-const SAMPLE_FREQUENCY_HZ: f32 = 7.0;
-const DECODER_BACKEND: Backend = Backend::VideoToolbox;
+const SAMPLE_FREQUENCY: usize = 7; // frames per second
+const DECODER_BACKEND: Backend = Backend::Ffmpeg;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -53,11 +53,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut stream = provider.into_stream();
     let mut processed = 0u64;
+    let mut current_second: Option<u64> = None;
+    let mut emitted_in_second = 0usize;
     while let Some(frame) = stream.next().await {
         match frame {
             Ok(frame) => {
                 let ordinal = frame.frame_index().unwrap_or(processed);
                 processed += 1;
+                if !should_emit_frame(
+                    &frame,
+                    processed,
+                    &mut current_second,
+                    &mut emitted_in_second,
+                ) {
+                    continue;
+                }
                 write_frame_yuv(&frame, &yuv_dir, ordinal)?;
                 write_frame_png(&frame, &png_dir, ordinal)?;
                 if processed % 25 == 0 {
@@ -116,7 +126,7 @@ fn write_metadata(root: &Path, input: &Path, backend: Backend) -> Result<(), io:
     let mut file = File::create(root.join("decoder_dump.txt"))?;
     writeln!(file, "input={}", input.display())?;
     writeln!(file, "backend={}", backend.as_str())?;
-    writeln!(file, "sample_frequency_hz={}", SAMPLE_FREQUENCY_HZ)?;
+    writeln!(file, "sample_frequency_hz={}", SAMPLE_FREQUENCY)?;
     writeln!(file, "generated_at={}", timestamp())?;
     Ok(())
 }
@@ -167,4 +177,40 @@ fn flatten_y(frame: &YPlaneFrame) -> Vec<u8> {
         }
     }
     out
+}
+
+fn should_emit_frame(
+    frame: &YPlaneFrame,
+    processed: u64,
+    current_second: &mut Option<u64>,
+    emitted_in_second: &mut usize,
+) -> bool {
+    if SAMPLE_FREQUENCY == 0 {
+        return true;
+    }
+    let second_bucket = frame_second_bucket(frame, processed);
+    if current_second.map_or(true, |bucket| bucket != second_bucket) {
+        *current_second = Some(second_bucket);
+        *emitted_in_second = 0;
+    }
+    if *emitted_in_second < SAMPLE_FREQUENCY {
+        *emitted_in_second += 1;
+        true
+    } else {
+        false
+    }
+}
+
+fn frame_second_bucket(frame: &YPlaneFrame, processed: u64) -> u64 {
+    let seconds = frame
+        .timestamp()
+        .map(|ts| ts.as_secs_f64())
+        .or_else(|| {
+            frame
+                .frame_index()
+                .or(Some(processed))
+                .map(|idx| idx as f64 / SAMPLE_FREQUENCY.max(1) as f64)
+        })
+        .unwrap_or(processed as f64 / SAMPLE_FREQUENCY.max(1) as f64);
+    seconds.max(0.0).floor() as u64
 }

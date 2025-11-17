@@ -13,8 +13,7 @@ use crate::core::{
 use tokio::sync::mpsc::Sender;
 
 const BACKEND_NAME: &str = "ffmpeg";
-const FILTER_SPEC: &str =
-    "crop=iw:ih*0.125:0:ih*0.875,scale=256:-2:flags=fast_bilinear,format=nv12";
+const FILTER_SPEC: &str = "format=nv12";
 const DEFAULT_CHANNEL_CAPACITY: usize = 8;
 
 struct VideoFilterPipeline {
