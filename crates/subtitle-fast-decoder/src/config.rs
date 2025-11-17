@@ -205,14 +205,9 @@ fn default_backend() -> Backend {
     if github_ci_active() {
         return Backend::Mock;
     }
-    #[cfg(all(target_os = "windows", feature = "backend-mft"))]
-    {
-        return Backend::Mft;
-    }
     #[cfg(feature = "backend-ffmpeg")]
-    {
-        return Backend::Ffmpeg;
-    }
+    return Backend::Ffmpeg;
+
     #[allow(unreachable_code)]
     Backend::Mock
 }

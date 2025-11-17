@@ -411,6 +411,11 @@ extern "C"
 
         IMFSourceReader *reader = nullptr;
         hr = MFCreateSourceReaderFromURL(wide_path.c_str(), attributes, &reader);
+        if (FAILED(hr) && hr == E_INVALIDARG)
+        {
+            // Some systems reject D3D manager attributes; retry without them.
+            hr = MFCreateSourceReaderFromURL(wide_path.c_str(), nullptr, &reader);
+        }
         safe_release(&attributes);
         if (FAILED(hr))
         {
@@ -550,6 +555,11 @@ extern "C"
 
         IMFSourceReader *reader = nullptr;
         hr = MFCreateSourceReaderFromURL(wide_path.c_str(), attributes, &reader);
+        if (FAILED(hr) && hr == E_INVALIDARG)
+        {
+            // Some systems reject D3D manager attributes; retry without them.
+            hr = MFCreateSourceReaderFromURL(wide_path.c_str(), nullptr, &reader);
+        }
         safe_release(&attributes);
         if (FAILED(hr))
         {
