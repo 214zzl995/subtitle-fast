@@ -1,7 +1,7 @@
 use subtitle_fast_decoder::YPlaneFrame;
 use subtitle_fast_validator::subtitle_detection::RoiConfig;
 
-use crate::preprocess::PreprocessSettings;
+use crate::pipeline::PreprocessSettings;
 use crate::{
     ChamferEdgeComparator, HybridMaskComparator, SpectralHashComparator, StructuralDssimComparator,
     SubtitleComparator,

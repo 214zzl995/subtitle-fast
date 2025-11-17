@@ -1,13 +1,15 @@
 use subtitle_fast_decoder::YPlaneFrame;
 use subtitle_fast_validator::subtitle_detection::RoiConfig;
 
-use crate::SubtitleComparator;
-use crate::feature::{ComparisonReport, FeatureBlob, ReportMetric};
-use crate::ops::{
+use crate::comparators::SubtitleComparator;
+use crate::pipeline::ops::{
     dilate_binary, distance_transform, erode_binary, gaussian_blur_3x3, normalize, percentile,
     sobel_magnitude,
 };
-use crate::preprocess::{MaskedPatch, PreprocessSettings, extract_masked_patch};
+use crate::pipeline::preprocess::extract_masked_patch;
+use crate::pipeline::{
+    ComparisonReport, FeatureBlob, MaskedPatch, PreprocessSettings, ReportMetric,
+};
 
 const TAG: &str = "chamfer-edge";
 const SHIFT_RADIUS: isize = 4;

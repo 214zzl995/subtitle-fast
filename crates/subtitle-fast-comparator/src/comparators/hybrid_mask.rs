@@ -1,10 +1,12 @@
 use subtitle_fast_decoder::YPlaneFrame;
 use subtitle_fast_validator::subtitle_detection::RoiConfig;
 
-use crate::SubtitleComparator;
-use crate::feature::{ComparisonReport, FeatureBlob, ReportMetric};
-use crate::ops::{gaussian_blur_3x3, normalize, sobel_magnitude};
-use crate::preprocess::{MaskedPatch, PreprocessSettings, extract_masked_patch};
+use crate::comparators::SubtitleComparator;
+use crate::pipeline::ops::{gaussian_blur_3x3, normalize, sobel_magnitude};
+use crate::pipeline::preprocess::extract_masked_patch;
+use crate::pipeline::{
+    ComparisonReport, FeatureBlob, MaskedPatch, PreprocessSettings, ReportMetric,
+};
 
 const TAG: &str = "hybrid-mask";
 const SHIFT_RADIUS: isize = 3;

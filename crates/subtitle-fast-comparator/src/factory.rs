@@ -2,11 +2,11 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::preprocess::PreprocessSettings;
-use crate::{
+use crate::comparators::{
     ChamferEdgeComparator, HybridMaskComparator, SpectralHashComparator, StructuralDssimComparator,
     SubtitleComparator,
 };
+use crate::pipeline::PreprocessSettings;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ComparatorKind {
