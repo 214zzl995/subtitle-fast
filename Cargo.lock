@@ -996,7 +996,6 @@ dependencies = [
  "futures-util",
  "indicatif",
  "serde",
- "subtitle-fast-comparator",
  "subtitle-fast-decoder",
  "subtitle-fast-validator",
  "tempfile",

@@ -16,7 +16,6 @@ indicatif = "0.18"
 serde = { version = "1", features = ["derive"] }
 subtitle-fast-decoder = { path = "../subtitle-fast-decoder" }
 subtitle-fast-validator = { path = "../subtitle-fast-validator", default-features = false }
-subtitle-fast-comparator = { path = "../subtitle-fast-comparator" }
 tokio = { version = "1", features = [
     "fs",
     "macros",

@@ -5,7 +5,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::mpsc;
 
 use super::StreamBundle;
-use super::comparator::{ComparatorStageError, FeatureSample, FeatureSampleResult};
+use super::detector::{DetectionSample, DetectionSampleResult, DetectorError};
 
 const PROGRESS_CHANNEL_CAPACITY: usize = 4;
 
@@ -20,14 +20,14 @@ impl Progress {
 
     pub fn attach(
         self,
-        input: StreamBundle<FeatureSampleResult>,
-    ) -> StreamBundle<FeatureSampleResult> {
+        input: StreamBundle<DetectionSampleResult>,
+    ) -> StreamBundle<DetectionSampleResult> {
         let StreamBundle {
             stream,
             total_frames,
         } = input;
 
-        let (tx, rx) = mpsc::channel::<FeatureSampleResult>(PROGRESS_CHANNEL_CAPACITY);
+        let (tx, rx) = mpsc::channel::<DetectionSampleResult>(PROGRESS_CHANNEL_CAPACITY);
         let label = self.label;
 
         tokio::spawn(async move {
@@ -64,7 +64,6 @@ struct ProgressMonitor {
     started: Instant,
     finished: bool,
     avg_detection_ms: Option<f64>,
-    avg_comparator_ms: Option<f64>,
 }
 
 impl ProgressMonitor {
@@ -91,18 +90,17 @@ impl ProgressMonitor {
             started: Instant::now(),
             finished: false,
             avg_detection_ms: None,
-            avg_comparator_ms: None,
         }
     }
 
-    fn observe(&mut self, event: &FeatureSampleResult) {
+    fn observe(&mut self, event: &DetectionSampleResult) {
         match event {
             Ok(candidate) => self.observe_sample(candidate),
             Err(err) => self.fail_with_reason(&describe_error(err)),
         }
     }
 
-    fn observe_sample(&mut self, candidate: &FeatureSample) {
+    fn observe_sample(&mut self, candidate: &DetectionSample) {
         self.samples_seen = self.samples_seen.saturating_add(1);
         if let Some(total) = self.total_frames {
             let frame_index = candidate.sample.frame_index();
@@ -112,8 +110,7 @@ impl ProgressMonitor {
         } else {
             self.bar.inc(1);
         }
-        self.observe_detection_time(candidate.detection_elapsed);
-        self.observe_comparator_time(candidate.comparator_elapsed);
+        self.observe_detection_time(candidate.elapsed);
         self.update_speed();
     }
 
@@ -121,15 +118,6 @@ impl ProgressMonitor {
         let millis = elapsed.as_secs_f64() * 1000.0;
         let alpha = 0.1;
         self.avg_detection_ms = Some(match self.avg_detection_ms {
-            Some(current) => (1.0 - alpha) * current + alpha * millis,
-            None => millis,
-        });
-    }
-
-    fn observe_comparator_time(&mut self, elapsed: Duration) {
-        let millis = elapsed.as_secs_f64() * 1000.0;
-        let alpha = 0.1;
-        self.avg_comparator_ms = Some(match self.avg_comparator_ms {
             Some(current) => (1.0 - alpha) * current + alpha * millis,
             None => millis,
         });
@@ -181,13 +169,8 @@ impl ProgressMonitor {
                 .avg_detection_ms
                 .map(|value| format!("{value:.1} ms"))
                 .unwrap_or_else(|| "-- ms".to_string());
-            let cmp = self
-                .avg_comparator_ms
-                .map(|value| format!("{value:.1} ms"))
-                .unwrap_or_else(|| "-- ms".to_string());
-            self.bar.set_message(format!(
-                "{rate:.2}/s • detection: {avg} • comparator: {cmp}"
-            ));
+            self.bar
+                .set_message(format!("{rate:.2}/s • detection: {avg}"));
         }
     }
 
@@ -198,21 +181,10 @@ impl ProgressMonitor {
     }
 }
 
-fn describe_error(err: &ComparatorStageError) -> String {
+fn describe_error(err: &DetectorError) -> String {
     match err {
-        ComparatorStageError::Detection(detector_err) => match detector_err {
-            super::detector::DetectorError::Sampler(sampler_err) => {
-                format!("sampler error: {sampler_err}")
-            }
-            super::detector::DetectorError::Detection(det_err) => {
-                format!("detector error: {det_err}")
-            }
-        },
-        ComparatorStageError::Extraction(extract_err) => match extract_err {
-            super::comparator::ExtractionError::MissingFeature { region_index } => {
-                format!("comparator failed to extract features for region {region_index}")
-            }
-        },
+        DetectorError::Sampler(sampler_err) => format!("sampler error: {sampler_err}"),
+        DetectorError::Detection(det_err) => format!("detector error: {det_err}"),
     }
 }
 
