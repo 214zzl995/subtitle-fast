@@ -170,8 +170,6 @@ fn draw_box(image: &mut RgbImage, region: &DetectionRegion) {
     }
 }
 
-
-
 fn draw_label(image: &mut RgbImage, region: &DetectionRegion, index: usize) {
     let label = index.to_string();
     let width = image.width() as i32;
