@@ -17,16 +17,23 @@ use subtitle_fast_validator::subtitle_detection::{DetectionRegion, RoiConfig};
 const SEGMENTER_CHANNEL_CAPACITY: usize = 4;
 
 pub struct SubtitleInterval {
+    #[allow(dead_code)]
     pub start_time: Duration,
+    #[allow(dead_code)]
     pub end_time: Duration,
+    #[allow(dead_code)]
     pub start_frame: u64,
+    #[allow(dead_code)]
     pub end_frame: u64,
+    #[allow(dead_code)]
     pub roi: RoiConfig,
+    #[allow(dead_code)]
     pub first_yplane: Arc<YPlaneFrame>,
 }
 
 pub struct SegmenterEvent {
     pub sample: Option<DetectionSample>,
+    #[allow(dead_code)]
     pub intervals: Vec<SubtitleInterval>,
     pub segment_elapsed: Option<Duration>,
 }
@@ -68,15 +75,13 @@ impl SubtitleSegmenter {
         } = input;
 
         let comparator_factory = self.comparator_factory;
-        let samples_per_second = self.samples_per_second;
         let (tx, rx) = mpsc::channel::<SegmenterResult>(SEGMENTER_CHANNEL_CAPACITY);
 
         tokio::spawn(async move {
             let mut upstream = stream;
             let comparator = comparator_factory.build();
-            let window_frames = window_frames(samples_per_second);
-            let mut worker =
-                SegmenterWorker::new(comparator, samples_per_second, window_frames, window_frames);
+            let window_frames = window_frames(self.samples_per_second);
+            let mut worker = SegmenterWorker::new(comparator, window_frames, window_frames);
 
             while let Some(event) = upstream.next().await {
                 match event {
@@ -164,7 +169,6 @@ struct PendingSubtitle {
 
 struct SegmenterWorker {
     comparator: Arc<dyn SubtitleComparator>,
-    samples_per_second: u32,
     k_on: u32,
     k_off: u32,
     active: Vec<ActiveSubtitle>,
@@ -173,15 +177,9 @@ struct SegmenterWorker {
 }
 
 impl SegmenterWorker {
-    fn new(
-        comparator: Arc<dyn SubtitleComparator>,
-        samples_per_second: u32,
-        k_on: u32,
-        k_off: u32,
-    ) -> Self {
+    fn new(comparator: Arc<dyn SubtitleComparator>, k_on: u32, k_off: u32) -> Self {
         Self {
             comparator,
-            samples_per_second,
             k_on: k_on.max(1),
             k_off: k_off.max(1),
             active: Vec::new(),
