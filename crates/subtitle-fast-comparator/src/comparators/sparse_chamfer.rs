@@ -4,7 +4,7 @@ use subtitle_fast_decoder::YPlaneFrame;
 use subtitle_fast_validator::subtitle_detection::RoiConfig;
 
 use crate::comparators::SubtitleComparator;
-use crate::pipeline::ops::{distance_transform, percentile, sobel_magnitude};
+use crate::pipeline::ops::{distance_transform, percentile, percentile_in_place, sobel_magnitude};
 use crate::pipeline::preprocess::extract_masked_patch;
 use crate::pipeline::{
     ComparisonReport, FeatureBlob, MaskedPatch, PreprocessSettings, ReportMetric,
@@ -118,21 +118,22 @@ impl SparseChamferComparator {
 
     fn adaptive_edges(&self, patch: &MaskedPatch, mask: &[u8]) -> (Vec<u8>, usize) {
         let magnitude = sobel_magnitude(&patch.original, patch.width, patch.height);
-        let mut masked_values = Vec::new();
+        debug_assert_eq!(magnitude.len(), mask.len());
+        let mut masked_values = Vec::with_capacity(magnitude.len());
         for (idx, &m) in magnitude.iter().enumerate() {
-            if mask.get(idx).copied().unwrap_or(0) > 0 {
+            if mask[idx] > 0 {
                 masked_values.push(m);
             }
         }
         let threshold = if !masked_values.is_empty() {
-            percentile(&masked_values, 0.7)
+            percentile_in_place(&mut masked_values, 0.7)
         } else {
             percentile(&magnitude, 0.7)
         };
         let mut edges = vec![0u8; magnitude.len()];
         let mut count = 0usize;
         for (idx, &m) in magnitude.iter().enumerate() {
-            if m >= threshold && mask.get(idx).copied().unwrap_or(0) > 0 {
+            if m >= threshold && mask[idx] > 0 {
                 edges[idx] = 1;
                 count += 1;
             }
@@ -141,7 +142,10 @@ impl SparseChamferComparator {
     }
 
     fn sample_points(&self, edges: &[u8], width: usize, height: usize) -> Vec<Point> {
-        let mut points = Vec::new();
+        let grid_w = (width + GRID_STEP - 1) / GRID_STEP;
+        let grid_h = (height + GRID_STEP - 1) / GRID_STEP;
+        let max_points = grid_w.saturating_mul(grid_h).min(MAX_POINTS);
+        let mut points = Vec::with_capacity(max_points);
         for y in (0..height).step_by(GRID_STEP) {
             for x in (0..width).step_by(GRID_STEP) {
                 let idx = y * width + x;
@@ -240,8 +244,9 @@ impl SparseChamferComparator {
         target_height: usize,
         dx: isize,
         dy: isize,
+        distances: &mut Vec<f32>,
     ) -> (f32, f32) {
-        let mut distances = Vec::new();
+        distances.clear();
         let mut tight = 0usize;
         for point in points {
             let tx = point.x as isize + dx;
@@ -286,6 +291,8 @@ impl SparseChamferComparator {
         let mut best_match = 0.0;
         let mut best_dx = 0isize;
         let mut best_dy = 0isize;
+        let mut distances_ab = Vec::with_capacity(a.points.len());
+        let mut distances_ba = Vec::with_capacity(b.points.len());
         for dy in -SHIFT_RADIUS..=SHIFT_RADIUS {
             for dx in -SHIFT_RADIUS..=SHIFT_RADIUS {
                 let (cost_ab, match_ab) = self.one_way_partial_chamfer(
@@ -295,6 +302,7 @@ impl SparseChamferComparator {
                     b.height,
                     dx,
                     dy,
+                    &mut distances_ab,
                 );
                 let (cost_ba, match_ba) = self.one_way_partial_chamfer(
                     &b.points,
@@ -303,6 +311,7 @@ impl SparseChamferComparator {
                     a.height,
                     -dx,
                     -dy,
+                    &mut distances_ba,
                 );
                 if !cost_ab.is_finite() || !cost_ba.is_finite() {
                     continue;

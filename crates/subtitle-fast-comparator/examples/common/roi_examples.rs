@@ -5,7 +5,8 @@ use std::path::Path;
 use serde::Deserialize;
 use subtitle_fast_comparator::PreprocessSettings;
 use subtitle_fast_comparator::pipeline::{
-    ops::percentile, ops::sobel_magnitude, preprocess::extract_masked_patch,
+    ops::percentile, ops::percentile_in_place, ops::sobel_magnitude,
+    preprocess::extract_masked_patch,
 };
 use subtitle_fast_decoder::YPlaneFrame;
 use subtitle_fast_validator::subtitle_detection::RoiConfig;
@@ -189,14 +190,14 @@ pub fn mask_stats(
         max = max.max(v);
     }
     let magnitude = sobel_magnitude(&patch.original, patch.width, patch.height);
-    let mut masked_values = Vec::new();
+    let mut masked_values = Vec::with_capacity(magnitude.len());
     for (idx, &m) in magnitude.iter().enumerate() {
         if patch.mask[idx] >= 0.5 {
             masked_values.push(m);
         }
     }
     let threshold = if !masked_values.is_empty() {
-        percentile(&masked_values, 0.7)
+        percentile_in_place(&mut masked_values, 0.7)
     } else {
         percentile(&magnitude, 0.7)
     };
@@ -254,14 +255,14 @@ pub fn debug_features(
     let mask_total = mask.len();
 
     let magnitude = sobel_magnitude(&patch.original, patch.width, patch.height);
-    let mut masked_values = Vec::new();
+    let mut masked_values = Vec::with_capacity(magnitude.len());
     for (idx, &m) in magnitude.iter().enumerate() {
         if mask[idx] > 0 {
             masked_values.push(m);
         }
     }
     let threshold = if !masked_values.is_empty() {
-        percentile(&masked_values, 0.7)
+        percentile_in_place(&mut masked_values, 0.7)
     } else {
         percentile(&magnitude, 0.7)
     };
