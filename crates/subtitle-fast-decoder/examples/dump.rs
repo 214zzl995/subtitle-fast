@@ -1,9 +1,9 @@
-use std::error::Error;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use indicatif::{ProgressBar, ProgressStyle};
 use png::{BitDepth, ColorType, Encoder};
 use subtitle_fast_decoder::{Backend, Configuration, YPlaneFrame};
 use tokio_stream::StreamExt;
@@ -12,30 +12,39 @@ const SAMPLE_FREQUENCY: usize = 7; // frames per second
 const DECODER_BACKEND: Backend = Backend::Ffmpeg;
 const YUV_DIR: &str = "./demo/decoder/yuv";
 const PNG_DIR: &str = "./demo/decoder/png";
+const INPUT_VIDEO: &str = "./demo/video1_30s.mp4";
 
 #[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> io::Result<()> {
     let yuv_dir = PathBuf::from(YUV_DIR);
     let png_dir = PathBuf::from(PNG_DIR);
     fs::create_dir_all(&yuv_dir)?;
     fs::create_dir_all(&png_dir)?;
 
-    let input_path = parse_input_path()?;
+    let input_path = PathBuf::from(INPUT_VIDEO);
+    if !input_path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("input file {:?} does not exist", input_path),
+        ));
+    }
 
     let available = Configuration::available_backends();
     if available.is_empty() {
-        return Err(
-            "no decoder backend is compiled; enable a backend feature such as backend-ffmpeg"
-                .into(),
-        );
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "no decoder backend is compiled; enable a backend feature such as backend-ffmpeg",
+        ));
     }
 
     if !available.contains(&DECODER_BACKEND) {
-        return Err(format!(
-            "decoder backend '{}' is not compiled in this build",
-            DECODER_BACKEND.as_str()
-        )
-        .into());
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "decoder backend '{}' is not compiled in this build",
+                DECODER_BACKEND.as_str()
+            ),
+        ));
     }
     let backend = DECODER_BACKEND;
 
@@ -44,12 +53,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     config.backend = backend;
     config.input = Some(input_path.clone());
     config.channel_capacity = None;
-    let provider = config.create_provider()?;
+    let provider = config
+        .create_provider()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    let total_frames = provider.total_frames();
 
     write_metadata(&input_path, backend)?;
     println!("Decoding frames from {:?}", input_path);
     println!("Writing YUV files to {:?}", yuv_dir);
     println!("Writing PNG files to {:?}", png_dir);
+
+    let progress = total_frames.map(|total| {
+        let style = ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] {prefix:>10.cyan.bold} \
+{bar:40.cyan/blue} {pos:>4}/{len:4} frames",
+        )
+        .unwrap()
+        .progress_chars("█▉▊▋▌▍▎▏  ");
+        let bar = ProgressBar::new(total);
+        bar.set_style(style);
+        bar.set_prefix("decode");
+        bar
+    });
 
     let mut stream = provider.into_stream();
     let mut processed = 0u64;
@@ -60,6 +85,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(frame) => {
                 let ordinal = frame.frame_index().unwrap_or(processed);
                 processed += 1;
+                if let Some(ref bar) = progress {
+                    bar.inc(1);
+                } else if processed % 25 == 0 {
+                    println!("dumped {processed} frames...");
+                }
                 if !should_emit_frame(
                     &frame,
                     processed,
@@ -70,15 +100,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 write_frame_yuv(&frame, &yuv_dir, ordinal)?;
                 write_frame_png(&frame, &png_dir, ordinal)?;
-                if processed % 25 == 0 {
-                    println!("dumped {processed} frames...");
-                }
             }
             Err(err) => {
                 eprintln!("failed to decode frame: {err}");
                 break;
             }
         }
+    }
+    if let Some(bar) = progress {
+        bar.finish_with_message("done");
     }
     let elapsed = took.elapsed().unwrap_or_else(|_| Duration::from_secs(0));
     println!(
@@ -87,27 +117,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         elapsed
     );
     Ok(())
-}
-
-fn parse_input_path() -> Result<PathBuf, Box<dyn Error>> {
-    let mut args = std::env::args();
-    let _bin = args.next();
-    let input = match args.next() {
-        Some(path) => PathBuf::from(path),
-        None => {
-            return Err(
-                "usage: cargo run -p subtitle-fast-decoder --example decoder_dump --features backend-ffmpeg -- <input-video>"
-                    .into(),
-            );
-        }
-    };
-    if !input.exists() {
-        return Err(Box::new(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("input file {:?} does not exist", input),
-        )));
-    }
-    Ok(input)
 }
 
 fn write_metadata(input: &Path, backend: Backend) -> Result<(), io::Error> {

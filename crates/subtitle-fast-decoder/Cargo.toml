@@ -29,3 +29,4 @@ cc = "1"
 
 [dev-dependencies]
 png = "0.18"
+indicatif = "0.17"
