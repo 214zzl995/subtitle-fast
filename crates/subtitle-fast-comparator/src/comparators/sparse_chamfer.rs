@@ -47,19 +47,26 @@ impl SparseChamferComparator {
     }
 
     fn build_mask(&self, patch: &MaskedPatch) -> Vec<u8> {
-        let mut mask: Vec<u8> = patch
+        let base: Vec<u8> = patch
             .mask
             .iter()
             .map(|&value| if value >= 0.5 { 1 } else { 0 })
             .collect();
-        if mask.is_empty() {
-            return mask;
+        if base.is_empty() {
+            return base;
         }
+        let base_on = base.iter().filter(|&&v| v > 0).count();
+        let mut mask = base.clone();
         // Light open then close to connect thin strokes without over-smoothing.
         mask = self.erode(&mask, patch.width, patch.height, 1);
         mask = self.dilate(&mask, patch.width, patch.height, 1);
         mask = self.dilate(&mask, patch.width, patch.height, 1);
         mask = self.erode(&mask, patch.width, patch.height, 1);
+        let mask_on = mask.iter().filter(|&&v| v > 0).count();
+        // If morphology wipes out or severely shrinks the mask, fall back.
+        if mask_on == 0 || mask_on * 10 < base_on {
+            return base;
+        }
         mask
     }
 

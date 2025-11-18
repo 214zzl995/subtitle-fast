@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use png::{BitDepth, ColorType, Encoder};
