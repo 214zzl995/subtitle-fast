@@ -1,6 +1,7 @@
 pub mod detector;
 pub mod progress;
 pub mod sampler;
+pub mod segmenter;
 pub mod sorter;
 
 use std::pin::Pin;
@@ -9,9 +10,10 @@ use futures_util::Stream;
 use tokio_stream::StreamExt;
 
 use crate::settings::{DetectionSettings, EffectiveSettings};
-use detector::{Detector, DetectorError};
+use detector::Detector;
 use progress::Progress;
 use sampler::FrameSampler;
+use segmenter::{SegmenterError, SubtitleSegmenter};
 use sorter::FrameSorter;
 use subtitle_fast_decoder::{DynYPlaneProvider, YPlaneError};
 use subtitle_fast_validator::subtitle_detection::SubtitleDetectionError;
@@ -59,24 +61,29 @@ pub async fn run_pipeline(
         Detector::new(&pipeline.detection).map_err(|err| (detection_error_to_yplane(err), 0))?;
 
     let detected = detector_stage.attach(sampled);
-    let monitored = Progress::new("pipeline").attach(detected);
+    let segmented = SubtitleSegmenter::new(&pipeline.detection).attach(detected);
+    let monitored = Progress::new("pipeline").attach(segmented);
 
     let StreamBundle { stream, .. } = monitored;
-    let mut detection_stream = stream;
+    let mut segment_stream = stream;
     let mut processed_samples: u64 = 0;
 
-    while let Some(event) = detection_stream.next().await {
+    while let Some(event) = segment_stream.next().await {
         match event {
-            Ok(_sample) => {
-                processed_samples = processed_samples.saturating_add(1);
+            Ok(segment) => {
+                if segment.sample.is_some() {
+                    processed_samples = processed_samples.saturating_add(1);
+                }
             }
-            Err(DetectorError::Sampler(err)) => {
-                return Err((err, processed_samples));
-            }
-            Err(DetectorError::Detection(err)) => {
-                let yplane_err = detection_error_to_yplane(err);
-                return Err((yplane_err, processed_samples));
-            }
+            Err(SegmenterError::Detector(err)) => match err {
+                detector::DetectorError::Sampler(sampler_err) => {
+                    return Err((sampler_err, processed_samples));
+                }
+                detector::DetectorError::Detection(det_err) => {
+                    let yplane_err = detection_error_to_yplane(det_err);
+                    return Err((yplane_err, processed_samples));
+                }
+            },
         }
     }
 

@@ -5,7 +5,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::mpsc;
 
 use super::StreamBundle;
-use super::detector::{DetectionSample, DetectionSampleResult, DetectorError};
+use super::detector::{DetectionSample, DetectorError};
+use super::segmenter::{SegmenterError, SegmenterResult};
 
 const PROGRESS_CHANNEL_CAPACITY: usize = 4;
 
@@ -18,16 +19,13 @@ impl Progress {
         Self { label }
     }
 
-    pub fn attach(
-        self,
-        input: StreamBundle<DetectionSampleResult>,
-    ) -> StreamBundle<DetectionSampleResult> {
+    pub fn attach(self, input: StreamBundle<SegmenterResult>) -> StreamBundle<SegmenterResult> {
         let StreamBundle {
             stream,
             total_frames,
         } = input;
 
-        let (tx, rx) = mpsc::channel::<DetectionSampleResult>(PROGRESS_CHANNEL_CAPACITY);
+        let (tx, rx) = mpsc::channel::<SegmenterResult>(PROGRESS_CHANNEL_CAPACITY);
         let label = self.label;
 
         tokio::spawn(async move {
@@ -64,6 +62,7 @@ struct ProgressMonitor {
     started: Instant,
     finished: bool,
     avg_detection_ms: Option<f64>,
+    avg_segment_ms: Option<f64>,
 }
 
 impl ProgressMonitor {
@@ -90,27 +89,33 @@ impl ProgressMonitor {
             started: Instant::now(),
             finished: false,
             avg_detection_ms: None,
+            avg_segment_ms: None,
         }
     }
 
-    fn observe(&mut self, event: &DetectionSampleResult) {
+    fn observe(&mut self, event: &SegmenterResult) {
         match event {
-            Ok(candidate) => self.observe_sample(candidate),
+            Ok(event) => {
+                if let Some(sample) = &event.sample {
+                    self.observe_sample(sample);
+                }
+                self.observe_segment_time(event.segment_elapsed);
+            }
             Err(err) => self.fail_with_reason(&describe_error(err)),
         }
     }
 
-    fn observe_sample(&mut self, candidate: &DetectionSample) {
+    fn observe_sample(&mut self, sample: &DetectionSample) {
         self.samples_seen = self.samples_seen.saturating_add(1);
         if let Some(total) = self.total_frames {
-            let frame_index = candidate.sample.frame_index();
+            let frame_index = sample.sample.frame_index();
             self.latest_frame_index = Some(frame_index);
             let next = std::cmp::min(frame_index.saturating_add(1), total);
             self.bar.set_position(next);
         } else {
             self.bar.inc(1);
         }
-        self.observe_detection_time(candidate.elapsed);
+        self.observe_detection_time(sample.elapsed);
         self.update_speed();
     }
 
@@ -118,6 +123,18 @@ impl ProgressMonitor {
         let millis = elapsed.as_secs_f64() * 1000.0;
         let alpha = 0.1;
         self.avg_detection_ms = Some(match self.avg_detection_ms {
+            Some(current) => (1.0 - alpha) * current + alpha * millis,
+            None => millis,
+        });
+    }
+
+    fn observe_segment_time(&mut self, elapsed: Option<Duration>) {
+        let Some(elapsed) = elapsed else {
+            return;
+        };
+        let millis = elapsed.as_secs_f64() * 1000.0;
+        let alpha = 0.1;
+        self.avg_segment_ms = Some(match self.avg_segment_ms {
             Some(current) => (1.0 - alpha) * current + alpha * millis,
             None => millis,
         });
@@ -165,12 +182,16 @@ impl ProgressMonitor {
                 .map(|idx| idx.saturating_add(1) as f64)
                 .unwrap_or(self.samples_seen as f64);
             let rate = units / elapsed;
-            let avg = self
+            let det = self
                 .avg_detection_ms
                 .map(|value| format!("{value:.1} ms"))
                 .unwrap_or_else(|| "-- ms".to_string());
+            let seg = self
+                .avg_segment_ms
+                .map(|value| format!("{value:.1} ms"))
+                .unwrap_or_else(|| "-- ms".to_string());
             self.bar
-                .set_message(format!("{rate:.2}/s • detection: {avg}"));
+                .set_message(format!("{rate:.1} fps • det {det} • seg {seg}"));
         }
     }
 
@@ -181,23 +202,26 @@ impl ProgressMonitor {
     }
 }
 
-fn describe_error(err: &DetectorError) -> String {
+fn describe_error(err: &SegmenterError) -> String {
     match err {
-        DetectorError::Sampler(sampler_err) => format!("sampler error: {sampler_err}"),
-        DetectorError::Detection(det_err) => format!("detector error: {det_err}"),
+        SegmenterError::Detector(detector_err) => match detector_err {
+            DetectorError::Sampler(sampler_err) => format!("sampler error: {sampler_err}"),
+            DetectorError::Detection(det_err) => format!("detector error: {det_err}"),
+        },
     }
 }
 
 fn bar_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "{prefix:<10} {bar:40.cyan/blue} {percent:>3}% {pos}/{len} frames [{elapsed_precise}<{eta_precise}] speed {msg}",
+        "{prefix:.bold} {bar:40.cyan/blue} {percent:>3.bold}% {pos:>5}/{len:<5} [{elapsed_precise:.dim}<{eta_precise:.dim}] {msg:.yellow}",
     )
     .expect("invalid sampling bar template")
+    .progress_chars("█▉▊▋▌▍▎▏ ")
 }
 
 fn spinner_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "{prefix:<10} {spinner:.cyan.bold} [{elapsed_precise}] frames {pos} • speed {msg}",
+        "{prefix:.bold} {spinner:.cyan.bold} [{elapsed_precise:.dim}] {pos:>5}f {msg:.yellow}",
     )
     .expect("invalid sampling spinner template")
     .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")

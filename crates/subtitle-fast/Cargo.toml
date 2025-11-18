@@ -13,6 +13,7 @@ clap = { version = "4.5", features = ["derive"] }
 directories = "5"
 futures-util = "0.3"
 indicatif = "0.18"
+subtitle-fast-comparator = { path = "../subtitle-fast-comparator" }
 serde = { version = "1", features = ["derive"] }
 subtitle-fast-decoder = { path = "../subtitle-fast-decoder" }
 subtitle-fast-validator = { path = "../subtitle-fast-validator", default-features = false }

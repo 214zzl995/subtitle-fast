@@ -72,6 +72,10 @@ impl SampledFrame {
         self.frame.as_ref()
     }
 
+    pub fn frame_handle(&self) -> Arc<YPlaneFrame> {
+        Arc::clone(&self.frame)
+    }
+
     #[allow(dead_code)]
     pub fn frame_index(&self) -> u64 {
         self.frame_index

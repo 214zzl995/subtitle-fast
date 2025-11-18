@@ -1028,6 +1028,7 @@ dependencies = [
  "futures-util",
  "indicatif 0.18.0",
  "serde",
+ "subtitle-fast-comparator",
  "subtitle-fast-decoder",
  "subtitle-fast-validator",
  "tempfile",
