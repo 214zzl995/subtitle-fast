@@ -1041,6 +1041,7 @@ dependencies = [
 name = "subtitle-fast-comparator"
 version = "0.1.0"
 dependencies = [
+ "indicatif 0.17.11",
  "serde",
  "serde_json",
  "subtitle-fast-decoder",

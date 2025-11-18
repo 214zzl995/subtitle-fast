@@ -12,7 +12,9 @@ use subtitle_fast_validator::subtitle_detection::RoiConfig;
 
 pub const DEFAULT_TARGET: u8 = 235;
 pub const DEFAULT_DELTA: u8 = 12;
+#[allow(dead_code)]
 const GRID_STEP: usize = 2;
+#[allow(dead_code)]
 const MAX_POINTS: usize = 800;
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -50,6 +52,7 @@ struct RoiDump {
 
 #[derive(Debug)]
 pub struct RoiEntry {
+    #[allow(dead_code)]
     pub description: String,
     pub roi: RoiConfig,
 }
@@ -72,6 +75,7 @@ impl RoiSelection {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct FeatureDiag {
     pub mask_on: usize,
     pub mask_total: usize,
@@ -166,6 +170,7 @@ fn normalize_region(region: &Region, frame: &FrameInfo, already_normalized: bool
     }
 }
 
+#[allow(dead_code)]
 pub fn mask_stats(
     frame: &YPlaneFrame,
     roi: &RoiConfig,
@@ -219,6 +224,7 @@ pub fn mask_stats(
     Some((on, total, min, max))
 }
 
+#[allow(dead_code)]
 pub fn debug_features(
     frame: &YPlaneFrame,
     roi: &RoiConfig,
@@ -284,6 +290,7 @@ pub fn debug_features(
     })
 }
 
+#[allow(dead_code)]
 fn erode(mask: &[u8], width: usize, height: usize, iterations: usize) -> Vec<u8> {
     let mut current = mask.to_vec();
     let mut next = vec![0u8; mask.len()];
@@ -307,6 +314,7 @@ fn erode(mask: &[u8], width: usize, height: usize, iterations: usize) -> Vec<u8>
     current
 }
 
+#[allow(dead_code)]
 fn dilate(mask: &[u8], width: usize, height: usize, iterations: usize) -> Vec<u8> {
     let mut current = mask.to_vec();
     let mut next = vec![0u8; mask.len()];
