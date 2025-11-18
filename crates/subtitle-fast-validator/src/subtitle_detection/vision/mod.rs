@@ -30,7 +30,7 @@ struct CVisionResult {
     error: *mut c_char,
 }
 
-extern "C" {
+unsafe extern "C" {
     fn vision_detect_text_regions(
         data: *const u8,
         width: usize,

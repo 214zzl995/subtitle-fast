@@ -372,23 +372,27 @@ unsafe fn threshold_mask_neon(
     let width = roi.width;
 
     for row in 0..roi.height {
-        let src_ptr = data.as_ptr().add((roi.y + row) * stride + roi.x);
-        let dst_ptr = mask.as_mut_ptr().add(row * width);
+        let src_ptr = unsafe { data.as_ptr().add((roi.y + row) * stride + roi.x) };
+        let dst_ptr = unsafe { mask.as_mut_ptr().add(row * width) };
 
         let mut x = 0usize;
         while x + 16 <= width {
-            let pixels = vld1q_u8(src_ptr.add(x));
+            let pixels = unsafe { vld1q_u8(src_ptr.add(x)) };
             let ge_lo = vceqq_u8(pixels, vmaxq_u8(pixels, lo_vec));
             let le_hi = vceqq_u8(pixels, vminq_u8(pixels, hi_vec));
             let mask_vec = vandq_u8(vandq_u8(ge_lo, le_hi), ones);
-            vst1q_u8(dst_ptr.add(x), mask_vec);
+            unsafe {
+                vst1q_u8(dst_ptr.add(x), mask_vec);
+            }
             x += 16;
         }
 
         if x < width {
             let remaining = width - x;
-            let src_tail = std::slice::from_raw_parts(src_ptr.add(x), remaining);
-            let dst_tail = std::slice::from_raw_parts_mut(dst_ptr.add(x), remaining);
+            let src_tail =
+                unsafe { std::slice::from_raw_parts(src_ptr.add(x), remaining) };
+            let dst_tail =
+                unsafe { std::slice::from_raw_parts_mut(dst_ptr.add(x), remaining) };
             threshold_mask_scalar_row(src_tail, dst_tail, lo, hi);
         }
     }
