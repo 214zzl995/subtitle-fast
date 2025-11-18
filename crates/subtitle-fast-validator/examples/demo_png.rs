@@ -18,6 +18,11 @@ const YUV_DIR: &str = "./demo/decoder/yuv";
 const OUT_DIR: &str = "./demo/validator";
 const DETECTORS: &[&str] = &["integral", "projection"];
 
+const DIGIT_WIDTH: i32 = 3;
+const DIGIT_HEIGHT: i32 = 5;
+const LABEL_SCALE: i32 = 5;
+const LABEL_SPACING: i32 = LABEL_SCALE;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let yuv_dir = PathBuf::from(YUV_DIR);
     if !yuv_dir.exists() {
@@ -72,6 +77,22 @@ fn main() -> Result<(), Box<dyn Error>> {
             let out_path = out_dir.join(format!("{stem}.png"));
             image.save(out_path)?;
 
+            let regions_with_index: Vec<_> = result
+                .regions
+                .iter()
+                .enumerate()
+                .map(|(index, region)| {
+                    json!({
+                        "index": index,
+                        "x": region.x,
+                        "y": region.y,
+                        "width": region.width,
+                        "height": region.height,
+                        "score": region.score,
+                    })
+                })
+                .collect();
+
             let report = json!({
                 "detector": detector_name,
                 "source": path.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
@@ -80,7 +101,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "luma_band": { "target": TARGET, "delta": DELTA },
                 "has_subtitle": result.has_subtitle,
                 "max_score": result.max_score,
-                "regions": result.regions,
+                "regions": regions_with_index,
             });
             let json_path = out_dir.join(format!("{stem}.json"));
             fs::write(json_path, serde_json::to_vec_pretty(&report)?)?;
@@ -123,8 +144,9 @@ fn frame_to_image(frame: &YPlaneFrame) -> RgbImage {
 }
 
 fn overlay_regions(image: &mut RgbImage, regions: &[DetectionRegion]) {
-    for region in regions {
+    for (index, region) in regions.iter().enumerate() {
         draw_box(image, region);
+        draw_label(image, region, index);
     }
 }
 
@@ -145,6 +167,91 @@ fn draw_box(image: &mut RgbImage, region: &DetectionRegion) {
     for y in y0..=y1 {
         set_pixel(image, x0, y);
         set_pixel(image, x1, y);
+    }
+}
+
+
+
+fn draw_label(image: &mut RgbImage, region: &DetectionRegion, index: usize) {
+    let label = index.to_string();
+    let width = image.width() as i32;
+    let height = image.height() as i32;
+    let digit_w = DIGIT_WIDTH * LABEL_SCALE;
+    let digit_h = DIGIT_HEIGHT * LABEL_SCALE;
+    let total_width = label.len() as i32 * (digit_w + LABEL_SPACING) - LABEL_SPACING;
+    let mut x = region.x.max(0.0) as i32 + 2;
+    let mut y = region.y.max(0.0) as i32 + 2;
+
+    if y + digit_h >= height {
+        y = (height - (digit_h + 1)).max(0);
+    }
+    if x + total_width >= width {
+        x = (width - (total_width + 1)).max(0);
+    }
+
+    fill_rect(
+        image,
+        x - 1,
+        y - 1,
+        total_width + 2,
+        digit_h + 2,
+        Rgb([0, 0, 0]),
+    );
+
+    for ch in label.chars() {
+        draw_digit(image, x, y, ch);
+        x += digit_w + LABEL_SPACING;
+    }
+}
+
+fn draw_digit(image: &mut RgbImage, x: i32, y: i32, ch: char) {
+    let bitmap: [[u8; 3]; 5] = match ch {
+        '0' => [[1, 1, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 1, 1]],
+        '1' => [[0, 1, 0], [1, 1, 0], [0, 1, 0], [0, 1, 0], [1, 1, 1]],
+        '2' => [[1, 1, 1], [0, 0, 1], [1, 1, 1], [1, 0, 0], [1, 1, 1]],
+        '3' => [[1, 1, 1], [0, 0, 1], [0, 1, 1], [0, 0, 1], [1, 1, 1]],
+        '4' => [[1, 0, 1], [1, 0, 1], [1, 1, 1], [0, 0, 1], [0, 0, 1]],
+        '5' => [[1, 1, 1], [1, 0, 0], [1, 1, 1], [0, 0, 1], [1, 1, 1]],
+        '6' => [[1, 1, 1], [1, 0, 0], [1, 1, 1], [1, 0, 1], [1, 1, 1]],
+        '7' => [[1, 1, 1], [0, 0, 1], [0, 1, 0], [0, 1, 0], [0, 1, 0]],
+        '8' => [[1, 1, 1], [1, 0, 1], [1, 1, 1], [1, 0, 1], [1, 1, 1]],
+        '9' => [[1, 1, 1], [1, 0, 1], [1, 1, 1], [0, 0, 1], [1, 1, 1]],
+        _ => [[0, 0, 0]; 5],
+    };
+    let color = Rgb([255, 255, 0]);
+    for (dy, row) in bitmap.iter().enumerate() {
+        for (dx, &on) in row.iter().enumerate() {
+            if on == 1 {
+                for sy in 0..LABEL_SCALE {
+                    for sx in 0..LABEL_SCALE {
+                        set_pixel_color(
+                            image,
+                            x + dx as i32 * LABEL_SCALE + sx,
+                            y + dy as i32 * LABEL_SCALE + sy,
+                            color,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn set_pixel_color(image: &mut RgbImage, x: i32, y: i32, color: Rgb<u8>) {
+    if x < 0 || y < 0 {
+        return;
+    }
+    let (x, y) = (x as u32, y as u32);
+    if x < image.width() && y < image.height() {
+        image.put_pixel(x, y, color);
+    }
+}
+
+fn fill_rect(image: &mut RgbImage, x: i32, y: i32, width: i32, height: i32, color: Rgb<u8>) {
+    for dy in 0..height {
+        for dx in 0..width {
+            set_pixel_color(image, x + dx, y + dy, color);
+        }
     }
 }
 
