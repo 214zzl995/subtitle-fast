@@ -1,8 +1,9 @@
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use image::{Rgb, RgbImage};
+use serde_json::json;
 use subtitle_fast_decoder::YPlaneFrame;
 use subtitle_fast_validator::subtitle_detection::projection_band::ProjectionBandDetector;
 use subtitle_fast_validator::subtitle_detection::{
@@ -13,102 +14,96 @@ use subtitle_fast_validator::subtitle_detection::{
 const TARGET: u8 = 235;
 const DELTA: u8 = 12;
 const PRESETS: &[(usize, usize)] = &[(1920, 1080), (1920, 824)];
+const YUV_DIR: &str = "./demo/decoder/yuv";
+const OUT_DIR: &str = "./demo/validator";
+const DETECTORS: &[&str] = &["integral", "projection"];
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    let detector_kind = parse_detector_arg(&args)?;
-    let repo_root = repo_root();
-    let yuv_dir = repo_root.join("demo/yuv");
-    let out_dir = repo_root.join("demo/output").join(detector_kind.name());
+    let yuv_dir = PathBuf::from(YUV_DIR);
     if !yuv_dir.exists() {
         return Err(format!("missing {:?}", yuv_dir).into());
     }
-    fs::create_dir_all(&out_dir)?;
 
-    let mut processed = 0usize;
-    for entry in fs::read_dir(&yuv_dir)? {
-        let path = entry?.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("yuv") {
-            continue;
-        }
-        println!("processing {:?}", path);
-        let data = fs::read(&path)?;
-        let (width, height) = match resolution_from_len(data.len()) {
-            Some(dim) => dim,
-            None => {
-                eprintln!(
-                    "skipping {:?}: unknown resolution ({} bytes)",
-                    path,
-                    data.len()
-                );
+    let mut processed_total = 0usize;
+    for detector_name in DETECTORS {
+        let out_dir = PathBuf::from(OUT_DIR).join(detector_name);
+        fs::create_dir_all(&out_dir)?;
+
+        let mut processed = 0usize;
+        for entry in fs::read_dir(&yuv_dir)? {
+            let path = entry?.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("yuv") {
                 continue;
             }
-        };
+            println!("processing {:?} with {detector_name}", path);
+            let data = fs::read(&path)?;
+            let (width, height) = match resolution_from_len(data.len()) {
+                Some(dim) => dim,
+                None => {
+                    eprintln!(
+                        "skipping {:?}: unknown resolution ({} bytes)",
+                        path,
+                        data.len()
+                    );
+                    continue;
+                }
+            };
 
-        let frame = YPlaneFrame::from_owned(width as u32, height as u32, width, None, data)?;
-        let mut config = SubtitleDetectionConfig::for_frame(width, height, width);
-        config.roi = RoiConfig {
-            x: 0.0,
-            y: 0.0,
-            width: 1.0,
-            height: 1.0,
-        };
-        config.luma_band = LumaBandConfig {
-            target: TARGET,
-            delta: DELTA,
-        };
-        let detector = detector_kind.build(config)?;
-        let result = detector.detect(&frame)?;
+            let frame = YPlaneFrame::from_owned(width as u32, height as u32, width, None, data)?;
+            let mut config = SubtitleDetectionConfig::for_frame(width, height, width);
+            config.roi = RoiConfig {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            };
+            config.luma_band = LumaBandConfig {
+                target: TARGET,
+                delta: DELTA,
+            };
+            let roi = config.roi;
+            let detector = build_detector(detector_name, config)?;
+            let result = detector.detect(&frame)?;
 
-        let mut image = frame_to_image(&frame);
-        overlay_regions(&mut image, &result.regions);
+            let mut image = frame_to_image(&frame);
+            overlay_regions(&mut image, &result.regions);
 
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("frame");
-        let out_path = out_dir.join(format!("{stem}.png"));
-        image.save(out_path)?;
-        processed += 1;
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("frame");
+            let out_path = out_dir.join(format!("{stem}.png"));
+            image.save(out_path)?;
+
+            let report = json!({
+                "detector": detector_name,
+                "source": path.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
+                "frame": { "width": width, "height": height },
+                "roi": { "x": roi.x, "y": roi.y, "width": roi.width, "height": roi.height },
+                "luma_band": { "target": TARGET, "delta": DELTA },
+                "has_subtitle": result.has_subtitle,
+                "max_score": result.max_score,
+                "regions": result.regions,
+            });
+            let json_path = out_dir.join(format!("{stem}.json"));
+            fs::write(json_path, serde_json::to_vec_pretty(&report)?)?;
+
+            processed += 1;
+            processed_total += 1;
+        }
+
+        if processed == 0 {
+            return Err("no demo frames processed".into());
+        }
+
+        println!(
+            "Generated {processed} PNG files in {:?} using {}",
+            out_dir, detector_name
+        );
     }
 
-    if processed == 0 {
+    if processed_total == 0 {
         return Err("no demo frames processed".into());
     }
 
-    println!(
-        "Generated {processed} PNG files in {:?} using {}",
-        out_dir,
-        detector_kind.name()
-    );
     Ok(())
-}
-
-fn parse_detector_arg(args: &[String]) -> Result<DemoDetectorKind, Box<dyn Error>> {
-    let mut detector = DemoDetectorKind::Projection;
-    let mut idx = 1usize;
-    while idx < args.len() {
-        let arg = &args[idx];
-        if let Some(value) = arg.strip_prefix("--detector=") {
-            detector = DemoDetectorKind::from_str(value)?;
-        } else if arg == "--detector" {
-            idx += 1;
-            if idx >= args.len() {
-                return Err("--detector requires a value".into());
-            }
-            detector = DemoDetectorKind::from_str(&args[idx])?;
-        } else {
-            return Err(format!("unknown argument: {arg}").into());
-        }
-        idx += 1;
-    }
-    Ok(detector)
-}
-
-fn repo_root() -> PathBuf {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root")
-        .to_path_buf()
 }
 
 fn resolution_from_len(len: usize) -> Option<(usize, usize)> {
@@ -163,35 +158,18 @@ fn set_pixel(image: &mut RgbImage, x: i32, y: i32) {
     }
 }
 
-#[derive(Clone, Copy)]
-enum DemoDetectorKind {
-    Integral,
-    Projection,
-}
-
-impl DemoDetectorKind {
-    fn from_str(value: &str) -> Result<Self, Box<dyn Error>> {
-        match value {
-            "integral" => Ok(Self::Integral),
-            "projection" => Ok(Self::Projection),
-            other => Err(format!("unknown detector '{other}'").into()),
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        match self {
-            Self::Integral => "integral",
-            Self::Projection => "projection",
-        }
-    }
-
-    fn build(
-        &self,
-        config: SubtitleDetectionConfig,
-    ) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
-        match self {
-            Self::Integral => Ok(Box::new(IntegralBandDetector::new(config)?)),
-            Self::Projection => Ok(Box::new(ProjectionBandDetector::new(config)?)),
+fn build_detector(
+    name: &str,
+    config: SubtitleDetectionConfig,
+) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
+    match name {
+        "integral" => Ok(Box::new(IntegralBandDetector::new(config)?)),
+        "projection" => Ok(Box::new(ProjectionBandDetector::new(config)?)),
+        other => {
+            eprintln!("unknown detector '{other}', defaulting to unsupported error");
+            Err(SubtitleDetectionError::Unsupported {
+                backend: "unknown-detector",
+            })
         }
     }
 }

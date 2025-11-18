@@ -1,12 +1,6 @@
-pub mod chamfer_edge;
-pub mod hybrid_mask;
-pub mod spectral_hash;
-pub mod structural_dssim;
+pub mod sparse_chamfer;
 
-pub use chamfer_edge::ChamferEdgeComparator;
-pub use hybrid_mask::HybridMaskComparator;
-pub use spectral_hash::SpectralHashComparator;
-pub use structural_dssim::StructuralDssimComparator;
+pub use sparse_chamfer::SparseChamferComparator;
 
 use crate::pipeline::{ComparisonReport, FeatureBlob};
 use subtitle_fast_decoder::YPlaneFrame;

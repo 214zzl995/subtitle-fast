@@ -21,3 +21,4 @@ cc = "1"
 
 [dev-dependencies]
 image = { version = "0.24", default-features = false, features = ["png"] }
+serde_json = "1"

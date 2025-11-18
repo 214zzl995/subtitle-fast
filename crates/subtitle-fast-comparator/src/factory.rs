@@ -2,27 +2,18 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::comparators::{
-    ChamferEdgeComparator, HybridMaskComparator, SpectralHashComparator, StructuralDssimComparator,
-    SubtitleComparator,
-};
+use crate::comparators::{SparseChamferComparator, SubtitleComparator};
 use crate::pipeline::PreprocessSettings;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ComparatorKind {
-    SpectralHash,
-    StructuralDssim,
-    HybridMask,
-    EdgeChamfer,
+    SparseChamfer,
 }
 
 impl ComparatorKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            ComparatorKind::SpectralHash => "spectral-hash",
-            ComparatorKind::StructuralDssim => "structural-dssim",
-            ComparatorKind::HybridMask => "hybrid-mask",
-            ComparatorKind::EdgeChamfer => "edge-chamfer",
+            ComparatorKind::SparseChamfer => "sparse-chamfer",
         }
     }
 }
@@ -44,10 +35,7 @@ impl FromStr for ComparatorKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let lower = s.trim().to_ascii_lowercase();
         match lower.as_str() {
-            "spectral-hash" => Ok(ComparatorKind::SpectralHash),
-            "structural-dssim" => Ok(ComparatorKind::StructuralDssim),
-            "hybrid-mask" => Ok(ComparatorKind::HybridMask),
-            "edge-chamfer" => Ok(ComparatorKind::EdgeChamfer),
+            "sparse-chamfer" => Ok(ComparatorKind::SparseChamfer),
             _ => Err(ComparatorKindParseError(lower)),
         }
     }
@@ -81,10 +69,7 @@ impl ComparatorFactory {
     pub fn build(&self) -> Arc<dyn SubtitleComparator> {
         let preprocess = self.settings.preprocess();
         match self.settings.kind {
-            ComparatorKind::SpectralHash => Arc::new(SpectralHashComparator::new(preprocess)),
-            ComparatorKind::StructuralDssim => Arc::new(StructuralDssimComparator::new(preprocess)),
-            ComparatorKind::HybridMask => Arc::new(HybridMaskComparator::new(preprocess)),
-            ComparatorKind::EdgeChamfer => Arc::new(ChamferEdgeComparator::new(preprocess)),
+            ComparatorKind::SparseChamfer => Arc::new(SparseChamferComparator::new(preprocess)),
         }
     }
 }

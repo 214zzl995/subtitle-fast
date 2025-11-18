@@ -1045,6 +1045,7 @@ dependencies = [
  "image",
  "rayon",
  "serde",
+ "serde_json",
  "subtitle-fast-decoder",
  "thiserror 1.0.69",
  "tokio",

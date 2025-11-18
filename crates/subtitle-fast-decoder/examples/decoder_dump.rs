@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use png::{BitDepth, ColorType, Encoder};
@@ -10,17 +10,17 @@ use tokio_stream::StreamExt;
 
 const SAMPLE_FREQUENCY: usize = 7; // frames per second
 const DECODER_BACKEND: Backend = Backend::Ffmpeg;
+const YUV_DIR: &str = "./demo/decoder/yuv";
+const PNG_DIR: &str = "./demo/decoder/png";
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let repo_root = repo_root();
-    let dump_root = repo_root.join("demo").join("decoder_dump");
-    let yuv_dir = dump_root.join("yuv");
-    let png_dir = dump_root.join("png");
+    let yuv_dir = PathBuf::from(YUV_DIR);
+    let png_dir = PathBuf::from(PNG_DIR);
     fs::create_dir_all(&yuv_dir)?;
     fs::create_dir_all(&png_dir)?;
 
-    let input_path = parse_input_path(&repo_root)?;
+    let input_path = parse_input_path()?;
 
     let available = Configuration::available_backends();
     if available.is_empty() {
@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     config.channel_capacity = None;
     let provider = config.create_provider()?;
 
-    write_metadata(&dump_root, &input_path, backend)?;
+    write_metadata(&input_path, backend)?;
     println!("Decoding frames from {:?}", input_path);
     println!("Writing YUV files to {:?}", yuv_dir);
     println!("Writing PNG files to {:?}", png_dir);
@@ -83,20 +83,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let elapsed = took.elapsed().unwrap_or_else(|_| Duration::from_secs(0));
     println!(
         "Wrote {processed} frames to {:?} in {:.2?}",
-        dump_root, elapsed
+        PathBuf::from("./demo/decoder"),
+        elapsed
     );
     Ok(())
 }
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root")
-        .to_path_buf()
-}
-
-fn parse_input_path(repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
+fn parse_input_path() -> Result<PathBuf, Box<dyn Error>> {
     let mut args = std::env::args();
     let _bin = args.next();
     let input = match args.next() {
@@ -108,22 +101,17 @@ fn parse_input_path(repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
             );
         }
     };
-    let path = if input.is_relative() {
-        repo_root.join(input)
-    } else {
-        input
-    };
-    if !path.exists() {
+    if !input.exists() {
         return Err(Box::new(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("input file {:?} does not exist", path),
+            format!("input file {:?} does not exist", input),
         )));
     }
-    Ok(path)
+    Ok(input)
 }
 
-fn write_metadata(root: &Path, input: &Path, backend: Backend) -> Result<(), io::Error> {
-    let mut file = File::create(root.join("decoder_dump.txt"))?;
+fn write_metadata(input: &Path, backend: Backend) -> Result<(), io::Error> {
+    let mut file = File::create("./demo/decoder/decoder_dump.txt")?;
     writeln!(file, "input={}", input.display())?;
     writeln!(file, "backend={}", backend.as_str())?;
     writeln!(file, "sample_frequency_hz={}", SAMPLE_FREQUENCY)?;
