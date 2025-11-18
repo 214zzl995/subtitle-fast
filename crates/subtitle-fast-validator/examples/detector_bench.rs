@@ -2,26 +2,40 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
+use std::thread;
 use std::time::{Duration, Instant};
 
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use subtitle_fast_decoder::YPlaneFrame;
 use subtitle_fast_validator::subtitle_detection::projection_band::ProjectionBandDetector;
 use subtitle_fast_validator::subtitle_detection::{
     IntegralBandDetector, LumaBandConfig, RoiConfig, SubtitleDetectionConfig,
-    SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector,
+    SubtitleDetectionError, SubtitleDetector, VisionTextDetector,
 };
 
 const TARGET: u8 = 235;
 const DELTA: u8 = 12;
 const PRESETS: &[(usize, usize)] = &[(1920, 1080), (1920, 824)];
 const YUV_DIR: &str = "./demo/decoder/yuv";
-const DETECTORS: &[&str] = &["integral", "projection"];
+const DETECTORS: &[&str] = &["integral", "projection", "vision"];
 
 fn main() -> Result<(), Box<dyn Error>> {
     let yuv_dir = PathBuf::from(YUV_DIR);
     if !yuv_dir.exists() {
         return Err(format!("missing {:?}", yuv_dir).into());
     }
+
+    let mut frames = Vec::new();
+    for entry in fs::read_dir(&yuv_dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("yuv") {
+            frames.push(path);
+        }
+    }
+    if frames.is_empty() {
+        return Err("no demo frames processed".into());
+    }
+
     let detectors: Vec<DetectorKind> = DETECTORS
         .iter()
         .map(|name| {
@@ -31,75 +45,109 @@ fn main() -> Result<(), Box<dyn Error>> {
         })
         .collect();
 
-    let mut stats: HashMap<&'static str, DetectorStats> = HashMap::new();
-    let mut projection_perf = ProjectionPerf::default();
-    let mut processed = 0usize;
-    for entry in fs::read_dir(&yuv_dir)? {
-        let path = entry?.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("yuv") {
-            continue;
-        }
-        let data = fs::read(&path)?;
-        let (width, height) = match resolution_from_len(data.len()) {
-            Some(dim) => dim,
-            None => {
-                eprintln!(
-                    "skipping {:?}: unknown resolution ({} bytes)",
-                    path,
-                    data.len()
-                );
-                continue;
-            }
-        };
-        let frame = YPlaneFrame::from_owned(width as u32, height as u32, width, None, data)?;
-        let mut config = SubtitleDetectionConfig::for_frame(width, height, width);
-        config.roi = RoiConfig {
-            x: 0.0,
-            y: 0.0,
-            width: 1.0,
-            height: 1.0,
-        };
-        config.luma_band = LumaBandConfig {
-            target: TARGET,
-            delta: DELTA,
-        };
+    let total_frames = frames.len() as u64;
+    let multi = MultiProgress::new();
+    let style = ProgressStyle::with_template(
+        "{spinner:.green} [{elapsed_precise}] {prefix:>10.magenta.bold} \
+{bar:40.magenta/blue} {pos:>4}/{len:4} frames avg={msg}ms",
+    )
+    .unwrap()
+    .progress_chars("█▉▊▋▌▍▎▏  ");
 
-        println!("processing {:?}", path);
-        let mut baseline: Option<SubtitleDetectionResult> = None;
-        for detector_kind in &detectors {
-            let detector = detector_kind.build(&config)?;
-            let start = Instant::now();
-            let result = detector.detect(&frame)?;
-            let duration = start.elapsed();
-            if let Err(err) = validate_regions(&result, width, height) {
-                eprintln!(
-                    "{} produced invalid regions on {:?}: {}",
-                    detector_kind.name(),
-                    path,
-                    err
-                );
-            }
-            if matches!(detector_kind, DetectorKind::Projection) {
-                baseline = Some(result.clone());
-            } else if let Some(base) = &baseline {
-                if base.has_subtitle && !result.has_subtitle {
-                    eprintln!("{:?} missed subtitles compared to projection", path);
+    let mut handles = Vec::new();
+    for detector_kind in &detectors {
+        let frames = frames.clone();
+        let kind = *detector_kind;
+
+        let bar = multi.add(ProgressBar::new(total_frames));
+        bar.set_style(style.clone());
+        bar.set_prefix(kind.name().to_string());
+        bar.set_message("0.000");
+
+        let handle = thread::spawn(move || -> Result<(DetectorKind, DetectorStats, ProjectionPerf), Box<dyn Error + Send + Sync>> {
+            let mut stats = DetectorStats::default();
+            let mut projection_perf = ProjectionPerf::default();
+
+            for path in frames {
+                let data = fs::read(&path)?;
+                let (width, height) = match resolution_from_len(data.len()) {
+                    Some(dim) => dim,
+                    None => {
+                        eprintln!(
+                            "skipping {:?}: unknown resolution ({} bytes)",
+                            path,
+                            data.len()
+                        );
+                        continue;
+                    }
+                };
+                let frame =
+                    YPlaneFrame::from_owned(width as u32, height as u32, width, None, data)?;
+                let mut config = SubtitleDetectionConfig::for_frame(width, height, width);
+                config.roi = RoiConfig {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                };
+                config.luma_band = LumaBandConfig {
+                    target: TARGET,
+                    delta: DELTA,
+                };
+
+                let detector = kind.build(&config)?;
+                let start = Instant::now();
+                let _result = detector.detect(&frame)?;
+                let duration = start.elapsed();
+
+                stats.record(duration);
+                if matches!(kind, DetectorKind::Projection) {
+                    projection_perf.record(duration);
                 }
+
+                bar.inc(1);
+                bar.set_message(format!("{:.3}", stats.avg_ms()));
             }
-            let entry = stats.entry(detector_kind.name()).or_default();
-            entry.record(duration);
-            if matches!(detector_kind, DetectorKind::Projection) {
-                projection_perf.record(duration);
-            }
-        }
-        processed += 1;
+
+            bar.finish_with_message("done");
+
+            Ok((kind, stats, projection_perf))
+        });
+
+        handles.push(handle);
     }
 
-    if processed == 0 {
+    let mut any_processed = false;
+    let mut stats: HashMap<&'static str, DetectorStats> = HashMap::new();
+    let mut projection_perf = ProjectionPerf::default();
+
+    for handle in handles {
+        match handle.join() {
+            Ok(Ok((kind, detector_stats, worker_projection))) => {
+                if detector_stats.frames > 0 {
+                    any_processed = true;
+                }
+                stats.insert(kind.name(), detector_stats);
+
+                if matches!(kind, DetectorKind::Projection) {
+                    projection_perf.total += worker_projection.total;
+                    projection_perf.frames += worker_projection.frames;
+                }
+            }
+            Ok(Err(err)) => {
+                return Err(err);
+            }
+            Err(_) => {
+                return Err("detector worker panicked".into());
+            }
+        }
+    }
+
+    if !any_processed {
         return Err("no demo frames processed".into());
     }
 
-    println!("\nBenchmark summary over {processed} frames:");
+    println!("\nBenchmark summary over {total_frames} frames:");
     for detector_kind in &detectors {
         if let Some(stat) = stats.get(detector_kind.name()) {
             println!(
@@ -121,30 +169,11 @@ fn resolution_from_len(len: usize) -> Option<(usize, usize)> {
     PRESETS.iter().copied().find(|(w, h)| w * h == len)
 }
 
-fn validate_regions(
-    result: &SubtitleDetectionResult,
-    width: usize,
-    height: usize,
-) -> Result<(), String> {
-    for region in &result.regions {
-        if region.width <= 0.0 || region.height <= 0.0 {
-            return Err("region has non-positive dimensions".into());
-        }
-        if region.x < 0.0
-            || region.y < 0.0
-            || region.x + region.width > width as f32
-            || region.y + region.height > height as f32
-        {
-            return Err("region exceeds frame bounds".into());
-        }
-    }
-    Ok(())
-}
-
 #[derive(Clone, Copy)]
 enum DetectorKind {
     Integral,
     Projection,
+    Vision,
 }
 
 impl DetectorKind {
@@ -152,6 +181,7 @@ impl DetectorKind {
         match name {
             "integral" => Some(Self::Integral),
             "projection" => Some(Self::Projection),
+            "vision" => Some(Self::Vision),
             _ => None,
         }
     }
@@ -160,6 +190,7 @@ impl DetectorKind {
         match self {
             Self::Integral => "integral",
             Self::Projection => "projection",
+            Self::Vision => "vision",
         }
     }
 
@@ -170,6 +201,7 @@ impl DetectorKind {
         match self {
             Self::Integral => Ok(Box::new(IntegralBandDetector::new(config.clone())?)),
             Self::Projection => Ok(Box::new(ProjectionBandDetector::new(config.clone())?)),
+            Self::Vision => Ok(Box::new(VisionTextDetector::new(config.clone())?)),
         }
     }
 }

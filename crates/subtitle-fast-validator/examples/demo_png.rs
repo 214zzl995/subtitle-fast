@@ -1,14 +1,16 @@
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
+use std::thread;
 
 use image::{Rgb, RgbImage};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde_json::json;
 use subtitle_fast_decoder::YPlaneFrame;
 use subtitle_fast_validator::subtitle_detection::projection_band::ProjectionBandDetector;
 use subtitle_fast_validator::subtitle_detection::{
     DetectionRegion, IntegralBandDetector, LumaBandConfig, RoiConfig, SubtitleDetectionConfig,
-    SubtitleDetectionError, SubtitleDetector,
+    SubtitleDetectionError, SubtitleDetector, VisionTextDetector,
 };
 
 const TARGET: u8 = 235;
@@ -16,7 +18,7 @@ const DELTA: u8 = 12;
 const PRESETS: &[(usize, usize)] = &[(1920, 1080), (1920, 824)];
 const YUV_DIR: &str = "./demo/decoder/yuv";
 const OUT_DIR: &str = "./demo/validator";
-const DETECTORS: &[&str] = &["integral", "projection"];
+const DETECTORS: &[&str] = &["integral", "projection", "vision"];
 
 const DIGIT_WIDTH: i32 = 3;
 const DIGIT_HEIGHT: i32 = 5;
@@ -29,98 +31,138 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err(format!("missing {:?}", yuv_dir).into());
     }
 
-    let mut processed_total = 0usize;
-    for detector_name in DETECTORS {
-        let out_dir = PathBuf::from(OUT_DIR).join(detector_name);
-        fs::create_dir_all(&out_dir)?;
-
-        let mut processed = 0usize;
-        for entry in fs::read_dir(&yuv_dir)? {
-            let path = entry?.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("yuv") {
-                continue;
-            }
-            println!("processing {:?} with {detector_name}", path);
-            let data = fs::read(&path)?;
-            let (width, height) = match resolution_from_len(data.len()) {
-                Some(dim) => dim,
-                None => {
-                    eprintln!(
-                        "skipping {:?}: unknown resolution ({} bytes)",
-                        path,
-                        data.len()
-                    );
-                    continue;
-                }
-            };
-
-            let frame = YPlaneFrame::from_owned(width as u32, height as u32, width, None, data)?;
-            let mut config = SubtitleDetectionConfig::for_frame(width, height, width);
-            config.roi = RoiConfig {
-                x: 0.0,
-                y: 0.0,
-                width: 1.0,
-                height: 1.0,
-            };
-            config.luma_band = LumaBandConfig {
-                target: TARGET,
-                delta: DELTA,
-            };
-            let roi = config.roi;
-            let detector = build_detector(detector_name, config)?;
-            let result = detector.detect(&frame)?;
-
-            let mut image = frame_to_image(&frame);
-            overlay_regions(&mut image, &result.regions);
-
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("frame");
-            let out_path = out_dir.join(format!("{stem}.png"));
-            image.save(out_path)?;
-
-            let regions_with_index: Vec<_> = result
-                .regions
-                .iter()
-                .enumerate()
-                .map(|(index, region)| {
-                    json!({
-                        "index": index,
-                        "x": region.x,
-                        "y": region.y,
-                        "width": region.width,
-                        "height": region.height,
-                        "score": region.score,
-                    })
-                })
-                .collect();
-
-            let report = json!({
-                "detector": detector_name,
-                "source": path.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
-                "frame": { "width": width, "height": height },
-                "roi": { "x": roi.x, "y": roi.y, "width": roi.width, "height": roi.height },
-                "luma_band": { "target": TARGET, "delta": DELTA },
-                "has_subtitle": result.has_subtitle,
-                "max_score": result.max_score,
-                "regions": regions_with_index,
-            });
-            let json_path = out_dir.join(format!("{stem}.json"));
-            fs::write(json_path, serde_json::to_vec_pretty(&report)?)?;
-
-            processed += 1;
-            processed_total += 1;
+    let mut frames = Vec::new();
+    for entry in fs::read_dir(&yuv_dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("yuv") {
+            frames.push(path);
         }
-
-        if processed == 0 {
-            return Err("no demo frames processed".into());
-        }
-
-        println!(
-            "Generated {processed} PNG files in {:?} using {}",
-            out_dir, detector_name
-        );
     }
 
-    if processed_total == 0 {
+    if frames.is_empty() {
+        return Err("no demo frames processed".into());
+    }
+
+    let total_frames = frames.len();
+    let progress = MultiProgress::new();
+    let style = ProgressStyle::with_template(
+        "{spinner:.green} [{elapsed_precise}] {prefix:>10.cyan.bold} \
+{bar:40.cyan/blue} {pos:>4}/{len:4} frames",
+    )
+    .unwrap()
+    .progress_chars("█▉▊▋▌▍▎▏  ");
+    let mut handles = Vec::new();
+
+    for detector_name in DETECTORS {
+        let frames = frames.clone();
+        let detector_name = detector_name.to_string();
+
+        let bar = progress.add(ProgressBar::new(total_frames as u64));
+        bar.set_style(style.clone());
+        bar.set_prefix(detector_name.clone());
+
+        let handle = thread::spawn(move || -> Result<usize, Box<dyn Error + Send + Sync>> {
+            let out_dir = PathBuf::from(OUT_DIR).join(&detector_name);
+            fs::create_dir_all(&out_dir)?;
+
+            let mut processed = 0usize;
+            for path in frames {
+                let data = fs::read(&path)?;
+                let (width, height) = match resolution_from_len(data.len()) {
+                    Some(dim) => dim,
+                    None => {
+                        eprintln!(
+                            "skipping {:?}: unknown resolution ({} bytes)",
+                            path,
+                            data.len()
+                        );
+                        continue;
+                    }
+                };
+
+                let frame =
+                    YPlaneFrame::from_owned(width as u32, height as u32, width, None, data)?;
+                let mut config = SubtitleDetectionConfig::for_frame(width, height, width);
+                config.roi = RoiConfig {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                };
+                config.luma_band = LumaBandConfig {
+                    target: TARGET,
+                    delta: DELTA,
+                };
+                let roi = config.roi;
+                let detector = build_detector(&detector_name, config)?;
+                let result = detector.detect(&frame)?;
+
+                let mut image = frame_to_image(&frame);
+                overlay_regions(&mut image, &result.regions);
+
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("frame");
+                let out_path = out_dir.join(format!("{stem}.png"));
+                image.save(out_path)?;
+
+                let regions_with_index: Vec<_> = result
+                    .regions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, region)| {
+                        json!({
+                            "index": index,
+                            "x": region.x,
+                            "y": region.y,
+                            "width": region.width,
+                            "height": region.height,
+                            "score": region.score,
+                        })
+                    })
+                    .collect();
+
+                let report = json!({
+                    "detector": detector_name,
+                    "source": path.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
+                    "frame": { "width": width, "height": height },
+                    "roi": { "x": roi.x, "y": roi.y, "width": roi.width, "height": roi.height },
+                    "luma_band": { "target": TARGET, "delta": DELTA },
+                    "has_subtitle": result.has_subtitle,
+                    "max_score": result.max_score,
+                    "regions": regions_with_index,
+                });
+                let json_path = out_dir.join(format!("{stem}.json"));
+                fs::write(json_path, serde_json::to_vec_pretty(&report)?)?;
+
+                processed += 1;
+                bar.inc(1);
+            }
+
+            bar.finish_with_message("done");
+
+            Ok(processed)
+        });
+
+        handles.push(handle);
+    }
+
+    let mut any_processed = false;
+    for handle in handles {
+        match handle.join() {
+            Ok(Ok(count)) => {
+                if count > 0 {
+                    any_processed = true;
+                }
+            }
+            Ok(Err(err)) => {
+                return Err(err);
+            }
+            Err(_) => {
+                return Err("detector worker panicked".into());
+            }
+        }
+    }
+
+    if !any_processed {
         return Err("no demo frames processed".into());
     }
 
@@ -270,6 +312,7 @@ fn build_detector(
     match name {
         "integral" => Ok(Box::new(IntegralBandDetector::new(config)?)),
         "projection" => Ok(Box::new(ProjectionBandDetector::new(config)?)),
+        "vision" => Ok(Box::new(VisionTextDetector::new(config)?)),
         other => {
             eprintln!("unknown detector '{other}', defaulting to unsupported error");
             Err(SubtitleDetectionError::Unsupported {
