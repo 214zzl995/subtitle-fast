@@ -211,71 +211,198 @@ fn dt_chamfer3x4_clipped(
     clip_px: f32,
     scratch: &mut Scratch,
 ) -> Vec<f32> {
-    let len = width.saturating_mul(height);
+    let len = width.wrapping_mul(height);
     if len == 0 || mask_ones_is_fg.is_empty() {
         return Vec::new();
     }
+    debug_assert_eq!(mask_ones_is_fg.len(), len);
 
     let inf = u16::MAX / 4;
     let clip_units = ((clip_px * 3.0).ceil() as u16).min(inf);
     scratch.ensure_dt_capacity(len);
     let d = &mut scratch.dt_u16[..len];
-    for i in 0..len {
-        d[i] = if mask_ones_is_fg[i] > 0 {
-            0
-        } else {
-            clip_units
-        };
-    }
+    d.iter_mut()
+        .zip(mask_ones_is_fg.iter())
+        .for_each(|(dist, &mask)| {
+            *dist = if mask > 0 { 0 } else { clip_units };
+        });
 
-    // 前向扫描
-    for y in 0..height {
-        let row = y * width;
-        for x in 0..width {
-            let i = row + x;
-            let mut v = d[i];
-            if x > 0 {
-                v = v.min(d[i - 1].saturating_add(3));
+    let stride = width;
+    let ptr = d.as_mut_ptr();
+
+    unsafe {
+        for y in 0..height {
+            let row_start = y * stride;
+
+            if y == 0 {
+                for x in 1..width {
+                    let i = row_start + x;
+                    let mut v = *ptr.add(i);
+                    let left = *ptr.add(i - 1) + 3;
+                    if left < v {
+                        v = left;
+                    }
+                    *ptr.add(i) = v;
+                }
+                continue;
             }
-            if y > 0 {
-                v = v.min(d[i - width].saturating_add(3));
+
+            let i_start = row_start;
+            let mut v_start = *ptr.add(i_start);
+            let up = *ptr.add(i_start - stride) + 3;
+            if up < v_start {
+                v_start = up;
             }
-            if x > 0 && y > 0 {
-                v = v.min(d[i - width - 1].saturating_add(4));
+            if width > 1 {
+                let up_right = *ptr.add(i_start - stride + 1) + 4;
+                if up_right < v_start {
+                    v_start = up_right;
+                }
             }
-            if x + 1 < width && y > 0 {
-                v = v.min(d[i - width + 1].saturating_add(4));
+            *ptr.add(i_start) = v_start;
+
+            if width > 2 {
+                let mut p_curr = ptr.add(row_start + 1);
+                let off_left = -1isize;
+                let off_up = -(stride as isize);
+                let off_up_left = off_up - 1;
+                let off_up_right = off_up + 1;
+                for _ in 1..width - 1 {
+                    let mut v = *p_curr;
+                    let left = *p_curr.offset(off_left) + 3;
+                    if left < v {
+                        v = left;
+                    }
+                    let up = *p_curr.offset(off_up) + 3;
+                    if up < v {
+                        v = up;
+                    }
+                    let up_left = *p_curr.offset(off_up_left) + 4;
+                    if up_left < v {
+                        v = up_left;
+                    }
+                    let up_right = *p_curr.offset(off_up_right) + 4;
+                    if up_right < v {
+                        v = up_right;
+                    }
+                    *p_curr = v;
+                    p_curr = p_curr.add(1);
+                }
             }
-            d[i] = v.min(clip_units);
+
+            if width > 1 {
+                let i_end = row_start + width - 1;
+                let mut v_end = *ptr.add(i_end);
+                let left = *ptr.add(i_end - 1) + 3;
+                if left < v_end {
+                    v_end = left;
+                }
+                let up = *ptr.add(i_end - stride) + 3;
+                if up < v_end {
+                    v_end = up;
+                }
+                let up_left = *ptr.add(i_end - stride - 1) + 4;
+                if up_left < v_end {
+                    v_end = up_left;
+                }
+                *ptr.add(i_end) = v_end;
+            }
         }
-    }
 
-    // 反向扫描
-    for y in (0..height).rev() {
-        let row = y * width;
-        for x in (0..width).rev() {
-            let i = row + x;
-            let mut v = d[i];
-            if x + 1 < width {
-                v = v.min(d[i + 1].saturating_add(3));
+        for y in (0..height).rev() {
+            let row_start = y * stride;
+
+            if y == height - 1 {
+                if width > 1 {
+                    for x in (0..width - 1).rev() {
+                        let i = row_start + x;
+                        let mut v = *ptr.add(i);
+                        let right = *ptr.add(i + 1) + 3;
+                        if right < v {
+                            v = right;
+                        }
+                        *ptr.add(i) = v.min(clip_units);
+                    }
+                }
+                let last = row_start + width - 1;
+                let v_last = (*ptr.add(last)).min(clip_units);
+                *ptr.add(last) = v_last;
+                continue;
             }
-            if y + 1 < height {
-                v = v.min(d[i + width].saturating_add(3));
+
+            if width > 0 {
+                let i_end = row_start + width - 1;
+                let mut v_end = *ptr.add(i_end);
+                let down = *ptr.add(i_end + stride) + 3;
+                if down < v_end {
+                    v_end = down;
+                }
+                if width > 1 {
+                    let down_left = *ptr.add(i_end + stride - 1) + 4;
+                    if down_left < v_end {
+                        v_end = down_left;
+                    }
+                }
+                *ptr.add(i_end) = v_end.min(clip_units);
             }
-            if x + 1 < width && y + 1 < height {
-                v = v.min(d[i + width + 1].saturating_add(4));
+
+            if width > 2 {
+                let mut p_curr = ptr.add(row_start + width - 2);
+                let off_right = 1isize;
+                let off_down = stride as isize;
+                let off_down_right = off_down + 1;
+                let off_down_left = off_down - 1;
+                for _ in (1..width - 1).rev() {
+                    let mut v = *p_curr;
+                    let right = *p_curr.offset(off_right) + 3;
+                    if right < v {
+                        v = right;
+                    }
+                    let down = *p_curr.offset(off_down) + 3;
+                    if down < v {
+                        v = down;
+                    }
+                    let down_right = *p_curr.offset(off_down_right) + 4;
+                    if down_right < v {
+                        v = down_right;
+                    }
+                    let down_left = *p_curr.offset(off_down_left) + 4;
+                    if down_left < v {
+                        v = down_left;
+                    }
+                    *p_curr = if v > clip_units { clip_units } else { v };
+                    p_curr = p_curr.sub(1);
+                }
             }
-            if x > 0 && y + 1 < height {
-                v = v.min(d[i + width - 1].saturating_add(4));
+
+            if width > 1 {
+                let i_start = row_start;
+                let mut v_start = *ptr.add(i_start);
+                let right = *ptr.add(i_start + 1) + 3;
+                if right < v_start {
+                    v_start = right;
+                }
+                let down = *ptr.add(i_start + stride) + 3;
+                if down < v_start {
+                    v_start = down;
+                }
+                let down_right = *ptr.add(i_start + stride + 1) + 4;
+                if down_right < v_start {
+                    v_start = down_right;
+                }
+                *ptr.add(i_start) = v_start.min(clip_units);
             }
-            d[i] = v.min(clip_units);
         }
     }
 
     let inv3 = 1.0 / 3.0;
     let mut out = Vec::with_capacity(len);
-    for &v in d.iter().take(len) {
-        out.push((v.min(clip_units) as f32) * inv3);
+    unsafe {
+        out.set_len(len);
+        let out_ptr: *mut f32 = out.as_mut_ptr();
+        for i in 0..len {
+            *out_ptr.add(i) = (*d.get_unchecked(i) as f32) * inv3;
+        }
     }
     out
 }
