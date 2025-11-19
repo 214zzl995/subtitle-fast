@@ -66,12 +66,13 @@ pub fn gaussian_blur_3x3(pixels: &[f32], width: usize, height: usize) -> Vec<f32
     output
 }
 
-pub fn sobel_magnitude(pixels: &[f32], width: usize, height: usize) -> Vec<f32> {
+pub fn sobel_magnitude_into(pixels: &[f32], width: usize, height: usize, output: &mut Vec<f32>) {
     assert_eq!(pixels.len(), width * height);
+    output.clear();
     if width == 0 || height == 0 {
-        return Vec::new();
+        return;
     }
-    let mut output = vec![0.0f32; pixels.len()];
+    output.resize(pixels.len(), 0.0);
     for y in 1..height - 1 {
         for x in 1..width - 1 {
             let idx = y * width + x;
@@ -87,9 +88,14 @@ pub fn sobel_magnitude(pixels: &[f32], width: usize, height: usize) -> Vec<f32> 
                 - pixels[(y - 1) * width + (x - 1)]
                 - 2.0 * pixels[(y - 1) * width + x]
                 - pixels[(y - 1) * width + (x + 1)];
-            output[idx] = (gx * gx + gy * gy).sqrt();
+            output[idx] = gx.abs() + gy.abs();
         }
     }
+}
+
+pub fn sobel_magnitude(pixels: &[f32], width: usize, height: usize) -> Vec<f32> {
+    let mut output = Vec::new();
+    sobel_magnitude_into(pixels, width, height, &mut output);
     output
 }
 

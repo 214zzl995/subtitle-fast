@@ -1,12 +1,12 @@
 use rayon::prelude::*;
-use std::cmp::Ordering;
-use std::sync::Mutex;
+use std::cell::RefCell;
+use std::mem;
 
 use subtitle_fast_decoder::YPlaneFrame;
 use subtitle_fast_validator::subtitle_detection::RoiConfig;
 
 use crate::comparators::SubtitleComparator;
-use crate::pipeline::ops::sobel_magnitude;
+use crate::pipeline::ops::sobel_magnitude_into;
 use crate::pipeline::preprocess::extract_masked_patch;
 use crate::pipeline::{
     ComparisonReport, FeatureBlob, MaskedPatch, PreprocessSettings, ReportMetric,
@@ -24,6 +24,10 @@ const MATCH_THRESHOLD: f32 = 0.55;
 const SIGMA_SCALE: f32 = 0.03;
 const STROKE_SIGMA: f32 = 1.8;
 const PARALLEL_MIN_POINTS: usize = 256;
+
+thread_local! {
+    static TLS_SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::new());
+}
 
 #[inline]
 fn dilate3x3_bin(src: &[u8], width: usize, height: usize, tmp: &mut [u8], dst: &mut [u8]) {
@@ -295,9 +299,10 @@ struct SparseChamferFeatures {
 struct Scratch {
     tmp_a: Vec<u8>,
     tmp_b: Vec<u8>,
+    mask: Vec<u8>,
+    edges: Vec<u8>,
+    magnitude: Vec<f32>,
     hist: [u32; 256],
-    distances_ab: Vec<f32>,
-    distances_ba: Vec<f32>,
     dt_u16: Vec<u16>,
 }
 
@@ -306,9 +311,10 @@ impl Scratch {
         Self {
             tmp_a: Vec::new(),
             tmp_b: Vec::new(),
+            mask: Vec::new(),
+            edges: Vec::new(),
+            magnitude: Vec::new(),
             hist: [0; 256],
-            distances_ab: Vec::new(),
-            distances_ba: Vec::new(),
             dt_u16: Vec::new(),
         }
     }
@@ -320,14 +326,11 @@ impl Scratch {
         if self.tmp_b.len() < len {
             self.tmp_b.resize(len, 0);
         }
-    }
-
-    fn ensure_distance_capacity(&mut self, len_ab: usize, len_ba: usize) {
-        if self.distances_ab.capacity() < len_ab {
-            self.distances_ab = Vec::with_capacity(len_ab);
+        if self.mask.len() < len {
+            self.mask.resize(len, 0);
         }
-        if self.distances_ba.capacity() < len_ba {
-            self.distances_ba = Vec::with_capacity(len_ba);
+        if self.edges.len() < len {
+            self.edges.resize(len, 0);
         }
     }
 
@@ -340,55 +343,67 @@ impl Scratch {
 
 pub struct SparseChamferComparator {
     settings: PreprocessSettings,
-    scratch: Mutex<Scratch>,
 }
 
 impl SparseChamferComparator {
     pub fn new(settings: PreprocessSettings) -> Self {
-        Self {
-            settings,
-            scratch: Mutex::new(Scratch::new()),
-        }
+        Self { settings }
     }
 
-    fn build_mask(&self, patch: &MaskedPatch, scratch: &mut Scratch) -> Vec<u8> {
-        let base: Vec<u8> = patch
-            .mask
-            .iter()
-            .map(|&value| if value >= 0.5 { 1 } else { 0 })
-            .collect();
-        if base.is_empty() {
-            return base;
+    fn with_scratch<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut Scratch) -> R,
+    {
+        TLS_SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            f(&mut scratch)
+        })
+    }
+
+    fn build_mask(&self, patch: &MaskedPatch, scratch: &mut Scratch, mask: &mut Vec<u8>) -> bool {
+        let len = patch.len();
+        if len == 0 {
+            mask.clear();
+            return false;
         }
-        let base_on = base.iter().filter(|&&v| v > 0).count();
-        let mut mask = base.clone();
-        scratch.ensure_mask_capacity(mask.len());
-        let tmp_a = &mut scratch.tmp_a[..mask.len()];
-        let tmp_b = &mut scratch.tmp_b[..mask.len()];
+        mask.resize(len, 0);
+        let mut base_on = 0usize;
+        for (dst, &value) in mask.iter_mut().zip(&patch.mask) {
+            let bit = if value >= 0.5 { 1 } else { 0 };
+            *dst = bit;
+            base_on += bit as usize;
+        }
+        if base_on == 0 {
+            return true;
+        }
+        scratch.ensure_mask_capacity(len);
+        let tmp_a = &mut scratch.tmp_a[..len];
+        let tmp_b = &mut scratch.tmp_b[..len];
 
         // Light open then close to connect thin strokes without over-smoothing:
         // erode -> dilate -> dilate -> erode, with an early stop for the second dilate.
-        erode3x3_bin(&mask, patch.width, patch.height, tmp_a, tmp_b);
+        erode3x3_bin(mask, patch.width, patch.height, tmp_a, tmp_b);
         mask.copy_from_slice(tmp_b);
 
-        dilate3x3_bin(&mask, patch.width, patch.height, tmp_a, tmp_b);
-        let changed_after_first_dilate = tmp_b != mask;
+        dilate3x3_bin(mask, patch.width, patch.height, tmp_a, tmp_b);
+        let changed_after_first_dilate = tmp_b != mask.as_slice();
         mask.copy_from_slice(tmp_b);
 
         if changed_after_first_dilate {
-            dilate3x3_bin(&mask, patch.width, patch.height, tmp_a, tmp_b);
+            dilate3x3_bin(mask, patch.width, patch.height, tmp_a, tmp_b);
             mask.copy_from_slice(tmp_b);
         }
 
-        erode3x3_bin(&mask, patch.width, patch.height, tmp_a, tmp_b);
+        erode3x3_bin(mask, patch.width, patch.height, tmp_a, tmp_b);
         mask.copy_from_slice(tmp_b);
 
         let mask_on = mask.iter().filter(|&&v| v > 0).count();
-        // If morphology wipes out or severely shrinks the mask, fall back.
         if mask_on == 0 || mask_on * 10 < base_on {
-            return base;
+            for (dst, &value) in mask.iter_mut().zip(&patch.mask) {
+                *dst = if value >= 0.5 { 1 } else { 0 };
+            }
         }
-        mask
+        true
     }
 
     fn adaptive_edges(
@@ -396,16 +411,23 @@ impl SparseChamferComparator {
         patch: &MaskedPatch,
         mask: &[u8],
         scratch: &mut Scratch,
-    ) -> (Vec<u8>, usize) {
-        let magnitude = sobel_magnitude(&patch.original, patch.width, patch.height);
-        debug_assert_eq!(magnitude.len(), mask.len());
+        edges: &mut Vec<u8>,
+    ) -> usize {
+        sobel_magnitude_into(
+            &patch.original,
+            patch.width,
+            patch.height,
+            &mut scratch.magnitude,
+        );
+        debug_assert_eq!(scratch.magnitude.len(), mask.len());
+        let magnitude = &scratch.magnitude;
         let has_masked = mask.iter().any(|&v| v > 0);
         let threshold = if has_masked {
             percentile70_histogram(&magnitude, Some(mask), &mut scratch.hist)
         } else {
             percentile70_histogram(&magnitude, None, &mut scratch.hist)
         };
-        let mut edges = vec![0u8; magnitude.len()];
+        edges.resize(magnitude.len(), 0);
         let mut count = 0usize;
         for (idx, &m) in magnitude.iter().enumerate() {
             if m >= threshold && mask[idx] > 0 {
@@ -415,7 +437,7 @@ impl SparseChamferComparator {
                 edges[idx] = 0;
             }
         }
-        (edges, count)
+        count
     }
 
     fn sample_points_step(
@@ -455,38 +477,44 @@ impl SparseChamferComparator {
     }
 
     fn build_features(&self, patch: &MaskedPatch) -> Option<SparseChamferFeatures> {
-        let mut scratch = self
-            .scratch
-            .lock()
-            .expect("sparse-chamfer scratch mutex poisoned");
-        let mask = self.build_mask(patch, &mut scratch);
-        if mask.is_empty() {
-            return None;
-        }
-        let (edges, edge_count) = self.adaptive_edges(patch, &mask, &mut scratch);
-        if edge_count == 0 {
-            return None;
-        }
-        let points = self.sample_points(&edges, patch.width, patch.height);
-        if points.is_empty() {
-            return None;
-        }
-        let distance_map =
-            dt_chamfer3x4_clipped(&edges, patch.width, patch.height, CLIP_PX, &mut scratch);
-        let area = mask.iter().map(|&v| v as usize).sum::<usize>();
-        let stroke_width = if edge_count > 0 {
-            (2.0 * area as f32) / (edge_count as f32)
-        } else {
-            0.0
-        };
-        let diag = ((patch.width * patch.width + patch.height * patch.height) as f32).sqrt();
-        Some(SparseChamferFeatures {
-            width: patch.width,
-            height: patch.height,
-            points,
-            distance_map,
-            stroke_width,
-            diag,
+        self.with_scratch(|scratch| {
+            let mut mask = mem::take(&mut scratch.mask);
+            if !self.build_mask(patch, scratch, &mut mask) {
+                scratch.mask = mask;
+                return None;
+            }
+            let mut edges = mem::take(&mut scratch.edges);
+            let edge_count = self.adaptive_edges(patch, &mask, scratch, &mut edges);
+            if edge_count == 0 {
+                scratch.mask = mask;
+                scratch.edges = edges;
+                return None;
+            }
+            let points = self.sample_points(&edges, patch.width, patch.height);
+            if points.is_empty() {
+                scratch.mask = mask;
+                scratch.edges = edges;
+                return None;
+            }
+            let distance_map =
+                dt_chamfer3x4_clipped(&edges, patch.width, patch.height, CLIP_PX, scratch);
+            let area = mask.iter().map(|&v| v as usize).sum::<usize>();
+            let stroke_width = if edge_count > 0 {
+                (2.0 * area as f32) / (edge_count as f32)
+            } else {
+                0.0
+            };
+            scratch.mask = mask;
+            scratch.edges = edges;
+            let diag = ((patch.width * patch.width + patch.height * patch.height) as f32).sqrt();
+            Some(SparseChamferFeatures {
+                width: patch.width,
+                height: patch.height,
+                points,
+                distance_map,
+                stroke_width,
+                diag,
+            })
         })
     }
 
@@ -498,9 +526,10 @@ impl SparseChamferComparator {
         target_height: usize,
         dx: isize,
         dy: isize,
-        distances: &mut Vec<f32>,
     ) -> (f32, f32) {
-        distances.clear();
+        let clip_units: usize = ((CLIP_PX * 3.0).ceil() as usize).min(12);
+        let mut bins_cnt = [0usize; 13];
+        let mut bins_sum = [0f32; 13];
         let mut tight = 0usize;
         for point in points {
             let tx = point.x as isize + dx;
@@ -510,7 +539,7 @@ impl SparseChamferComparator {
             }
             let idx = ty as usize * target_width + tx as usize;
             let mut dist = target_dt[idx];
-            if dist.is_infinite() {
+            if !dist.is_finite() {
                 continue;
             }
             if dist > CLIP_PX {
@@ -519,18 +548,31 @@ impl SparseChamferComparator {
             if dist <= TIGHT_PX {
                 tight += 1;
             }
-            distances.push(dist);
+            let bin = ((dist * 3.0) + 0.5).floor() as usize;
+            let bucket = bin.min(clip_units);
+            bins_cnt[bucket] = bins_cnt[bucket].saturating_add(1);
+            bins_sum[bucket] += dist;
         }
-        if distances.is_empty() {
+        let total: usize = bins_cnt.iter().sum();
+        if total == 0 {
             return (f32::INFINITY, 0.0);
         }
-        let total = distances.len();
         let keep = ((total as f32 * KEEP_QUANTILE).round() as usize).max(1);
-        distances.select_nth_unstable_by(keep.min(total - 1), |a, b| {
-            a.partial_cmp(b).unwrap_or(Ordering::Equal)
-        });
-        distances.truncate(keep);
-        let sum: f32 = distances.iter().copied().sum();
+        let mut acc = 0usize;
+        let mut sum = 0f32;
+        for b in 0..=clip_units {
+            let count = bins_cnt[b];
+            if acc + count < keep {
+                sum += bins_sum[b];
+                acc += count;
+            } else {
+                let take = keep - acc;
+                if take > 0 {
+                    sum += take as f32 * (b as f32 / 3.0);
+                }
+                break;
+            }
+        }
         let mean = sum / keep as f32;
         let match_fraction = tight as f32 / total as f32;
         (mean, match_fraction)
@@ -554,54 +596,49 @@ impl SparseChamferComparator {
         a: &SparseChamferFeatures,
         b: &SparseChamferFeatures,
     ) -> (f32, f32, isize, isize) {
-        let mut scratch = self
-            .scratch
-            .lock()
-            .expect("sparse-chamfer scratch mutex poisoned");
-        let mut best_cost = f32::INFINITY;
-        let mut best_match = 0.0;
-        let mut best_dx = 0isize;
-        let mut best_dy = 0isize;
-        scratch.ensure_distance_capacity(a.points.len(), b.points.len());
-        for dy in -SHIFT_RADIUS..=SHIFT_RADIUS {
-            for dx in -SHIFT_RADIUS..=SHIFT_RADIUS {
-                let (cost_ab, match_ab) = self.one_way_partial_chamfer(
-                    &a.points,
-                    &b.distance_map,
-                    b.width,
-                    b.height,
-                    dx,
-                    dy,
-                    &mut scratch.distances_ab,
-                );
-                if best_cost.is_finite() && cost_ab >= 2.0 * best_cost {
-                    continue;
-                }
-                let (cost_ba, match_ba) = self.one_way_partial_chamfer(
-                    &b.points,
-                    &a.distance_map,
-                    a.width,
-                    a.height,
-                    -dx,
-                    -dy,
-                    &mut scratch.distances_ba,
-                );
-                if !cost_ab.is_finite() || !cost_ba.is_finite() {
-                    continue;
-                }
-                let avg_cost = 0.5 * (cost_ab + cost_ba);
-                let avg_match = 0.5 * (match_ab + match_ba);
-                if avg_cost < best_cost
-                    || (avg_cost - best_cost).abs() < 1e-5 && avg_match > best_match
-                {
-                    best_cost = avg_cost;
-                    best_match = avg_match;
-                    best_dx = dx;
-                    best_dy = dy;
+        self.with_scratch(|_scratch| {
+            let mut best_cost = f32::INFINITY;
+            let mut best_match = 0.0;
+            let mut best_dx = 0isize;
+            let mut best_dy = 0isize;
+            for dy in -SHIFT_RADIUS..=SHIFT_RADIUS {
+                for dx in -SHIFT_RADIUS..=SHIFT_RADIUS {
+                    let (cost_ab, match_ab) = self.one_way_partial_chamfer(
+                        &a.points,
+                        &b.distance_map,
+                        b.width,
+                        b.height,
+                        dx,
+                        dy,
+                    );
+                    if best_cost.is_finite() && cost_ab >= 2.0 * best_cost {
+                        continue;
+                    }
+                    let (cost_ba, match_ba) = self.one_way_partial_chamfer(
+                        &b.points,
+                        &a.distance_map,
+                        a.width,
+                        a.height,
+                        -dx,
+                        -dy,
+                    );
+                    if !cost_ab.is_finite() || !cost_ba.is_finite() {
+                        continue;
+                    }
+                    let avg_cost = 0.5 * (cost_ab + cost_ba);
+                    let avg_match = 0.5 * (match_ab + match_ba);
+                    if avg_cost < best_cost
+                        || (avg_cost - best_cost).abs() < 1e-5 && avg_match > best_match
+                    {
+                        best_cost = avg_cost;
+                        best_match = avg_match;
+                        best_dx = dx;
+                        best_dy = dy;
+                    }
                 }
             }
-        }
-        (best_cost, best_match, best_dx, best_dy)
+            (best_cost, best_match, best_dx, best_dy)
+        })
     }
 
     fn search_best_shift_parallel(
@@ -616,8 +653,6 @@ impl SparseChamferComparator {
         let (best_cost, best_match, best_dx, best_dy) = shifts
             .par_iter()
             .map(|&(dx, dy)| {
-                let mut distances_ab = Vec::with_capacity(a.points.len());
-                let mut distances_ba = Vec::with_capacity(b.points.len());
                 let (cost_ab, match_ab) = self.one_way_partial_chamfer(
                     &a.points,
                     &b.distance_map,
@@ -625,7 +660,6 @@ impl SparseChamferComparator {
                     b.height,
                     dx,
                     dy,
-                    &mut distances_ab,
                 );
                 let (cost_ba, match_ba) = self.one_way_partial_chamfer(
                     &b.points,
@@ -634,7 +668,6 @@ impl SparseChamferComparator {
                     a.height,
                     -dx,
                     -dy,
-                    &mut distances_ba,
                 );
                 if !cost_ab.is_finite() || !cost_ba.is_finite() {
                     return (f32::INFINITY, 0.0, dx, dy);
