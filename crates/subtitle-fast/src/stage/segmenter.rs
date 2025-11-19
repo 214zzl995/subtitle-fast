@@ -240,8 +240,7 @@ impl SegmenterWorker {
                 self.active[idx].consecutive_missing = miss;
                 if miss > self.k_off {
                     let active = self.active.remove(idx);
-                    let interval = self.close_active(active, timings);
-                    intervals.push(interval);
+                    intervals.push(self.close_active(active, timings));
                 } else {
                     idx += 1;
                 }
@@ -416,7 +415,6 @@ impl SegmenterWorker {
     ) -> (u64, Duration) {
         let mut best_frame = active.last_frame;
         let mut best_time = active.last_time;
-
         for record in history.records() {
             if record.frame_index <= active.last_frame {
                 continue;
@@ -443,14 +441,42 @@ impl SegmenterWorker {
             }
         }
 
-        (best_frame, best_time)
+        let mut next_timestamp = None;
+        let mut prev_timestamp = None;
+        for record in history.records() {
+            if record.frame_index < best_frame {
+                if let Some(ts) = record.frame().timestamp() {
+                    prev_timestamp = Some(ts);
+                }
+                continue;
+            }
+            if record.frame_index > best_frame {
+                if let Some(ts) = record.frame().timestamp() {
+                    next_timestamp = Some(ts);
+                }
+                break;
+            }
+        }
+
+        let end_time = if let Some(next_ts) = next_timestamp {
+            next_ts
+        } else if let Some(prev) = prev_timestamp {
+            if let Some(delta) = best_time.checked_sub(prev) {
+                best_time.checked_add(delta).unwrap_or(best_time)
+            } else {
+                best_time
+            }
+        } else {
+            best_time
+        };
+
+        (best_frame, end_time)
     }
 
     fn flush_active_segments(&mut self, timings: &mut SegmentTimings) -> Vec<SubtitleInterval> {
         let mut intervals = Vec::new();
         while let Some(active) = self.active.pop() {
-            let interval = self.close_active(active, timings);
-            intervals.push(interval);
+            intervals.push(self.close_active(active, timings));
         }
         self.pending.clear();
         intervals
