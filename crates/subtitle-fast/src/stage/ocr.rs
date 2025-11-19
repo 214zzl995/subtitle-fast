@@ -154,8 +154,15 @@ fn roi_to_region(roi: &RoiConfig, frame: &YPlaneFrame) -> OcrRegion {
     let height = frame.height().max(1) as f32;
     let left = (roi.x * width).clamp(0.0, width);
     let top = (roi.y * height).clamp(0.0, height);
-    let right = ((roi.x + roi.width) * width).clamp(left, width);
-    let bottom = ((roi.y + roi.height) * height).clamp(top, height);
+    let mut right = ((roi.x + roi.width) * width).clamp(left, width);
+    let mut bottom = ((roi.y + roi.height) * height).clamp(top, height);
+    let epsilon = 1e-3f32;
+    if right >= width {
+        right = (width - epsilon).max(left);
+    }
+    if bottom >= height {
+        bottom = (height - epsilon).max(top);
+    }
     OcrRegion {
         x: left,
         y: top,

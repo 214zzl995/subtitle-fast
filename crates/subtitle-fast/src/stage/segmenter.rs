@@ -512,15 +512,15 @@ fn timed_compare(
 fn region_to_roi(region: &DetectionRegion, frame: &YPlaneFrame) -> RoiConfig {
     let fw = frame.width().max(1) as f32;
     let fh = frame.height().max(1) as f32;
-    let x = (region.x / fw).clamp(0.0, 1.0);
-    let y = (region.y / fh).clamp(0.0, 1.0);
-    let width = (region.width / fw).clamp(0.0, 1.0);
-    let height = (region.height / fh).clamp(0.0, 1.0);
+    let x0 = (region.x / fw).clamp(0.0, 1.0);
+    let x1 = ((region.x + region.width) / fw).clamp(x0, 1.0);
+    let y0 = (region.y / fh).clamp(0.0, 1.0);
+    let y1 = ((region.y + region.height) / fh).clamp(y0, 1.0);
     RoiConfig {
-        x,
-        y,
-        width,
-        height,
+        x: x0,
+        y: y0,
+        width: (x1 - x0).max(0.0),
+        height: (y1 - y0).max(0.0),
     }
 }
 
