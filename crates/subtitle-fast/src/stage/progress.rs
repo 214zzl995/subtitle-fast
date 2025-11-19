@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use futures_util::{StreamExt, stream::unfold};
@@ -5,8 +6,10 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::mpsc;
 
 use super::StreamBundle;
-use super::detector::{DetectionSample, DetectorError};
-use super::segmenter::{SegmentTimings, SegmenterError, SegmenterResult};
+use super::detector::DetectionSample;
+use super::ocr::{OcrStageError, OcrTimings};
+use super::segmenter::SegmentTimings;
+use super::writer::{SubtitleWriterError, WriterResult, WriterStatus, WriterTimings};
 
 const PROGRESS_CHANNEL_CAPACITY: usize = 4;
 
@@ -19,13 +22,13 @@ impl Progress {
         Self { label }
     }
 
-    pub fn attach(self, input: StreamBundle<SegmenterResult>) -> StreamBundle<SegmenterResult> {
+    pub fn attach(self, input: StreamBundle<WriterResult>) -> StreamBundle<WriterResult> {
         let StreamBundle {
             stream,
             total_frames,
         } = input;
 
-        let (tx, rx) = mpsc::channel::<SegmenterResult>(PROGRESS_CHANNEL_CAPACITY);
+        let (tx, rx) = mpsc::channel::<WriterResult>(PROGRESS_CHANNEL_CAPACITY);
         let label = self.label;
 
         tokio::spawn(async move {
@@ -64,6 +67,11 @@ struct ProgressMonitor {
     avg_detection_ms: Option<f64>,
     segment_frames: u64,
     segment_total: Duration,
+    ocr_intervals: u64,
+    ocr_total: Duration,
+    writer_cues: u64,
+    writer_total: Duration,
+    completed_output: Option<(PathBuf, usize)>,
 }
 
 impl ProgressMonitor {
@@ -92,16 +100,26 @@ impl ProgressMonitor {
             avg_detection_ms: None,
             segment_frames: 0,
             segment_total: Duration::ZERO,
+            ocr_intervals: 0,
+            ocr_total: Duration::ZERO,
+            writer_cues: 0,
+            writer_total: Duration::ZERO,
+            completed_output: None,
         }
     }
 
-    fn observe(&mut self, event: &SegmenterResult) {
+    fn observe(&mut self, event: &WriterResult) {
         match event {
             Ok(event) => {
                 if let Some(sample) = &event.sample {
                     self.observe_sample(sample);
                 }
                 self.observe_segment_time(event.segment_timings);
+                self.observe_ocr_time(event.ocr_timings);
+                self.observe_writer_time(event.writer_timings);
+                if let WriterStatus::Completed { path, cues } = &event.status {
+                    self.completed_output = Some((path.clone(), *cues));
+                }
             }
             Err(err) => self.fail_with_reason(&describe_error(err)),
         }
@@ -138,6 +156,24 @@ impl ProgressMonitor {
         self.segment_total = self.segment_total.saturating_add(timings.total);
     }
 
+    fn observe_ocr_time(&mut self, timings: Option<OcrTimings>) {
+        let Some(timings) = timings else {
+            return;
+        };
+        self.ocr_intervals = self.ocr_intervals.saturating_add(timings.intervals);
+        self.ocr_total = self.ocr_total.saturating_add(timings.total);
+    }
+
+    fn observe_writer_time(&mut self, timings: Option<WriterTimings>) {
+        let Some(timings) = timings else {
+            return;
+        };
+        if timings.cues > 0 {
+            self.writer_cues = self.writer_cues.saturating_add(timings.cues);
+        }
+        self.writer_total = self.writer_total.saturating_add(timings.total);
+    }
+
     fn fail_with_reason(&mut self, reason: &str) {
         if self.finished {
             return;
@@ -158,16 +194,35 @@ impl ProgressMonitor {
             return;
         }
         self.finished = true;
-        match self.total_frames {
-            Some(total) => {
-                self.bar.set_position(total);
-                self.bar
-                    .finish_with_message(format!("processed {}/{} frames", total, total));
-            }
-            None => {
-                let processed = self.display_count();
-                self.bar
-                    .finish_with_message(format!("processed {processed} frames"));
+        if let Some(total) = self.total_frames {
+            self.bar.set_position(total);
+        }
+        if let Some((path, cues)) = &self.completed_output {
+            let summary = match self.total_frames {
+                Some(total) => format!(
+                    "processed {}/{} frames • wrote {} ({cues} cues)",
+                    total,
+                    total,
+                    path.display()
+                ),
+                None => format!(
+                    "processed {} frames • wrote {} ({cues} cues)",
+                    self.display_count(),
+                    path.display()
+                ),
+            };
+            self.bar.finish_with_message(summary);
+        } else {
+            match self.total_frames {
+                Some(total) => {
+                    self.bar
+                        .finish_with_message(format!("processed {}/{} frames", total, total));
+                }
+                None => {
+                    let processed = self.display_count();
+                    self.bar
+                        .finish_with_message(format!("processed {processed} frames"));
+                }
             }
         }
     }
@@ -184,14 +239,12 @@ impl ProgressMonitor {
                 .avg_detection_ms
                 .map(|value| format!("{value:.1} ms"))
                 .unwrap_or_else(|| "-- ms".to_string());
-            let seg = if self.segment_frames > 0 {
-                let avg_ms = self.segment_total.as_secs_f64() * 1000.0 / self.segment_frames as f64;
-                format!("{avg_ms:.1} ms")
-            } else {
-                "-- ms".to_string()
-            };
-            self.bar
-                .set_message(format!("{rate:.1} fps • det {det} • seg {seg}"));
+            let seg = average_ms(self.segment_total, self.segment_frames);
+            let ocr = average_ms(self.ocr_total, self.ocr_intervals);
+            let writer = average_ms(self.writer_total, self.writer_cues);
+            self.bar.set_message(format!(
+                "{rate:.1} fps • det {det} • seg {seg} • ocr {ocr} • wr {writer}"
+            ));
         }
     }
 
@@ -202,12 +255,38 @@ impl ProgressMonitor {
     }
 }
 
-fn describe_error(err: &SegmenterError) -> String {
+fn average_ms(total: Duration, units: u64) -> String {
+    if units == 0 {
+        return "-- ms".into();
+    }
+    let avg_ms = total.as_secs_f64() * 1000.0 / units as f64;
+    format!("{avg_ms:.1} ms")
+}
+
+fn describe_error(err: &SubtitleWriterError) -> String {
     match err {
-        SegmenterError::Detector(detector_err) => match detector_err {
-            DetectorError::Sampler(sampler_err) => format!("sampler error: {sampler_err}"),
-            DetectorError::Detection(det_err) => format!("detector error: {det_err}"),
+        SubtitleWriterError::Ocr(ocr_err) => describe_ocr_error(ocr_err),
+        SubtitleWriterError::Io { path, source } => {
+            format!("writer error ({}): {source}", path.display())
+        }
+    }
+}
+
+fn describe_ocr_error(err: &OcrStageError) -> String {
+    match err {
+        super::ocr::OcrStageError::Segmenter(segmenter_err) => match segmenter_err {
+            super::segmenter::SegmenterError::Detector(detector_err) => match detector_err {
+                super::detector::DetectorError::Sampler(sampler_err) => {
+                    format!("sampler error: {sampler_err}")
+                }
+                super::detector::DetectorError::Detection(det_err) => {
+                    format!("detector error: {det_err}")
+                }
+            },
         },
+        super::ocr::OcrStageError::Engine(engine_err) => {
+            format!("ocr error: {engine_err}")
+        }
     }
 }
 

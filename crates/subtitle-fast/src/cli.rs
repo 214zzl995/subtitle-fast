@@ -83,6 +83,10 @@ pub struct CliArgs {
     #[arg(long = "detector-delta", value_parser = parse_u8_byte)]
     pub detector_delta: Option<u8>,
 
+    /// Output subtitle file path
+    #[arg(short = 'o', long = "output")]
+    pub output: Option<PathBuf>,
+
     /// Input video path
     pub input: Option<PathBuf>,
 }

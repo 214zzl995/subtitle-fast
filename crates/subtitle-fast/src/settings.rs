@@ -14,6 +14,7 @@ use crate::cli::{CliArgs, CliSources};
 struct FileConfig {
     detection: Option<DetectionFileConfig>,
     decoder: Option<DecoderFileConfig>,
+    output: Option<OutputFileConfig>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -31,10 +32,17 @@ struct DetectionFileConfig {
     delta: Option<u8>,
 }
 
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(default)]
+struct OutputFileConfig {
+    path: Option<PathBuf>,
+}
+
 #[derive(Debug)]
 pub struct EffectiveSettings {
     pub detection: DetectionSettings,
     pub decoder: DecoderSettings,
+    pub output: OutputSettings,
 }
 
 #[derive(Debug)]
@@ -53,6 +61,11 @@ pub struct DetectionSettings {
 pub struct DecoderSettings {
     pub backend: Option<String>,
     pub channel_capacity: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OutputSettings {
+    pub path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -190,10 +203,12 @@ fn merge(
     let FileConfig {
         detection: file_detection,
         decoder: file_decoder,
+        output: file_output,
     } = file;
 
     let detection_cfg = file_detection.unwrap_or_default();
     let decoder_cfg = file_decoder.unwrap_or_default();
+    let output_cfg = file_output.unwrap_or_default();
 
     let detection_samples_per_second = resolve_detection_sps(
         cli.detection_samples_per_second,
@@ -230,6 +245,10 @@ fn merge(
         channel_capacity: decoder_channel_capacity,
     };
 
+    let output_settings = OutputSettings {
+        path: cli.output.clone().or(output_cfg.path),
+    };
+
     let settings = EffectiveSettings {
         detection: DetectionSettings {
             samples_per_second: detection_samples_per_second,
@@ -237,6 +256,7 @@ fn merge(
             delta: detector_delta,
         },
         decoder: decoder_settings,
+        output: output_settings,
     };
 
     Ok(ResolvedSettings { settings })

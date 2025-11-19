@@ -45,7 +45,7 @@ async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, YPlaneError> 
     let resolved = resolve_settings(&cli_args, &cli_sources).map_err(map_config_error)?;
     let settings = resolved.settings;
 
-    let pipeline = PipelineConfig::from_settings(&settings);
+    let pipeline = PipelineConfig::from_settings(&settings, &input)?;
 
     let env_backend_present = std::env::var("SUBFAST_BACKEND").is_ok();
     let mut config = subtitle_fast_decoder::Configuration::from_env().unwrap_or_default();

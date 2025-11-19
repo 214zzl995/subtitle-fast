@@ -1030,6 +1030,7 @@ dependencies = [
  "serde",
  "subtitle-fast-comparator",
  "subtitle-fast-decoder",
+ "subtitle-fast-ocr",
  "subtitle-fast-validator",
  "tempfile",
  "tokio",
