@@ -1,5 +1,7 @@
+pub mod bitset_cover;
 pub mod sparse_chamfer;
 
+pub use bitset_cover::BitsetCoverComparator;
 pub use sparse_chamfer::SparseChamferComparator;
 
 use crate::pipeline::{ComparisonReport, FeatureBlob};

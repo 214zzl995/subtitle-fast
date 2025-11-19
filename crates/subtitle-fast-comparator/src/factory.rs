@@ -2,17 +2,19 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::comparators::{SparseChamferComparator, SubtitleComparator};
+use crate::comparators::{BitsetCoverComparator, SparseChamferComparator, SubtitleComparator};
 use crate::pipeline::PreprocessSettings;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ComparatorKind {
+    BitsetCover,
     SparseChamfer,
 }
 
 impl ComparatorKind {
     pub fn as_str(&self) -> &'static str {
         match self {
+            ComparatorKind::BitsetCover => "bitset-cover",
             ComparatorKind::SparseChamfer => "sparse-chamfer",
         }
     }
@@ -35,6 +37,7 @@ impl FromStr for ComparatorKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let lower = s.trim().to_ascii_lowercase();
         match lower.as_str() {
+            "bitset-cover" => Ok(ComparatorKind::BitsetCover),
             "sparse-chamfer" => Ok(ComparatorKind::SparseChamfer),
             _ => Err(ComparatorKindParseError(lower)),
         }
@@ -69,6 +72,7 @@ impl ComparatorFactory {
     pub fn build(&self) -> Arc<dyn SubtitleComparator> {
         let preprocess = self.settings.preprocess();
         match self.settings.kind {
+            ComparatorKind::BitsetCover => Arc::new(BitsetCoverComparator::new(preprocess)),
             ComparatorKind::SparseChamfer => Arc::new(SparseChamferComparator::new(preprocess)),
         }
     }

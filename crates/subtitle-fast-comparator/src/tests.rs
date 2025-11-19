@@ -2,7 +2,7 @@ use subtitle_fast_decoder::YPlaneFrame;
 use subtitle_fast_validator::subtitle_detection::RoiConfig;
 
 use crate::pipeline::PreprocessSettings;
-use crate::{SparseChamferComparator, SubtitleComparator};
+use crate::{BitsetCoverComparator, SparseChamferComparator, SubtitleComparator};
 
 fn frame_from_pixels(width: usize, height: usize, data: &[u8]) -> YPlaneFrame {
     YPlaneFrame::from_owned(width as u32, height as u32, width, None, data.to_vec()).unwrap()
@@ -72,4 +72,52 @@ fn sparse_chamfer_detects_shift_and_style() {
     assert!(aligned.same_segment);
     let style = comparator.compare(&feat_base, &feat_thin);
     assert!(!style.same_segment);
+}
+
+#[test]
+fn bitset_cover_identical_frames_match() {
+    let comparator = BitsetCoverComparator::new(PreprocessSettings {
+        target: 200,
+        delta: 15,
+    });
+    let mut pixels = vec![5u8; 16 * 12];
+    for y in 4..8 {
+        for x in 3..13 {
+            pixels[y * 16 + x] = 205;
+        }
+    }
+    let frame = frame_from_pixels(16, 12, &pixels);
+    let roi = full_roi();
+    let features = comparator.extract(&frame, &roi).unwrap();
+    let report = comparator.compare(&features, &features);
+    assert!(report.same_segment);
+    assert!(report.similarity > 0.95);
+}
+
+#[test]
+fn bitset_cover_detects_large_offset() {
+    let comparator = BitsetCoverComparator::new(PreprocessSettings {
+        target: 210,
+        delta: 20,
+    });
+    let mut base = vec![0u8; 24 * 14];
+    for y in 5..9 {
+        for x in 4..18 {
+            base[y * 24 + x] = 220;
+        }
+    }
+    let mut shifted = vec![0u8; 24 * 14];
+    for y in 7..11 {
+        for x in 8..22 {
+            shifted[y * 24 + x] = 220;
+        }
+    }
+    let roi = full_roi();
+    let frame_a = frame_from_pixels(24, 14, &base);
+    let frame_b = frame_from_pixels(24, 14, &shifted);
+    let feat_a = comparator.extract(&frame_a, &roi).unwrap();
+    let feat_b = comparator.extract(&frame_b, &roi).unwrap();
+    let report = comparator.compare(&feat_a, &feat_b);
+    assert!(!report.same_segment);
+    assert!(report.similarity < 0.9);
 }

@@ -4,7 +4,7 @@ pub mod comparators;
 pub mod factory;
 pub mod pipeline;
 
-pub use comparators::{SparseChamferComparator, SubtitleComparator};
+pub use comparators::{BitsetCoverComparator, SparseChamferComparator, SubtitleComparator};
 pub use factory::{ComparatorFactory, ComparatorKind, ComparatorSettings};
 pub use pipeline::{ComparisonReport, FeatureBlob, PreprocessSettings, ReportMetric};
 

@@ -16,7 +16,8 @@ use roi_examples::{load_frame, load_rois};
 
 const YUV_DIR: &str = "./demo/decoder/yuv";
 const ROI_DIR: &str = "./demo/validator/projection";
-const COMPARATORS: &[ComparatorKind] = &[ComparatorKind::SparseChamfer];
+const COMPARATORS: &[ComparatorKind] =
+    &[ComparatorKind::SparseChamfer, ComparatorKind::BitsetCover];
 
 #[derive(Debug, Clone, Copy)]
 struct BenchStats {
