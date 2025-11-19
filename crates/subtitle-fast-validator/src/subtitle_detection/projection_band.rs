@@ -4,9 +4,9 @@ use std::ops::Range;
 const BYTE_BITS: usize = 8;
 
 use super::{
-    log_region_debug, DetectionRegion, LumaBandConfig, RoiConfig, SubtitleDetectionConfig,
-    SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector, MIN_REGION_HEIGHT_PX,
-    MIN_REGION_WIDTH_PX,
+    DetectionRegion, LumaBandConfig, MIN_REGION_HEIGHT_PX, MIN_REGION_WIDTH_PX, RoiConfig,
+    SubtitleDetectionConfig, SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector,
+    log_region_debug,
 };
 use subtitle_fast_decoder::YPlaneFrame;
 

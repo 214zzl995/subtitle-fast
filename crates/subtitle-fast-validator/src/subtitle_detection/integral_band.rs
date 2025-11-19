@@ -6,9 +6,9 @@ use std::arch::is_aarch64_feature_detected;
 use std::arch::is_x86_feature_detected;
 
 use super::{
-    log_region_debug, DetectionRegion, LumaBandConfig, RoiConfig, SubtitleDetectionConfig,
-    SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector, MIN_REGION_HEIGHT_PX,
-    MIN_REGION_WIDTH_PX,
+    DetectionRegion, LumaBandConfig, MIN_REGION_HEIGHT_PX, MIN_REGION_WIDTH_PX, RoiConfig,
+    SubtitleDetectionConfig, SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector,
+    log_region_debug,
 };
 use subtitle_fast_decoder::YPlaneFrame;
 
@@ -389,10 +389,8 @@ unsafe fn threshold_mask_neon(
 
         if x < width {
             let remaining = width - x;
-            let src_tail =
-                unsafe { std::slice::from_raw_parts(src_ptr.add(x), remaining) };
-            let dst_tail =
-                unsafe { std::slice::from_raw_parts_mut(dst_ptr.add(x), remaining) };
+            let src_tail = unsafe { std::slice::from_raw_parts(src_ptr.add(x), remaining) };
+            let dst_tail = unsafe { std::slice::from_raw_parts_mut(dst_ptr.add(x), remaining) };
             threshold_mask_scalar_row(src_tail, dst_tail, lo, hi);
         }
     }

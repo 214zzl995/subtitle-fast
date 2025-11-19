@@ -1,4 +1,4 @@
-use crate::subtitle_detection::{RoiConfig, SubtitleDetectorKind, DEFAULT_DELTA, DEFAULT_TARGET};
+use crate::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET, RoiConfig, SubtitleDetectorKind};
 
 #[derive(Clone, Debug)]
 pub struct FrameValidatorConfig {
