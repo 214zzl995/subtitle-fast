@@ -35,7 +35,7 @@ pub struct SegmenterEvent {
     pub sample: Option<DetectionSample>,
     #[allow(dead_code)]
     pub intervals: Vec<SubtitleInterval>,
-    pub segment_elapsed: Option<Duration>,
+    pub segment_timings: Option<SegmentTimings>,
 }
 
 pub type SegmenterResult = Result<SegmenterEvent, SegmenterError>;
@@ -48,6 +48,16 @@ pub enum SegmenterError {
 pub struct SubtitleSegmenter {
     comparator_factory: ComparatorFactory,
     samples_per_second: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SegmentTimings {
+    pub frames: u64,
+    pub roi_extracts: u64,
+    pub comparisons: u64,
+    pub extract: Duration,
+    pub compare: Duration,
+    pub total: Duration,
 }
 
 impl SubtitleSegmenter {
@@ -87,21 +97,24 @@ impl SubtitleSegmenter {
                 match event {
                     Ok(sample) => {
                         let started = std::time::Instant::now();
-                        let mut segment_event = worker.handle_sample(sample);
-                        let elapsed = started.elapsed();
-                        segment_event.segment_elapsed = Some(elapsed);
+                        let mut timings = SegmentTimings::default();
+                        let mut segment_event = worker.handle_sample(sample, &mut timings);
+                        timings.total = started.elapsed();
+                        timings.frames = 1;
+                        segment_event.segment_timings = Some(timings);
                         if tx.send(Ok(segment_event)).await.is_err() {
                             break;
                         }
                     }
                     Err(err) => {
-                        let flush_intervals = worker.flush_active_segments();
+                        let mut timings = SegmentTimings::default();
+                        let flush_intervals = worker.flush_active_segments(&mut timings);
                         if !flush_intervals.is_empty() {
                             let _ = tx
                                 .send(Ok(SegmenterEvent {
                                     sample: None,
                                     intervals: flush_intervals,
-                                    segment_elapsed: None,
+                                    segment_timings: None,
                                 }))
                                 .await;
                         }
@@ -111,13 +124,14 @@ impl SubtitleSegmenter {
                 }
             }
 
-            let flush_intervals = worker.flush_active_segments();
+            let mut timings = SegmentTimings::default();
+            let flush_intervals = worker.flush_active_segments(&mut timings);
             if !flush_intervals.is_empty() {
                 let _ = tx
                     .send(Ok(SegmenterEvent {
                         sample: None,
                         intervals: flush_intervals,
-                        segment_elapsed: None,
+                        segment_timings: None,
                     }))
                     .await;
             }
@@ -188,21 +202,24 @@ impl SegmenterWorker {
         }
     }
 
-    fn handle_sample(&mut self, sample: DetectionSample) -> SegmenterEvent {
+    fn handle_sample(
+        &mut self,
+        sample: DetectionSample,
+        timings: &mut SegmentTimings,
+    ) -> SegmenterEvent {
         let frame = self.build_frame(&sample);
         self.last_history = Some(frame.history.clone());
 
         let mut intervals = Vec::new();
         let roi_count = frame.regions.len();
+        let comparator = self.comparator.clone();
+        let comparator_ref: &dyn SubtitleComparator = &*comparator;
         let mut roi_features: Vec<Option<FeatureBlob>> = Vec::with_capacity(roi_count);
         for region in &frame.regions {
-            let features = self.comparator.extract(&frame.yplane, &region.roi);
+            let features = timed_extract(timings, comparator_ref, &frame.yplane, &region.roi);
             roi_features.push(features);
         }
         let mut roi_used: Vec<bool> = vec![false; roi_count];
-
-        let comparator = self.comparator.clone();
-        let comparator_ref: &dyn SubtitleComparator = &*comparator;
 
         // Step 1: try to match existing active subtitles.
         let mut idx = 0;
@@ -213,6 +230,7 @@ impl SegmenterWorker {
                 &frame,
                 &roi_features,
                 &mut roi_used,
+                timings,
             );
             if matched {
                 self.active[idx].consecutive_missing = 0;
@@ -222,7 +240,7 @@ impl SegmenterWorker {
                 self.active[idx].consecutive_missing = miss;
                 if miss > self.k_off {
                     let active = self.active.remove(idx);
-                    let interval = self.close_active(active);
+                    let interval = self.close_active(active, timings);
                     intervals.push(interval);
                 } else {
                     idx += 1;
@@ -239,13 +257,14 @@ impl SegmenterWorker {
                 &frame,
                 &roi_features,
                 &mut roi_used,
+                timings,
             );
             if hit {
                 let pending = &mut self.pending[pidx];
                 pending.hit_count = pending.hit_count.saturating_add(1);
                 if pending.hit_count >= self.k_on {
                     let pending = self.pending.remove(pidx);
-                    let active = self.promote_pending(pending);
+                    let active = self.promote_pending(pending, timings);
                     self.active.push(active);
                 } else {
                     pidx += 1;
@@ -279,7 +298,7 @@ impl SegmenterWorker {
         SegmenterEvent {
             sample: Some(sample),
             intervals,
-            segment_elapsed: None,
+            segment_timings: None,
         }
     }
 
@@ -306,9 +325,13 @@ impl SegmenterWorker {
         }
     }
 
-    fn promote_pending(&self, pending: PendingSubtitle) -> ActiveSubtitle {
+    fn promote_pending(
+        &self,
+        pending: PendingSubtitle,
+        timings: &mut SegmentTimings,
+    ) -> ActiveSubtitle {
         let (start_frame, start_time, template_yplane, template_features) =
-            self.refine_start(&pending);
+            self.refine_start(&pending, timings);
         ActiveSubtitle {
             roi: pending.roi,
             template_yplane,
@@ -324,6 +347,7 @@ impl SegmenterWorker {
     fn refine_start(
         &self,
         pending: &PendingSubtitle,
+        timings: &mut SegmentTimings,
     ) -> (u64, Duration, Arc<YPlaneFrame>, FeatureBlob) {
         let mut best_frame = pending.first_frame;
         let mut best_time = pending.first_time;
@@ -335,13 +359,20 @@ impl SegmenterWorker {
                 continue;
             }
             let frame_index = record.frame_index;
-            let Some(candidate_features) = self.comparator.extract(record.frame(), &pending.roi)
-            else {
+            let Some(candidate_features) = timed_extract(
+                timings,
+                self.comparator.as_ref(),
+                record.frame(),
+                &pending.roi,
+            ) else {
                 continue;
             };
-            let report = self
-                .comparator
-                .compare(&pending.template_features, &candidate_features);
+            let report = timed_compare(
+                timings,
+                self.comparator.as_ref(),
+                &pending.template_features,
+                &candidate_features,
+            );
             if report.same_segment {
                 best_frame = frame_index;
                 if let Some(ts) = record.frame().timestamp() {
@@ -356,9 +387,13 @@ impl SegmenterWorker {
         (best_frame, best_time, best_yplane, best_features)
     }
 
-    fn close_active(&self, active: ActiveSubtitle) -> SubtitleInterval {
+    fn close_active(
+        &self,
+        active: ActiveSubtitle,
+        timings: &mut SegmentTimings,
+    ) -> SubtitleInterval {
         let (end_frame, end_time) = if let Some(history) = &self.last_history {
-            self.refine_end(&active, history)
+            self.refine_end(&active, history, timings)
         } else {
             (active.last_frame, active.last_time)
         };
@@ -373,7 +408,12 @@ impl SegmenterWorker {
         }
     }
 
-    fn refine_end(&self, active: &ActiveSubtitle, history: &FrameHistory) -> (u64, Duration) {
+    fn refine_end(
+        &self,
+        active: &ActiveSubtitle,
+        history: &FrameHistory,
+        timings: &mut SegmentTimings,
+    ) -> (u64, Duration) {
         let mut best_frame = active.last_frame;
         let mut best_time = active.last_time;
 
@@ -381,13 +421,20 @@ impl SegmenterWorker {
             if record.frame_index <= active.last_frame {
                 continue;
             }
-            let Some(candidate_features) = self.comparator.extract(record.frame(), &active.roi)
-            else {
+            let Some(candidate_features) = timed_extract(
+                timings,
+                self.comparator.as_ref(),
+                record.frame(),
+                &active.roi,
+            ) else {
                 continue;
             };
-            let report = self
-                .comparator
-                .compare(&active.template_features, &candidate_features);
+            let report = timed_compare(
+                timings,
+                self.comparator.as_ref(),
+                &active.template_features,
+                &candidate_features,
+            );
             if report.same_segment {
                 best_frame = record.frame_index;
                 if let Some(ts) = record.frame().timestamp() {
@@ -399,15 +446,41 @@ impl SegmenterWorker {
         (best_frame, best_time)
     }
 
-    fn flush_active_segments(&mut self) -> Vec<SubtitleInterval> {
+    fn flush_active_segments(&mut self, timings: &mut SegmentTimings) -> Vec<SubtitleInterval> {
         let mut intervals = Vec::new();
         while let Some(active) = self.active.pop() {
-            let interval = self.close_active(active);
+            let interval = self.close_active(active, timings);
             intervals.push(interval);
         }
         self.pending.clear();
         intervals
     }
+}
+
+fn timed_extract(
+    timings: &mut SegmentTimings,
+    comparator: &dyn SubtitleComparator,
+    frame: &YPlaneFrame,
+    roi: &RoiConfig,
+) -> Option<FeatureBlob> {
+    let started = std::time::Instant::now();
+    let result = comparator.extract(frame, roi);
+    timings.roi_extracts = timings.roi_extracts.saturating_add(1);
+    timings.extract = timings.extract.saturating_add(started.elapsed());
+    result
+}
+
+fn timed_compare(
+    timings: &mut SegmentTimings,
+    comparator: &dyn SubtitleComparator,
+    reference: &FeatureBlob,
+    candidate: &FeatureBlob,
+) -> subtitle_fast_comparator::pipeline::ComparisonReport {
+    let started = std::time::Instant::now();
+    let report = comparator.compare(reference, candidate);
+    timings.comparisons = timings.comparisons.saturating_add(1);
+    timings.compare = timings.compare.saturating_add(started.elapsed());
+    report
 }
 
 fn region_to_roi(region: &DetectionRegion, frame: &YPlaneFrame) -> RoiConfig {
@@ -456,6 +529,7 @@ fn match_active(
     frame: &SubtitleFrame,
     roi_features: &[Option<FeatureBlob>],
     roi_used: &mut [bool],
+    timings: &mut SegmentTimings,
 ) -> bool {
     for (idx, region) in frame.regions.iter().enumerate() {
         if roi_used.get(idx).copied().unwrap_or(false) {
@@ -467,7 +541,7 @@ fn match_active(
         let Some(candidate) = roi_features.get(idx).and_then(|f| f.clone()) else {
             continue;
         };
-        let report = comparator.compare(&active.template_features, &candidate);
+        let report = timed_compare(timings, comparator, &active.template_features, &candidate);
         if report.same_segment {
             active.roi = region.roi;
             active.last_time = frame.time;
@@ -487,6 +561,7 @@ fn match_pending(
     frame: &SubtitleFrame,
     roi_features: &[Option<FeatureBlob>],
     roi_used: &mut [bool],
+    timings: &mut SegmentTimings,
 ) -> bool {
     for (idx, region) in frame.regions.iter().enumerate() {
         if roi_used.get(idx).copied().unwrap_or(false) {
@@ -498,7 +573,7 @@ fn match_pending(
         let Some(candidate) = roi_features.get(idx).and_then(|f| f.clone()) else {
             continue;
         };
-        let report = comparator.compare(&pending.template_features, &candidate);
+        let report = timed_compare(timings, comparator, &pending.template_features, &candidate);
         if report.same_segment {
             if let Some(slot) = roi_used.get_mut(idx) {
                 *slot = true;

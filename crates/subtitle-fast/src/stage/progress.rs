@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use super::StreamBundle;
 use super::detector::{DetectionSample, DetectorError};
-use super::segmenter::{SegmenterError, SegmenterResult};
+use super::segmenter::{SegmentTimings, SegmenterError, SegmenterResult};
 
 const PROGRESS_CHANNEL_CAPACITY: usize = 4;
 
@@ -62,7 +62,8 @@ struct ProgressMonitor {
     started: Instant,
     finished: bool,
     avg_detection_ms: Option<f64>,
-    avg_segment_ms: Option<f64>,
+    segment_frames: u64,
+    segment_total: Duration,
 }
 
 impl ProgressMonitor {
@@ -89,7 +90,8 @@ impl ProgressMonitor {
             started: Instant::now(),
             finished: false,
             avg_detection_ms: None,
-            avg_segment_ms: None,
+            segment_frames: 0,
+            segment_total: Duration::ZERO,
         }
     }
 
@@ -99,7 +101,7 @@ impl ProgressMonitor {
                 if let Some(sample) = &event.sample {
                     self.observe_sample(sample);
                 }
-                self.observe_segment_time(event.segment_elapsed);
+                self.observe_segment_time(event.segment_timings);
             }
             Err(err) => self.fail_with_reason(&describe_error(err)),
         }
@@ -128,16 +130,12 @@ impl ProgressMonitor {
         });
     }
 
-    fn observe_segment_time(&mut self, elapsed: Option<Duration>) {
-        let Some(elapsed) = elapsed else {
+    fn observe_segment_time(&mut self, timings: Option<SegmentTimings>) {
+        let Some(timings) = timings else {
             return;
         };
-        let millis = elapsed.as_secs_f64() * 1000.0;
-        let alpha = 0.1;
-        self.avg_segment_ms = Some(match self.avg_segment_ms {
-            Some(current) => (1.0 - alpha) * current + alpha * millis,
-            None => millis,
-        });
+        self.segment_frames = self.segment_frames.saturating_add(timings.frames);
+        self.segment_total = self.segment_total.saturating_add(timings.total);
     }
 
     fn fail_with_reason(&mut self, reason: &str) {
@@ -186,10 +184,12 @@ impl ProgressMonitor {
                 .avg_detection_ms
                 .map(|value| format!("{value:.1} ms"))
                 .unwrap_or_else(|| "-- ms".to_string());
-            let seg = self
-                .avg_segment_ms
-                .map(|value| format!("{value:.1} ms"))
-                .unwrap_or_else(|| "-- ms".to_string());
+            let seg = if self.segment_frames > 0 {
+                let avg_ms = self.segment_total.as_secs_f64() * 1000.0 / self.segment_frames as f64;
+                format!("{avg_ms:.1} ms")
+            } else {
+                "-- ms".to_string()
+            };
             self.bar
                 .set_message(format!("{rate:.1} fps • det {det} • seg {seg}"));
         }
