@@ -211,199 +211,129 @@ fn dt_chamfer3x4_clipped(
     clip_px: f32,
     scratch: &mut Scratch,
 ) -> Vec<f32> {
-    let len = width.wrapping_mul(height);
-    if len == 0 || mask_ones_is_fg.is_empty() {
-        return Vec::new();
-    }
+    // —— 基本健壮性（避免 usize 乘法溢出 & 空图）——
+    let len = match width.checked_mul(height) {
+        Some(v) if v > 0 && !mask_ones_is_fg.is_empty() => v,
+        _ => return Vec::new(),
+    };
     debug_assert_eq!(mask_ones_is_fg.len(), len);
 
-    let inf = u16::MAX / 4;
+    // —— 单位换算（u16 安全范围内，避免加权溢出）——
+    let inf: u16 = u16::MAX / 4;
     let clip_units = ((clip_px * 3.0).ceil() as u16).min(inf);
-    scratch.ensure_dt_capacity(len);
-    let d = &mut scratch.dt_u16[..len];
-    d.iter_mut()
-        .zip(mask_ones_is_fg.iter())
-        .for_each(|(dist, &mask)| {
-            *dist = if mask > 0 { 0 } else { clip_units };
-        });
 
-    let stride = width;
-    let ptr = d.as_mut_ptr();
+    // —— 带边界的工作区（宽高各 +2），边界全部填 clip_units —— 
+    let pw = width + 2;
+    let ph = height + 2;
+    let plen = pw * ph;
 
+    // 尽量复用 scratch；若没有，临时开辟
+    scratch.ensure_dt_capacity(plen);
+    // 上面假设 ensure_dt_capacity 能保证 dt_u16 至少 plen 容量；
+    // 若你的 Scratch 只有 len 容量，可以换成单独的 dt_u16_pad。
+    let d: &mut [u16] = &mut scratch.dt_u16[..plen];
+    d.fill(clip_units);
+
+    // 将输入 mask 写入内圈：前景->0，背景->clip_units
+    {
+        // 目标内圈起点 (1,1)
+        let mut dst_row = 1 * pw + 1;
+        let mut src_idx = 0usize;
+
+        for _y in 0..height {
+            // 当前行的内圈切片
+            let row_dst = &mut d[dst_row .. dst_row + width];
+            // 写入（分支很轻：对齐的线性写）
+            for (dst, &m) in row_dst.iter_mut().zip(&mask_ones_is_fg[src_idx .. src_idx + width]) {
+                *dst = if m > 0 { 0 } else { clip_units };
+            }
+            src_idx += width;
+            dst_row += pw;
+        }
+    }
+
+    // —— 两遍扫描：分支全去，偏移常量化 —— 
     unsafe {
-        for y in 0..height {
-            let row_start = y * stride;
+        let ptr = d.as_mut_ptr();
+        let stride = pw as isize;
 
-            if y == 0 {
-                for x in 1..width {
-                    let i = row_start + x;
-                    let mut v = *ptr.add(i);
-                    let left = *ptr.add(i - 1) + 3;
-                    if left < v {
-                        v = left;
-                    }
-                    *ptr.add(i) = v;
-                }
-                continue;
-            }
+        // Forward pass：从 (1,1) -> (height,width)
+        {
+            // 行起点指向内圈第一行的第一个元素
+            let mut row_ptr = ptr.add(pw + 1);
+            for _ in 0..height {
+                let mut p = row_ptr;
+                for _ in 0..width {
+                    let mut v = *p;
+                    // 常量偏移：左、上、左上、右上
+                    let left       = *p.offset(-1)            + 3;
+                    let up         = *p.offset(-stride)       + 3;
+                    let up_left    = *p.offset(-stride - 1)   + 4;
+                    let up_right   = *p.offset(-stride + 1)   + 4;
 
-            let i_start = row_start;
-            let mut v_start = *ptr.add(i_start);
-            let up = *ptr.add(i_start - stride) + 3;
-            if up < v_start {
-                v_start = up;
-            }
-            if width > 1 {
-                let up_right = *ptr.add(i_start - stride + 1) + 4;
-                if up_right < v_start {
-                    v_start = up_right;
-                }
-            }
-            *ptr.add(i_start) = v_start;
+                    // 分支最小化（通常会编译成条件移动/向量 min）
+                    if left < v    { v = left; }
+                    if up < v      { v = up; }
+                    if up_left < v { v = up_left; }
+                    if up_right < v{ v = up_right; }
 
-            if width > 2 {
-                let mut p_curr = ptr.add(row_start + 1);
-                let off_left = -1isize;
-                let off_up = -(stride as isize);
-                let off_up_left = off_up - 1;
-                let off_up_right = off_up + 1;
-                for _ in 1..width - 1 {
-                    let mut v = *p_curr;
-                    let left = *p_curr.offset(off_left) + 3;
-                    if left < v {
-                        v = left;
-                    }
-                    let up = *p_curr.offset(off_up) + 3;
-                    if up < v {
-                        v = up;
-                    }
-                    let up_left = *p_curr.offset(off_up_left) + 4;
-                    if up_left < v {
-                        v = up_left;
-                    }
-                    let up_right = *p_curr.offset(off_up_right) + 4;
-                    if up_right < v {
-                        v = up_right;
-                    }
-                    *p_curr = v;
-                    p_curr = p_curr.add(1);
+                    *p = v;
+                    p = p.add(1);
                 }
-            }
-
-            if width > 1 {
-                let i_end = row_start + width - 1;
-                let mut v_end = *ptr.add(i_end);
-                let left = *ptr.add(i_end - 1) + 3;
-                if left < v_end {
-                    v_end = left;
-                }
-                let up = *ptr.add(i_end - stride) + 3;
-                if up < v_end {
-                    v_end = up;
-                }
-                let up_left = *ptr.add(i_end - stride - 1) + 4;
-                if up_left < v_end {
-                    v_end = up_left;
-                }
-                *ptr.add(i_end) = v_end;
+                row_ptr = row_ptr.add(pw);
             }
         }
 
-        for y in (0..height).rev() {
-            let row_start = y * stride;
+        // Backward pass：从 (height,width) -> (1,1)
+        {
+            // 行起点指向内圈最后一行的最后一个元素
+            let mut row_ptr = ptr.add((ph - 2) * pw + (pw - 2));
+            for _ in 0..height {
+                let mut p = row_ptr;
+                for _ in 0..width {
+                    let mut v = *p;
+                    // 常量偏移：右、下、右下、左下
+                    let right      = *p.offset( 1)            + 3;
+                    let down       = *p.offset( stride)       + 3;
+                    let down_right = *p.offset( stride + 1)   + 4;
+                    let down_left  = *p.offset( stride - 1)   + 4;
 
-            if y == height - 1 {
-                if width > 1 {
-                    for x in (0..width - 1).rev() {
-                        let i = row_start + x;
-                        let mut v = *ptr.add(i);
-                        let right = *ptr.add(i + 1) + 3;
-                        if right < v {
-                            v = right;
-                        }
-                        *ptr.add(i) = v.min(clip_units);
-                    }
-                }
-                let last = row_start + width - 1;
-                let v_last = (*ptr.add(last)).min(clip_units);
-                *ptr.add(last) = v_last;
-                continue;
-            }
+                    if right < v      { v = right; }
+                    if down < v       { v = down; }
+                    if down_right < v { v = down_right; }
+                    if down_left < v  { v = down_left; }
 
-            if width > 0 {
-                let i_end = row_start + width - 1;
-                let mut v_end = *ptr.add(i_end);
-                let down = *ptr.add(i_end + stride) + 3;
-                if down < v_end {
-                    v_end = down;
-                }
-                if width > 1 {
-                    let down_left = *ptr.add(i_end + stride - 1) + 4;
-                    if down_left < v_end {
-                        v_end = down_left;
-                    }
-                }
-                *ptr.add(i_end) = v_end.min(clip_units);
-            }
+                    // 仅回扫阶段做一次裁剪，减少无效传播
+                    if v > clip_units { v = clip_units; }
+                    *p = v;
 
-            if width > 2 {
-                let mut p_curr = ptr.add(row_start + width - 2);
-                let off_right = 1isize;
-                let off_down = stride as isize;
-                let off_down_right = off_down + 1;
-                let off_down_left = off_down - 1;
-                for _ in (1..width - 1).rev() {
-                    let mut v = *p_curr;
-                    let right = *p_curr.offset(off_right) + 3;
-                    if right < v {
-                        v = right;
-                    }
-                    let down = *p_curr.offset(off_down) + 3;
-                    if down < v {
-                        v = down;
-                    }
-                    let down_right = *p_curr.offset(off_down_right) + 4;
-                    if down_right < v {
-                        v = down_right;
-                    }
-                    let down_left = *p_curr.offset(off_down_left) + 4;
-                    if down_left < v {
-                        v = down_left;
-                    }
-                    *p_curr = if v > clip_units { clip_units } else { v };
-                    p_curr = p_curr.sub(1);
+                    p = p.sub(1);
                 }
-            }
-
-            if width > 1 {
-                let i_start = row_start;
-                let mut v_start = *ptr.add(i_start);
-                let right = *ptr.add(i_start + 1) + 3;
-                if right < v_start {
-                    v_start = right;
-                }
-                let down = *ptr.add(i_start + stride) + 3;
-                if down < v_start {
-                    v_start = down;
-                }
-                let down_right = *ptr.add(i_start + stride + 1) + 4;
-                if down_right < v_start {
-                    v_start = down_right;
-                }
-                *ptr.add(i_start) = v_start.min(clip_units);
+                row_ptr = row_ptr.sub(pw);
             }
         }
     }
 
-    let inv3 = 1.0 / 3.0;
-    let mut out = Vec::with_capacity(len);
-    unsafe {
-        out.set_len(len);
-        let out_ptr: *mut f32 = out.as_mut_ptr();
-        for i in 0..len {
-            *out_ptr.add(i) = (*d.get_unchecked(i) as f32) * inv3;
+    // —— 导出到 f32（一次线性 pass；如需进一步压榨，可放入 scratch 复用）——
+    let inv3 = 1.0f32 / 3.0f32;
+    let mut out = vec![0.0f32; len];
+
+    // 仅拷出内圈（去掉哨兵边）
+    {
+        let mut src_row = 1 * pw + 1;
+        let mut dst_row = 0usize;
+        for _ in 0..height {
+            let src = &d[src_row .. src_row + width];
+            let dst = &mut out[dst_row .. dst_row + width];
+            for i in 0..width {
+                // u16 -> f32，再映射回原始像素单位（除以 3）
+                dst[i] = (src[i] as f32) * inv3;
+            }
+            src_row += pw;
+            dst_row += width;
         }
     }
+
     out
 }
 
