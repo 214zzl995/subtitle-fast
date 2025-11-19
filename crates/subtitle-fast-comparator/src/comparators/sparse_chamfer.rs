@@ -203,137 +203,132 @@ fn percentile70_histogram(magnitude: &[f32], mask: Option<&[u8]>, hist: &mut [u3
     vmax
 }
 
-#[inline]
-fn dt_chamfer3x4_clipped(
+#[inline(always)]
+fn dt_euclidean_clipped(
     mask_ones_is_fg: &[u8],
     width: usize,
     height: usize,
     clip_px: f32,
     scratch: &mut Scratch,
 ) -> Vec<f32> {
-    // —— 基本健壮性（避免 usize 乘法溢出 & 空图）——
+    // --- 基本健壮性 ---
     let len = match width.checked_mul(height) {
-        Some(v) if v > 0 && !mask_ones_is_fg.is_empty() => v,
+        Some(v) if v > 0 && mask_ones_is_fg.len() == v => v,
         _ => return Vec::new(),
     };
-    debug_assert_eq!(mask_ones_is_fg.len(), len);
 
-    // —— 单位换算（u16 安全范围内，避免加权溢出）——
-    let inf: u16 = u16::MAX / 4;
-    let clip_units = ((clip_px * 3.0).ceil() as u16).min(inf);
+    let clip = clip_px.max(0.0);
+    let fg_count = mask_ones_is_fg.iter().filter(|&&v| v > 0).count();
+    if fg_count == 0 {
+        return vec![clip; len];
+    }
 
-    // —— 带边界的工作区（宽高各 +2），边界全部填 clip_units —— 
-    let pw = width + 2;
-    let ph = height + 2;
-    let plen = pw * ph;
+    // --- 小 ROI / 小半径：强制走 stencil ---
+    // 半径（整数像素），向上取整并+1，确保覆盖
+    let r: i32 = clip.ceil() as i32;
+    let r2: i32 = r.saturating_mul(r);
 
-    // 尽量复用 scratch；若没有，临时开辟
-    scratch.ensure_dt_capacity(plen);
-    // 上面假设 ensure_dt_capacity 能保证 dt_u16 至少 plen 容量；
-    // 若你的 Scratch 只有 len 容量，可以换成单独的 dt_u16_pad。
-    let d: &mut [u16] = &mut scratch.dt_u16[..plen];
-    d.fill(clip_units);
+    // dist2：初始化为 clip^2，避免传播无意义大值；最终会 sqrt 后再 clip。
+    scratch.ensure_dt_i32_capacity(len);
+    let dist2: &mut [i32] = &mut scratch.dt_i32[..len];
+    let clip2_i32: i32 = (clip.ceil() as i32).saturating_mul(clip.ceil() as i32);
+    dist2.fill(clip2_i32);
 
-    // 将输入 mask 写入内圈：前景->0，背景->clip_units
-    {
-        // 目标内圈起点 (1,1)
-        let mut dst_row = 1 * pw + 1;
-        let mut src_idx = 0usize;
+    // --- 预计算表：dx^2, 每个 |dy| 对应的 x 半径 xr(|dy|) ---
+    // 这些表都非常小（<= 9~11），可以放栈上；如需零分配可放 Scratch。
+    let max_r = r as usize;
+    let mut dx2 = [0i32; 64]; // 够用：R 一般 <= 8
+    let mut xr_by_dy = [0i32; 64]; // 每个 |dy| 的水平半径
+    for i in 0..=max_r {
+        dx2[i] = (i as i32) * (i as i32);
+    }
+    for ady in 0..=max_r {
+        // xr = floor(sqrt(r^2 - dy^2))
+        let rem = r2 - (ady as i32) * (ady as i32);
+        xr_by_dy[ady] = if rem <= 0 {
+            0
+        } else {
+            (rem as f32).sqrt().floor() as i32
+        };
+    }
 
-        for _y in 0..height {
-            // 当前行的内圈切片
-            let row_dst = &mut d[dst_row .. dst_row + width];
-            // 写入（分支很轻：对齐的线性写）
-            for (dst, &m) in row_dst.iter_mut().zip(&mask_ones_is_fg[src_idx .. src_idx + width]) {
-                *dst = if m > 0 { 0 } else { clip_units };
-            }
-            src_idx += width;
-            dst_row += pw;
+    // --- 收集前景像素索引（小 ROI 下这步成本很低） ---
+    // 可复用 Scratch 的临时缓冲避免分配：这里直接小 Vec 即可。
+    let mut fg_idx = Vec::with_capacity(fg_count.min(2048));
+    for (i, &m) in mask_ones_is_fg.iter().enumerate() {
+        if m > 0 {
+            fg_idx.push(i);
         }
     }
 
-    // —— 两遍扫描：分支全去，偏移常量化 —— 
+    // --- 核心：对每个前景点，用圆盘 stencil 更新 dist2 ---
     unsafe {
-        let ptr = d.as_mut_ptr();
-        let stride = pw as isize;
+        let w = width as i32;
+        let h = height as i32;
+        let dptr = dist2.as_mut_ptr();
 
-        // Forward pass：从 (1,1) -> (height,width)
-        {
-            // 行起点指向内圈第一行的第一个元素
-            let mut row_ptr = ptr.add(pw + 1);
-            for _ in 0..height {
-                let mut p = row_ptr;
-                for _ in 0..width {
-                    let mut v = *p;
-                    // 常量偏移：左、上、左上、右上
-                    let left       = *p.offset(-1)            + 3;
-                    let up         = *p.offset(-stride)       + 3;
-                    let up_left    = *p.offset(-stride - 1)   + 4;
-                    let up_right   = *p.offset(-stride + 1)   + 4;
+        for &idx in &fg_idx {
+            let x0 = (idx % width) as i32;
+            let y0 = (idx / width) as i32;
 
-                    // 分支最小化（通常会编译成条件移动/向量 min）
-                    if left < v    { v = left; }
-                    if up < v      { v = up; }
-                    if up_left < v { v = up_left; }
-                    if up_right < v{ v = up_right; }
+            // 遍历 dy = -r..=r
+            let mut dy = -r;
+            while dy <= r {
+                let y = y0 + dy;
+                if (0..h).contains(&y) {
+                    let ady = (if dy < 0 { -dy } else { dy }) as usize;
+                    let xr = xr_by_dy[ady];
+                    if xr > 0 {
+                        // 本行更新区间 [xL, xR]
+                        let mut x_l = x0 - xr;
+                        let mut x_r = x0 + xr;
+                        if x_l < 0 {
+                            x_l = 0;
+                        }
+                        if x_r >= w {
+                            x_r = w - 1;
+                        }
+                        if x_l <= x_r {
+                            // 行首指针
+                            let row_ptr = dptr.add((y as usize) * width);
 
-                    *p = v;
-                    p = p.add(1);
+                            // 常量部分：dy^2
+                            let dy2 = (dy as i32) * (dy as i32);
+
+                            // 从 xL 到 xR 线性扫，利用预计算 dx^2 表
+                            let mut x = x_l;
+                            while x <= x_r {
+                                let adx = (x - x0).abs() as usize;
+                                let v = dy2 + dx2[adx];
+                                let cell = row_ptr.add(x as usize);
+                                // cell = min(cell, v)，避免 bounds-check
+                                let old = *cell;
+                                *cell = if v < old { v } else { old };
+                                x += 1;
+                            }
+                        }
+                    } else {
+                        // xr == 0，只更新 x0（若在边界内）
+                        if (0..w).contains(&x0) {
+                            let dy2 = (dy as i32) * (dy as i32);
+                            let cell = dptr.add((y as usize) * width + (x0 as usize));
+                            let old = *cell;
+                            let v = dy2; // dx=0
+                            *cell = if v < old { v } else { old };
+                        }
+                    }
                 }
-                row_ptr = row_ptr.add(pw);
-            }
-        }
-
-        // Backward pass：从 (height,width) -> (1,1)
-        {
-            // 行起点指向内圈最后一行的最后一个元素
-            let mut row_ptr = ptr.add((ph - 2) * pw + (pw - 2));
-            for _ in 0..height {
-                let mut p = row_ptr;
-                for _ in 0..width {
-                    let mut v = *p;
-                    // 常量偏移：右、下、右下、左下
-                    let right      = *p.offset( 1)            + 3;
-                    let down       = *p.offset( stride)       + 3;
-                    let down_right = *p.offset( stride + 1)   + 4;
-                    let down_left  = *p.offset( stride - 1)   + 4;
-
-                    if right < v      { v = right; }
-                    if down < v       { v = down; }
-                    if down_right < v { v = down_right; }
-                    if down_left < v  { v = down_left; }
-
-                    // 仅回扫阶段做一次裁剪，减少无效传播
-                    if v > clip_units { v = clip_units; }
-                    *p = v;
-
-                    p = p.sub(1);
-                }
-                row_ptr = row_ptr.sub(pw);
+                dy += 1;
             }
         }
     }
 
-    // —— 导出到 f32（一次线性 pass；如需进一步压榨，可放入 scratch 复用）——
-    let inv3 = 1.0f32 / 3.0f32;
+    // --- 输出：sqrt + clip（小 ROI 用标量就足够快） ---
     let mut out = vec![0.0f32; len];
-
-    // 仅拷出内圈（去掉哨兵边）
-    {
-        let mut src_row = 1 * pw + 1;
-        let mut dst_row = 0usize;
-        for _ in 0..height {
-            let src = &d[src_row .. src_row + width];
-            let dst = &mut out[dst_row .. dst_row + width];
-            for i in 0..width {
-                // u16 -> f32，再映射回原始像素单位（除以 3）
-                dst[i] = (src[i] as f32) * inv3;
-            }
-            src_row += pw;
-            dst_row += width;
-        }
+    for (o, &d2) in out.iter_mut().zip(dist2.iter()) {
+        // d2 已经被限制在 clip^2 内（初始就是 clip^2，更新只会更小）
+        *o = (d2 as f32).sqrt();
     }
-
     out
 }
 
@@ -360,7 +355,7 @@ struct Scratch {
     edges: Vec<u8>,
     magnitude: Vec<f32>,
     hist: [u32; 256],
-    dt_u16: Vec<u16>,
+    dt_i32: Vec<i32>,
 }
 
 impl Scratch {
@@ -372,7 +367,7 @@ impl Scratch {
             edges: Vec::new(),
             magnitude: Vec::new(),
             hist: [0; 256],
-            dt_u16: Vec::new(),
+            dt_i32: Vec::new(),
         }
     }
 
@@ -391,9 +386,9 @@ impl Scratch {
         }
     }
 
-    fn ensure_dt_capacity(&mut self, len: usize) {
-        if self.dt_u16.len() < len {
-            self.dt_u16.resize(len, u16::MAX / 4);
+    fn ensure_dt_i32_capacity(&mut self, len: usize) {
+        if self.dt_i32.len() < len {
+            self.dt_i32.resize(len, 0);
         }
     }
 }
@@ -553,8 +548,8 @@ impl SparseChamferComparator {
                 scratch.edges = edges;
                 return None;
             }
-            let distance_map =
-                dt_chamfer3x4_clipped(&edges, patch.width, patch.height, CLIP_PX, scratch);
+            let distance_map: Vec<f32> =
+                dt_euclidean_clipped(&edges, patch.width, patch.height, CLIP_PX, scratch);
             let area = mask.iter().map(|&v| v as usize).sum::<usize>();
             let stroke_width = if edge_count > 0 {
                 (2.0 * area as f32) / (edge_count as f32)
