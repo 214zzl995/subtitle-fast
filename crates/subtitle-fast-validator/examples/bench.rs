@@ -10,14 +10,18 @@ use subtitle_fast_decoder::YPlaneFrame;
 use subtitle_fast_validator::subtitle_detection::projection_band::ProjectionBandDetector;
 use subtitle_fast_validator::subtitle_detection::{
     IntegralBandDetector, LumaBandConfig, RoiConfig, SubtitleDetectionConfig,
-    SubtitleDetectionError, SubtitleDetector, VisionTextDetector,
+    SubtitleDetectionError, SubtitleDetector, SubtitleDetectorKind, VisionTextDetector,
 };
 
 const TARGET: u8 = 235;
 const DELTA: u8 = 12;
 const PRESETS: &[(usize, usize)] = &[(1920, 1080), (1920, 824)];
 const YUV_DIR: &str = "./demo/decoder/yuv";
-const DETECTORS: &[&str] = &["integral", "projection", "vision"];
+const DETECTORS: &[SubtitleDetectorKind] = &[
+    SubtitleDetectorKind::IntegralBand,
+    SubtitleDetectorKind::ProjectionBand,
+    SubtitleDetectorKind::MacVision,
+];
 
 fn main() -> Result<(), Box<dyn Error>> {
     let yuv_dir = PathBuf::from(YUV_DIR);
@@ -36,14 +40,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("no demo frames processed".into());
     }
 
-    let detectors: Vec<DetectorKind> = DETECTORS
-        .iter()
-        .map(|name| {
-            DetectorKind::from_str(name).unwrap_or_else(|| {
-                panic!("unknown detector '{name}' in DETECTORS constant");
-            })
-        })
-        .collect();
+    let detectors: Vec<SubtitleDetectorKind> = DETECTORS.to_vec();
 
     let total_frames = frames.len() as u64;
     let multi = MultiProgress::new();
@@ -61,10 +58,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         let bar = multi.add(ProgressBar::new(total_frames));
         bar.set_style(style.clone());
-        bar.set_prefix(kind.name().to_string());
+        bar.set_prefix(kind.as_str().to_string());
         bar.set_message("0.000");
 
-        let handle = thread::spawn(move || -> Result<(DetectorKind, DetectorStats, ProjectionPerf), Box<dyn Error + Send + Sync>> {
+        let handle = thread::spawn(move || -> Result<(SubtitleDetectorKind, DetectorStats, ProjectionPerf), Box<dyn Error + Send + Sync>> {
             let mut stats = DetectorStats::default();
             let mut projection_perf = ProjectionPerf::default();
 
@@ -95,13 +92,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                     delta: DELTA,
                 };
 
-                let detector = kind.build(&config)?;
+                let detector = build_bench_detector(kind, &config)?;
                 let start = Instant::now();
                 let _result = detector.detect(&frame)?;
                 let duration = start.elapsed();
 
                 stats.record(duration);
-                if matches!(kind, DetectorKind::Projection) {
+                if matches!(kind, SubtitleDetectorKind::ProjectionBand) {
                     projection_perf.record(duration);
                 }
 
@@ -127,9 +124,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 if detector_stats.frames > 0 {
                     any_processed = true;
                 }
-                stats.insert(kind.name(), detector_stats);
+                stats.insert(kind.as_str(), detector_stats);
 
-                if matches!(kind, DetectorKind::Projection) {
+                if matches!(kind, SubtitleDetectorKind::ProjectionBand) {
                     projection_perf.total += worker_projection.total;
                     projection_perf.frames += worker_projection.frames;
                 }
@@ -149,10 +146,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("\nBenchmark summary over {total_frames} frames:");
     for detector_kind in &detectors {
-        if let Some(stat) = stats.get(detector_kind.name()) {
+        if let Some(stat) = stats.get(detector_kind.as_str()) {
             println!(
                 "{:>12}: avg={:.3}ms frames={}",
-                detector_kind.name(),
+                detector_kind.as_str(),
                 stat.avg_ms(),
                 stat.frames,
             );
@@ -167,43 +164,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn resolution_from_len(len: usize) -> Option<(usize, usize)> {
     PRESETS.iter().copied().find(|(w, h)| w * h == len)
-}
-
-#[derive(Clone, Copy)]
-enum DetectorKind {
-    Integral,
-    Projection,
-    Vision,
-}
-
-impl DetectorKind {
-    fn from_str(name: &str) -> Option<Self> {
-        match name {
-            "integral" => Some(Self::Integral),
-            "projection" => Some(Self::Projection),
-            "vision" => Some(Self::Vision),
-            _ => None,
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        match self {
-            Self::Integral => "integral",
-            Self::Projection => "projection",
-            Self::Vision => "vision",
-        }
-    }
-
-    fn build(
-        &self,
-        config: &SubtitleDetectionConfig,
-    ) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
-        match self {
-            Self::Integral => Ok(Box::new(IntegralBandDetector::new(config.clone())?)),
-            Self::Projection => Ok(Box::new(ProjectionBandDetector::new(config.clone())?)),
-            Self::Vision => Ok(Box::new(VisionTextDetector::new(config.clone())?)),
-        }
-    }
 }
 
 #[derive(Default)]
@@ -248,5 +208,23 @@ impl ProjectionPerf {
             "[projection][bench-perf] frames={} avg={:.3}ms",
             self.frames, avg_ms
         );
+    }
+}
+
+fn build_bench_detector(
+    kind: SubtitleDetectorKind,
+    config: &SubtitleDetectionConfig,
+) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
+    match kind {
+        SubtitleDetectorKind::IntegralBand => {
+            Ok(Box::new(IntegralBandDetector::new(config.clone())?))
+        }
+        SubtitleDetectorKind::ProjectionBand => {
+            Ok(Box::new(ProjectionBandDetector::new(config.clone())?))
+        }
+        SubtitleDetectorKind::MacVision => Ok(Box::new(VisionTextDetector::new(config.clone())?)),
+        other => Err(SubtitleDetectionError::Unsupported {
+            backend: other.as_str(),
+        }),
     }
 }
