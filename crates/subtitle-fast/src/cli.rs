@@ -9,6 +9,7 @@ pub struct CliSources {
     pub decoder_channel_capacity_from_cli: bool,
     pub detector_target_from_cli: bool,
     pub detector_delta_from_cli: bool,
+    pub comparator_from_cli: bool,
 }
 
 impl CliSources {
@@ -18,6 +19,7 @@ impl CliSources {
             decoder_channel_capacity_from_cli: value_from_cli(matches, "decoder_channel_capacity"),
             detector_target_from_cli: value_from_cli(matches, "detector_target"),
             detector_delta_from_cli: value_from_cli(matches, "detector_delta"),
+            comparator_from_cli: value_from_cli(matches, "comparator"),
         }
     }
 }
@@ -82,6 +84,10 @@ pub struct CliArgs {
     /// Override the detector delta value (0-255)
     #[arg(long = "detector-delta", value_parser = parse_u8_byte)]
     pub detector_delta: Option<u8>,
+
+    /// Subtitle comparator to use (bitset-cover, sparse-chamfer)
+    #[arg(long = "comparator")]
+    pub comparator: Option<String>,
 
     /// Output subtitle file path
     #[arg(short = 'o', long = "output")]

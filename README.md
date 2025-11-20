@@ -81,6 +81,7 @@ Key CLI flags include:
 
 - `--backend` – lock decoding to a specific backend (`mock`, `ffmpeg`, `videotoolbox`, `mft`).
 - `--detection-samples-per-second` – tune the temporal sampling budget.
+- `--comparator` – choose the subtitle comparator (`bitset-cover` default, or `sparse-chamfer` for comparison).
 - `--ocr-backend` plus `--ocr-language` flags – steer OCR behaviour.
 - `--dump-dir` and `--dump-format` – emit annotated frames for visual inspection.
 

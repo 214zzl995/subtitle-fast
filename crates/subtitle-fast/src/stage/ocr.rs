@@ -120,6 +120,11 @@ impl OcrWorker {
 
         for interval in event.intervals {
             let region = roi_to_region(&interval.roi, &interval.first_yplane);
+            if is_low_contrast_region(&interval.first_yplane, &region) {
+                timings.intervals = timings.intervals.saturating_add(1);
+                continue;
+            }
+
             let plane = LumaPlane::from_frame(&interval.first_yplane);
             let regions = [region];
             let request = OcrRequest::new(plane, &regions);
@@ -169,6 +174,72 @@ fn roi_to_region(roi: &RoiConfig, frame: &YPlaneFrame) -> OcrRegion {
         width: (right - left).max(1.0),
         height: (bottom - top).max(1.0),
     }
+}
+
+fn is_low_contrast_region(frame: &YPlaneFrame, region: &OcrRegion) -> bool {
+    let frame_w = frame.width() as usize;
+    let frame_h = frame.height() as usize;
+    if frame_w == 0 || frame_h == 0 {
+        return true;
+    }
+
+    let left = region.x.floor().clamp(0.0, frame_w as f32) as usize;
+    let top = region.y.floor().clamp(0.0, frame_h as f32) as usize;
+    let right = (region.x + region.width)
+        .ceil()
+        .clamp(left as f32, frame_w as f32) as usize;
+    let bottom = (region.y + region.height)
+        .ceil()
+        .clamp(top as f32, frame_h as f32) as usize;
+
+    let width = right.saturating_sub(left);
+    let height = bottom.saturating_sub(top);
+    if width == 0 || height == 0 {
+        return true;
+    }
+
+    let stride = frame.stride();
+    let data = frame.data();
+
+    let step_x = std::cmp::max(1, width / 32);
+    let step_y = std::cmp::max(1, height / 32);
+
+    let mut min = 255u8;
+    let mut max = 0u8;
+    let mut sum: u64 = 0;
+    let mut sum_sq: u64 = 0;
+    let mut samples: u64 = 0;
+
+    for y in (top..bottom).step_by(step_y) {
+        let row = y.saturating_mul(stride);
+        for x in (left..right).step_by(step_x) {
+            let idx = row + x;
+            if idx >= data.len() {
+                break;
+            }
+            let value = data[idx];
+            min = min.min(value);
+            max = max.max(value);
+            sum = sum.saturating_add(u64::from(value));
+            sum_sq = sum_sq.saturating_add(u64::from(value) * u64::from(value));
+            samples = samples.saturating_add(1);
+        }
+    }
+
+    if samples == 0 {
+        return true;
+    }
+
+    let range = max.saturating_sub(min);
+    if range <= 3 {
+        return true;
+    }
+
+    let mean = sum as f64 / samples as f64;
+    let variance = (sum_sq as f64 / samples as f64) - mean * mean;
+    let stddev = variance.max(0.0).sqrt();
+
+    range <= 8 && stddev < 2.0
 }
 
 #[cfg(test)]

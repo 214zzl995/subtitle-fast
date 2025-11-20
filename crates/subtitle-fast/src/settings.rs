@@ -2,9 +2,11 @@ use std::env;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use directories::ProjectDirs;
 use serde::Deserialize;
+use subtitle_fast_comparator::ComparatorKind;
 use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET};
 
 use crate::cli::{CliArgs, CliSources};
@@ -30,6 +32,7 @@ struct DetectionFileConfig {
     samples_per_second: Option<u32>,
     target: Option<u8>,
     delta: Option<u8>,
+    comparator: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -55,6 +58,7 @@ pub struct DetectionSettings {
     pub samples_per_second: u32,
     pub target: u8,
     pub delta: u8,
+    pub comparator: Option<ComparatorKind>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -230,6 +234,13 @@ fn merge(
         DEFAULT_DELTA,
     )?;
 
+    let comparator_kind = resolve_comparator_kind(
+        cli.comparator.clone(),
+        detection_cfg.comparator.clone(),
+        !sources.comparator_from_cli,
+        config_path.as_ref(),
+    )?;
+
     let decoder_channel_capacity = resolve_decoder_capacity(
         cli.decoder_channel_capacity,
         decoder_cfg.channel_capacity,
@@ -254,6 +265,7 @@ fn merge(
             samples_per_second: detection_samples_per_second,
             target: detector_target,
             delta: detector_delta,
+            comparator: comparator_kind,
         },
         decoder: decoder_settings,
         output: output_settings,
@@ -318,6 +330,37 @@ fn resolve_detector_u8(
         }
     }
     Ok(default)
+}
+
+fn resolve_comparator_kind(
+    cli_value: Option<String>,
+    file_value: Option<String>,
+    use_file: bool,
+    config_path: Option<&PathBuf>,
+) -> Result<Option<ComparatorKind>, ConfigError> {
+    let raw = match normalize_string(cli_value) {
+        Some(value) => Some(value),
+        None => {
+            if use_file {
+                normalize_string(file_value)
+            } else {
+                None
+            }
+        }
+    };
+
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+
+    match ComparatorKind::from_str(&value) {
+        Ok(kind) => Ok(Some(kind)),
+        Err(_) => Err(ConfigError::InvalidValue {
+            path: config_path.cloned(),
+            field: "comparator",
+            value,
+        }),
+    }
 }
 
 fn resolve_decoder_capacity(

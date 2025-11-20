@@ -6,6 +6,7 @@
 samples_per_second = 7
 target = 230
 delta = 12
+# comparator = "bitset-cover"
 
 [decoder]
 # backend = "ffmpeg"

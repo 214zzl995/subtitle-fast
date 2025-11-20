@@ -62,8 +62,9 @@ pub struct SegmentTimings {
 
 impl SubtitleSegmenter {
     pub fn new(settings: &DetectionSettings) -> Self {
+        let comparator_kind = settings.comparator.unwrap_or(ComparatorKind::BitsetCover);
         let comparator_settings = ComparatorSettings {
-            kind: ComparatorKind::SparseChamfer,
+            kind: comparator_kind,
             target: settings.target,
             delta: settings.delta,
         };
