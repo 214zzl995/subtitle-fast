@@ -131,7 +131,7 @@ impl SubtitleWriterWorker {
         let mut ocr_empty = 0_u64;
 
         for subtitle in event.subtitles {
-            let text = response_to_text(subtitle.response);
+            let text = response_to_text(&subtitle.response);
             if text.is_empty() {
                 ocr_empty = ocr_empty.saturating_add(1);
                 continue;
@@ -211,12 +211,12 @@ impl SubtitleWriterWorker {
     }
 }
 
-fn response_to_text(response: OcrResponse) -> String {
+fn response_to_text(response: &OcrResponse) -> String {
     if response.texts.is_empty() {
         return String::new();
     }
     let mut parts = Vec::new();
-    for entry in response.texts {
+    for entry in &response.texts {
         let trimmed = entry.text.trim();
         if trimmed.is_empty() {
             continue;
@@ -395,7 +395,7 @@ mod tests {
             OcrText::new(OcrRegion::new(0.0, 0.0, 1.0, 1.0), "   ".into()),
             OcrText::new(OcrRegion::new(0.0, 0.0, 1.0, 1.0), "world".into()),
         ]);
-        assert_eq!(response_to_text(response), "hello\nworld");
+        assert_eq!(response_to_text(&response), "hello\nworld");
     }
 
     #[test]

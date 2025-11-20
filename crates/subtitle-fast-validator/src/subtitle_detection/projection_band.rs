@@ -16,6 +16,7 @@ const MAX_BANDS: usize = 5;
 const MIN_FILL: f32 = 0.25;
 const H_GAP: usize = 80;
 const V_GAP: usize = 12;
+const MIN_REGION_AREA_RATIO: f32 = 0.0;
 const BAND_SPLIT_MIN_GAP: usize = 32;
 const BAND_SPLIT_GAP_RATIO: f32 = 0.2;
 
@@ -221,6 +222,9 @@ impl ProjectionBandDetector {
         if width == 0 || height == 0 {
             return Vec::new();
         }
+        let mut min_area_px =
+            (width as f32 * height as f32 * MIN_REGION_AREA_RATIO).ceil() as usize;
+        min_area_px = min_area_px.max(MIN_REGION_WIDTH_PX * MIN_REGION_HEIGHT_PX);
         let mut row_density = vec![0f32; height];
         let mut total_density = 0f32;
         let width_f = width.max(1) as f32;
@@ -247,7 +251,7 @@ impl ProjectionBandDetector {
             if end - start < MIN_BAND_HEIGHT {
                 continue;
             }
-            let mut band_candidates = analyze_band(mask, start..end);
+            let mut band_candidates = analyze_band(mask, start..end, min_area_px);
             candidates.append(&mut band_candidates);
         }
         candidates.sort_by(|a, b| {
@@ -281,7 +285,12 @@ impl SubtitleDetector for ProjectionBandDetector {
         gap_bridge_vertical(&mut mask, V_GAP);
         let mut local_candidates = self.find_candidates(&mask);
         if local_candidates.is_empty() {
-            local_candidates = rle_candidates(&mask);
+            let width = self.roi.width.max(1);
+            let height = self.roi.height.max(1);
+            let mut min_area_px =
+                (width as f32 * height as f32 * MIN_REGION_AREA_RATIO).ceil() as usize;
+            min_area_px = min_area_px.max(MIN_REGION_WIDTH_PX * MIN_REGION_HEIGHT_PX);
+            local_candidates = rle_candidates(&mask, min_area_px);
         }
         if local_candidates.is_empty() {
             return Ok(SubtitleDetectionResult::empty());
@@ -329,7 +338,7 @@ fn candidate_mass(candidate: &RegionCandidate) -> f32 {
     candidate.score * area as f32
 }
 
-fn analyze_band(mask: &PackedMask, band: Range<usize>) -> Vec<RegionCandidate> {
+fn analyze_band(mask: &PackedMask, band: Range<usize>, min_area_px: usize) -> Vec<RegionCandidate> {
     let width = mask.width;
     let height = band.end.saturating_sub(band.start);
     if height == 0 || height < MIN_REGION_HEIGHT_PX {
@@ -417,6 +426,18 @@ fn analyze_band(mask: &PackedMask, band: Range<usize>) -> Vec<RegionCandidate> {
             continue;
         }
         let fill = seg_ones as f32 / area as f32;
+        if area < min_area_px {
+            log_region_debug(
+                "projection",
+                "reject_small_band",
+                seg.start,
+                band.start,
+                seg_width,
+                height,
+                fill,
+            );
+            continue;
+        }
         if fill < MIN_FILL {
             continue;
         }
@@ -535,7 +556,7 @@ unsafe fn threshold_pack_row_sse2(src: &[u8], dst: &mut [u8], lo: u8, hi: u8) ->
     x
 }
 
-fn rle_candidates(mask: &PackedMask) -> Vec<RegionCandidate> {
+fn rle_candidates(mask: &PackedMask, min_area_px: usize) -> Vec<RegionCandidate> {
     let stats = connected_components(mask);
     let mut candidates = Vec::new();
     for comp in stats {
@@ -543,6 +564,18 @@ fn rle_candidates(mask: &PackedMask) -> Vec<RegionCandidate> {
         let h = comp.max_y.saturating_sub(comp.min_y) + 1;
         let area = w * h;
         if area == 0 {
+            continue;
+        }
+        if area < min_area_px {
+            log_region_debug(
+                "projection",
+                "reject_small_component",
+                comp.min_x,
+                comp.min_y,
+                w,
+                h,
+                0.0,
+            );
             continue;
         }
         if h < MIN_REGION_HEIGHT_PX {

@@ -17,10 +17,6 @@ use subtitle_fast_validator::subtitle_detection::RoiConfig;
 const OCR_CHANNEL_CAPACITY: usize = 4;
 const OCR_WORKER_CHANNEL_CAPACITY: usize = 2;
 const OCR_MAX_WORKERS: usize = 1;
-const PREFILTER_GRID: usize = 6;
-const PREFILTER_EDGE_THRESHOLD: u8 = 10;
-const PREFILTER_MIN_EDGES: usize = 5;
-const PREFILTER_MIN_SAMPLES: usize = 8;
 
 struct OcrJob {
     seq: u64,
@@ -40,12 +36,6 @@ fn ocr_worker_count() -> usize {
 }
 
 type RegionBounds = (usize, usize, usize, usize);
-#[derive(Debug, Clone, Copy)]
-struct PrefilterResult {
-    text_like: bool,
-    low_contrast: bool,
-}
-
 pub type OcrStageResult = Result<OcrEvent, OcrStageError>;
 
 pub struct SubtitleOcr {
@@ -198,30 +188,32 @@ impl OcrWorker {
             timings.intervals = timings.intervals.saturating_add(1);
             let region = roi_to_region(&interval.roi, &interval.first_yplane);
             let Some(bounds) = region_bounds(&region, &interval.first_yplane) else {
-                timings.prefilter_runs = timings.prefilter_runs.saturating_add(1);
-                timings.prefilter_skips = timings.prefilter_skips.saturating_add(1);
                 continue;
             };
-
-            let prefilter_started = Instant::now();
-            timings.prefilter_runs = timings.prefilter_runs.saturating_add(1);
-            let prefilter = prefilter_region(&interval.first_yplane, bounds);
-            timings.prefilter_duration = timings
-                .prefilter_duration
-                .saturating_add(prefilter_started.elapsed());
-            if prefilter.low_contrast || !prefilter.text_like {
-                timings.prefilter_skips = timings.prefilter_skips.saturating_add(1);
-                continue;
-            }
 
             let plane = LumaPlane::from_frame(&interval.first_yplane);
             let regions = [region];
             let request = OcrRequest::new(plane, &regions);
             let ocr_started = Instant::now();
-            let response = self
-                .engine
-                .recognize(&request)
-                .map_err(OcrStageError::Engine)?;
+            let response = match self.engine.recognize(&request) {
+                Ok(resp) => resp,
+                Err(err) => {
+                    eprintln!(
+                        "[ocr-error-debug] frame={} roi_norm=({:.3},{:.3},{:.3},{:.3}) region_px={}x{}@({},{}) error={}",
+                        interval.start_frame,
+                        interval.roi.x,
+                        interval.roi.y,
+                        interval.roi.width,
+                        interval.roi.height,
+                        bounds.2.saturating_sub(bounds.0),
+                        bounds.3.saturating_sub(bounds.1),
+                        bounds.0,
+                        bounds.1,
+                        err,
+                    );
+                    return Err(OcrStageError::Engine(err));
+                }
+            };
             timings.ocr_calls = timings.ocr_calls.saturating_add(1);
             timings.ocr_duration = timings.ocr_duration.saturating_add(ocr_started.elapsed());
             subtitles.push(OcredSubtitle {
@@ -314,125 +306,10 @@ fn region_bounds(region: &OcrRegion, frame: &YPlaneFrame) -> Option<RegionBounds
     Some((left, top, right, bottom))
 }
 
-fn prefilter_region(frame: &YPlaneFrame, bounds: RegionBounds) -> PrefilterResult {
-    let (left, top, right, bottom) = bounds;
-    let width = right.saturating_sub(left);
-    let height = bottom.saturating_sub(top);
-    if width == 0 || height == 0 {
-        return PrefilterResult {
-            text_like: false,
-            low_contrast: true,
-        };
-    }
-
-    let grid_x = PREFILTER_GRID.min(width);
-    let grid_y = PREFILTER_GRID.min(height);
-    let step_x = std::cmp::max(1, width / grid_x);
-    let step_y = std::cmp::max(1, height / grid_y);
-
-    let stride = frame.stride();
-    let data = frame.data();
-
-    let mut prev_row: [u8; PREFILTER_GRID] = [0; PREFILTER_GRID];
-    let mut has_prev = false;
-    let mut edge_count: usize = 0;
-    let mut samples: usize = 0;
-    let mut row_hits: usize = 0;
-    let mut col_hits: [bool; PREFILTER_GRID] = [false; PREFILTER_GRID];
-    let mut min = 255u8;
-    let mut max = 0u8;
-    let mut sum: u64 = 0;
-    let mut sum_sq: u64 = 0;
-
-    for y in (top..bottom).step_by(step_y).take(grid_y) {
-        let base = y.saturating_mul(stride);
-        let mut prev_value: Option<u8> = None;
-        let mut col = 0;
-        let mut row_has_edge = false;
-
-        for x in (left..right).step_by(step_x).take(grid_x) {
-            let idx = base + x;
-            if idx >= data.len() {
-                break;
-            }
-            let value = data[idx];
-            min = min.min(value);
-            max = max.max(value);
-            sum = sum.saturating_add(u64::from(value));
-            sum_sq = sum_sq.saturating_add(u64::from(value) * u64::from(value));
-            samples = samples.saturating_add(1);
-
-            if let Some(prev) = prev_value {
-                if value.abs_diff(prev) >= PREFILTER_EDGE_THRESHOLD {
-                    edge_count = edge_count.saturating_add(1);
-                    row_has_edge = true;
-                    if col < col_hits.len() {
-                        col_hits[col] = true;
-                    }
-                }
-            }
-
-            if has_prev && col < prev_row.len() {
-                let prev = prev_row[col];
-                if value.abs_diff(prev) >= PREFILTER_EDGE_THRESHOLD {
-                    edge_count = edge_count.saturating_add(1);
-                    row_has_edge = true;
-                    if col < col_hits.len() {
-                        col_hits[col] = true;
-                    }
-                }
-            }
-
-            if col < prev_row.len() {
-                prev_row[col] = value;
-            }
-            prev_value = Some(value);
-            col = col.saturating_add(1);
-        }
-
-        if row_has_edge {
-            row_hits = row_hits.saturating_add(1);
-        }
-        has_prev = true;
-    }
-
-    let col_hit_count = col_hits.iter().take(grid_x).filter(|hit| **hit).count();
-    // Require edges across most sampled rows/columns to reject smooth or empty ROIs.
-    let row_threshold = std::cmp::max(1, (grid_y * 2 + 2) / 3);
-    let col_threshold = std::cmp::max(1, (grid_x * 2 + 2) / 3);
-    let edges_needed = std::cmp::max(PREFILTER_MIN_EDGES, (samples * 3) / 5);
-    let text_like = samples >= PREFILTER_MIN_SAMPLES
-        && edge_count >= edges_needed
-        && row_hits >= row_threshold
-        && col_hit_count >= col_threshold;
-    if samples == 0 {
-        return PrefilterResult {
-            text_like: false,
-            low_contrast: true,
-        };
-    }
-
-    let range = max.saturating_sub(min);
-    let low_contrast = if range <= 6 {
-        true
-    } else {
-        let mean = sum as f64 / samples as f64;
-        let variance = (sum_sq as f64 / samples as f64) - mean * mean;
-        let stddev = variance.max(0.0).sqrt();
-        range <= 12 && stddev < 4.0
-    };
-
-    PrefilterResult {
-        text_like,
-        low_contrast,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{prefilter_region, region_bounds, roi_to_region};
+    use super::roi_to_region;
     use subtitle_fast_decoder::YPlaneFrame;
-    use subtitle_fast_ocr::OcrRegion;
     use subtitle_fast_validator::subtitle_detection::RoiConfig;
 
     #[test]
@@ -447,44 +324,7 @@ mod tests {
         let region = roi_to_region(&roi, &frame);
         assert_eq!(region.x, 0.0);
         assert!((region.y - 25.0).abs() < f32::EPSILON);
-        assert_eq!(region.width, 100.0);
-        assert_eq!(region.height, 25.0);
-    }
-
-    #[test]
-    fn text_prefilter_rejects_uniform_roi() {
-        let frame = YPlaneFrame::from_owned(8, 8, 8, None, vec![50; 64]).unwrap();
-        let region = OcrRegion {
-            x: 0.0,
-            y: 0.0,
-            width: 8.0,
-            height: 8.0,
-        };
-        let bounds = region_bounds(&region, &frame).unwrap();
-        let result = prefilter_region(&frame, bounds);
-        assert!(!result.text_like);
-        assert!(result.low_contrast);
-    }
-
-    #[test]
-    fn text_prefilter_accepts_checker_roi() {
-        let mut data = Vec::with_capacity(64);
-        for y in 0..8 {
-            for x in 0..8 {
-                let value = if (x + y) % 2 == 0 { 0u8 } else { 255u8 };
-                data.push(value);
-            }
-        }
-        let frame = YPlaneFrame::from_owned(8, 8, 8, None, data).unwrap();
-        let region = OcrRegion {
-            x: 0.0,
-            y: 0.0,
-            width: 8.0,
-            height: 8.0,
-        };
-        let bounds = region_bounds(&region, &frame).unwrap();
-        let result = prefilter_region(&frame, bounds);
-        assert!(result.text_like);
-        assert!(!result.low_contrast);
+        assert!((region.width - 100.0).abs() < 1e-3);
+        assert!((region.height - 25.0).abs() < 1e-3);
     }
 }
