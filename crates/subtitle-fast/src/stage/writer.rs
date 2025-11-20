@@ -85,6 +85,7 @@ pub struct WriterEvent {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WriterTimings {
     pub cues: u64,
+    pub ocr_empty: u64,
     pub total: Duration,
 }
 
@@ -127,10 +128,12 @@ impl SubtitleWriterWorker {
     fn handle_event(&mut self, event: OcrEvent) -> WriterEvent {
         let started = Instant::now();
         let mut buffered = 0_u64;
+        let mut ocr_empty = 0_u64;
 
         for subtitle in event.subtitles {
             let text = response_to_text(subtitle.response);
             if text.is_empty() {
+                ocr_empty = ocr_empty.saturating_add(1);
                 continue;
             }
             let center = subtitle.region.y + subtitle.region.height * 0.5;
@@ -147,6 +150,7 @@ impl SubtitleWriterWorker {
 
         let timings = WriterTimings {
             cues: buffered,
+            ocr_empty,
             total: started.elapsed(),
         };
 
@@ -190,6 +194,7 @@ impl SubtitleWriterWorker {
         let cue_count = merged.len();
         let timings = WriterTimings {
             cues: cue_count as u64,
+            ocr_empty: 0,
             total: elapsed,
         };
 

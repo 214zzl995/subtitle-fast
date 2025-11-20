@@ -12,6 +12,9 @@ use super::segmenter::SegmentTimings;
 use super::writer::{SubtitleWriterError, WriterResult, WriterStatus, WriterTimings};
 
 const PROGRESS_CHANNEL_CAPACITY: usize = 4;
+const COL_AVG: &str = "\x1b[33m"; // yellow-ish for averages
+const COL_COUNT: &str = "\x1b[36m"; // cyan-ish for counts
+const COL_RESET: &str = "\x1b[0m";
 
 pub struct Progress {
     label: &'static str,
@@ -68,8 +71,12 @@ struct ProgressMonitor {
     segment_frames: u64,
     segment_total: Duration,
     ocr_intervals: u64,
+    ocr_prefilter_runs: u64,
+    ocr_prefilter_skips: u64,
+    ocr_prefilter_total: Duration,
     ocr_total: Duration,
     writer_cues: u64,
+    writer_empty_ocr: u64,
     writer_total: Duration,
     completed_output: Option<(PathBuf, usize)>,
 }
@@ -101,8 +108,12 @@ impl ProgressMonitor {
             segment_frames: 0,
             segment_total: Duration::ZERO,
             ocr_intervals: 0,
+            ocr_prefilter_runs: 0,
+            ocr_prefilter_skips: 0,
+            ocr_prefilter_total: Duration::ZERO,
             ocr_total: Duration::ZERO,
             writer_cues: 0,
+            writer_empty_ocr: 0,
             writer_total: Duration::ZERO,
             completed_output: None,
         }
@@ -161,6 +172,15 @@ impl ProgressMonitor {
             return;
         };
         self.ocr_intervals = self.ocr_intervals.saturating_add(timings.intervals);
+        self.ocr_prefilter_runs = self
+            .ocr_prefilter_runs
+            .saturating_add(timings.prefilter_runs);
+        self.ocr_prefilter_skips = self
+            .ocr_prefilter_skips
+            .saturating_add(timings.prefilter_skips);
+        self.ocr_prefilter_total = self
+            .ocr_prefilter_total
+            .saturating_add(timings.prefilter_duration);
         self.ocr_total = self.ocr_total.saturating_add(timings.total);
     }
 
@@ -171,6 +191,7 @@ impl ProgressMonitor {
         if timings.cues > 0 {
             self.writer_cues = self.writer_cues.saturating_add(timings.cues);
         }
+        self.writer_empty_ocr = self.writer_empty_ocr.saturating_add(timings.ocr_empty);
         self.writer_total = self.writer_total.saturating_add(timings.total);
     }
 
@@ -198,19 +219,32 @@ impl ProgressMonitor {
             self.bar.set_position(total);
         }
         if let Some((path, cues)) = &self.completed_output {
-            let summary = match self.total_frames {
-                Some(total) => format!(
-                    "processed {}/{} frames • wrote {} ({cues} cues)",
-                    total,
-                    total,
-                    path.display()
-                ),
-                None => format!(
-                    "processed {} frames • wrote {} ({cues} cues)",
-                    self.display_count(),
-                    path.display()
-                ),
+            let processed_line = match self.total_frames {
+                Some(total) => format!("processed {}/{} frames", total, total),
+                None => format!("processed {} frames", self.display_count()),
             };
+            let output_line = format!(
+                "wrote {} ({} cues, ocr-empty {})",
+                path.display(),
+                cues,
+                self.writer_empty_ocr
+            );
+            let det = self
+                .avg_detection_ms
+                .map(|value| format!("{value:.1} ms"))
+                .unwrap_or_else(|| "-- ms".to_string());
+            let seg = average_ms(self.segment_total, self.segment_frames);
+            let ocr = average_ms(self.ocr_total, self.ocr_intervals);
+            let pf = average_ms(self.ocr_prefilter_total, self.ocr_prefilter_runs);
+            let writer = average_ms(self.writer_total, self.writer_cues);
+            let counts_line = format!(
+                "[{COL_COUNT}counts{COL_RESET}] pf-skips {} • ocr-empty {}",
+                self.ocr_prefilter_skips, self.writer_empty_ocr
+            );
+            let avg_line = format!(
+                "[{COL_AVG}   avg{COL_RESET}] det {det} • seg {seg} • pf {pf} • ocr {ocr} • wr {writer}"
+            );
+            let summary = format!("{processed_line}\n{output_line}\n{avg_line}\n{counts_line}");
             self.bar.finish_with_message(summary);
         } else {
             match self.total_frames {
@@ -228,24 +262,35 @@ impl ProgressMonitor {
     }
 
     fn update_speed(&self) {
-        let elapsed = self.started.elapsed().as_secs_f64();
-        if elapsed > 0.0 {
-            let units = self
-                .latest_frame_index
-                .map(|idx| idx.saturating_add(1) as f64)
-                .unwrap_or(self.samples_seen as f64);
-            let rate = units / elapsed;
-            let det = self
-                .avg_detection_ms
-                .map(|value| format!("{value:.1} ms"))
-                .unwrap_or_else(|| "-- ms".to_string());
-            let seg = average_ms(self.segment_total, self.segment_frames);
-            let ocr = average_ms(self.ocr_total, self.ocr_intervals);
-            let writer = average_ms(self.writer_total, self.writer_cues);
-            self.bar.set_message(format!(
-                "{rate:.1} fps • det {det} • seg {seg} • ocr {ocr} • wr {writer}"
-            ));
+        if self.started.elapsed().as_secs_f64() <= 0.0 {
+            return;
         }
+
+        let units = self
+            .latest_frame_index
+            .map(|idx| idx.saturating_add(1) as f64)
+            .unwrap_or(self.samples_seen as f64);
+        let rate = units / self.started.elapsed().as_secs_f64();
+
+        let det = self
+            .avg_detection_ms
+            .map(|value| format!("{value:.1} ms"))
+            .unwrap_or_else(|| "-- ms".to_string());
+        let seg = average_ms(self.segment_total, self.segment_frames);
+        let ocr = average_ms(self.ocr_total, self.ocr_intervals);
+        let pf = average_ms(self.ocr_prefilter_total, self.ocr_prefilter_runs);
+        let pf_skips = self.ocr_prefilter_skips;
+        let writer = average_ms(self.writer_total, self.writer_cues);
+
+        let avg_line = format!(
+            "[{COL_AVG}   avg{COL_RESET}] fps {rate:>5.1} • det {det} • seg {seg} • pf {pf} • ocr {ocr} • wr {writer}"
+        );
+        let counts_line = format!(
+            "[{COL_COUNT}counts{COL_RESET}] pf-skips {pf_skips} • ocr-empty {}",
+            self.writer_empty_ocr
+        );
+        self.bar
+            .set_message(format!("{avg_line}\n{counts_line}"));
     }
 
     fn display_count(&self) -> u64 {
@@ -292,7 +337,7 @@ fn describe_ocr_error(err: &OcrStageError) -> String {
 
 fn bar_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "{prefix:.bold} {bar:40.cyan/blue} {percent:>3.bold}% {pos:>5}/{len:<5} [{elapsed_precise:.dim}<{eta_precise:.dim}] {msg:.yellow}",
+        "{prefix:.bold} {bar:40.cyan/blue} {percent:>3.bold}% {pos:>5}/{len:<5} [{elapsed_precise:.dim}<{eta_precise:.dim}]\n{msg}",
     )
     .expect("invalid sampling bar template")
     .progress_chars("█▉▊▋▌▍▎▏ ")
@@ -300,7 +345,7 @@ fn bar_style() -> ProgressStyle {
 
 fn spinner_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "{prefix:.bold} {spinner:.cyan.bold} [{elapsed_precise:.dim}] {pos:>5}f {msg:.yellow}",
+        "{prefix:.bold} {spinner:.cyan.bold} [{elapsed_precise:.dim}] {pos:>5}f\n{msg}",
     )
     .expect("invalid sampling spinner template")
     .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
