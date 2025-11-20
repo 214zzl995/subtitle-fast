@@ -5,10 +5,7 @@ use subtitle_fast_decoder::YPlaneFrame;
 use subtitle_fast_validator::subtitle_detection::RoiConfig;
 
 use crate::comparators::SubtitleComparator;
-use crate::pipeline::preprocess::extract_masked_patch;
-use crate::pipeline::{
-    ComparisonReport, FeatureBlob, MaskedPatch, PreprocessSettings, ReportMetric,
-};
+use crate::pipeline::{ComparisonReport, FeatureBlob, PreprocessSettings, ReportMetric};
 
 const TAG: &str = "bitset-cover";
 const TOLERANCE_PX: usize = 2;
@@ -28,8 +25,71 @@ impl BitsetCoverComparator {
         Self { settings }
     }
 
-    fn build_features(&self, patch: &MaskedPatch) -> Option<BitsetFeatures> {
-        BitsetFeatures::from_patch(patch)
+    fn build_features(&self, frame: &YPlaneFrame, roi: &RoiConfig) -> Option<BitsetFeatures> {
+        let (x0, y0, x1, y1) = roi_bounds(frame, roi)?;
+        let width = x1 - x0;
+        let height = y1 - y0;
+        let words_per_row = (width + 63) / 64;
+        let total_words = words_per_row.checked_mul(height)?;
+        if total_words == 0 {
+            return None;
+        }
+        let last_word_mask = if width % 64 == 0 {
+            !0u64
+        } else {
+            (1u64 << (width % 64)) - 1
+        };
+        let parallel_pack = should_parallel(total_words);
+        let bits = pack_mask_bits_fast(
+            frame,
+            x0,
+            y0,
+            width,
+            height,
+            words_per_row,
+            last_word_mask,
+            &self.settings,
+            parallel_pack,
+        );
+        self.build_features_from_bits(bits, width, height, words_per_row, last_word_mask)
+    }
+
+    fn build_features_from_bits(
+        &self,
+        bits: Vec<u64>,
+        width: usize,
+        height: usize,
+        words_per_row: usize,
+        last_word_mask: u64,
+    ) -> Option<BitsetFeatures> {
+        let total_words = bits.len();
+        if total_words == 0 {
+            return None;
+        }
+        let parallel_dilate = should_parallel(total_words);
+        let mut dilated = vec![0u64; total_words];
+        self.with_scratch(total_words, |scratch| {
+            let ScratchSlices { tmp_a, tmp_b } = scratch.slices(total_words);
+            dilate_chebyshev_u64(
+                &bits,
+                width,
+                height,
+                words_per_row,
+                last_word_mask,
+                TOLERANCE_PX,
+                tmp_a,
+                tmp_b,
+                dilated.as_mut_slice(),
+                parallel_dilate,
+            );
+        });
+        Some(BitsetFeatures {
+            width,
+            height,
+            words_per_row,
+            bits,
+            dilated,
+        })
     }
 
     fn compare_features(&self, a: &BitsetFeatures, b: &BitsetFeatures) -> Option<(f32, f32, bool)> {
@@ -41,50 +101,20 @@ impl BitsetCoverComparator {
             return Some((1.0, 0.0, false));
         }
         let parallel = should_parallel(total_words);
-        let mut similarity = 0.0f32;
-        let mut miss_fraction = 1.0f32;
-        self.with_scratch(total_words, |scratch| {
-            let ScratchSlices {
-                tmp_a,
-                tmp_b,
-                buf_a,
-                buf_b,
-            } = scratch.slices(total_words);
-            dilate_chebyshev_u64(
-                &a.bits,
-                a.width,
-                a.height,
-                a.words_per_row,
-                a.last_word_mask,
-                TOLERANCE_PX,
-                tmp_a,
-                tmp_b,
-                buf_a,
-                parallel,
-            );
-            dilate_chebyshev_u64(
-                &b.bits,
-                b.width,
-                b.height,
-                b.words_per_row,
-                b.last_word_mask,
-                TOLERANCE_PX,
-                tmp_a,
-                tmp_b,
-                buf_b,
-                parallel,
-            );
-
-            let (miss, union) =
-                reduce_miss_union(&a.bits, &b.bits, buf_a, buf_b, parallel, total_words);
-            if union == 0 {
-                similarity = 1.0;
-                miss_fraction = 0.0;
-            } else {
-                miss_fraction = (miss as f32) / (union as f32);
-                similarity = (1.0 - miss_fraction).clamp(0.0, 1.0);
-            }
-        });
+        let (miss, union) = reduce_miss_union(
+            &a.bits,
+            &b.bits,
+            &a.dilated,
+            &b.dilated,
+            parallel,
+            total_words,
+        );
+        let (similarity, miss_fraction) = if union == 0 {
+            (1.0, 0.0)
+        } else {
+            let miss_fraction = (miss as f32) / (union as f32);
+            ((1.0 - miss_fraction).clamp(0.0, 1.0), miss_fraction)
+        };
         Some((similarity, miss_fraction, parallel))
     }
 
@@ -102,8 +132,7 @@ impl SubtitleComparator for BitsetCoverComparator {
     }
 
     fn extract(&self, frame: &YPlaneFrame, roi: &RoiConfig) -> Option<FeatureBlob> {
-        let patch = extract_masked_patch(frame, roi, self.settings)?;
-        let features = self.build_features(&patch)?;
+        let features = self.build_features(frame, roi)?;
         Some(FeatureBlob::new(TAG, features))
     }
 
@@ -142,50 +171,8 @@ struct BitsetFeatures {
     width: usize,
     height: usize,
     words_per_row: usize,
-    last_word_mask: u64,
     bits: Vec<u64>,
-}
-
-impl BitsetFeatures {
-    fn from_patch(patch: &MaskedPatch) -> Option<Self> {
-        if patch.width == 0 || patch.height == 0 {
-            return None;
-        }
-        let width = patch.width;
-        let height = patch.height;
-        let area = width.checked_mul(height)?;
-        let words_per_row = (width + 63) / 64;
-        if words_per_row == 0 {
-            return None;
-        }
-        if patch.mask.len() != area {
-            return None;
-        }
-        let total_words = words_per_row.checked_mul(height)?;
-        if total_words == 0 {
-            return None;
-        }
-        let last_word_mask = if width % 64 == 0 {
-            !0u64
-        } else {
-            (1u64 << (width % 64)) - 1
-        };
-        let bits = pack_mask_bits(
-            &patch.mask,
-            width,
-            height,
-            words_per_row,
-            last_word_mask,
-            should_parallel(total_words),
-        );
-        Some(Self {
-            width,
-            height,
-            words_per_row,
-            last_word_mask,
-            bits,
-        })
-    }
+    dilated: Vec<u64>,
 }
 
 struct ScratchBuffer {
@@ -210,8 +197,6 @@ impl ScratchBuffer {
 struct BitsetScratch {
     tmp_a: ScratchBuffer,
     tmp_b: ScratchBuffer,
-    buf_a: ScratchBuffer,
-    buf_b: ScratchBuffer,
 }
 
 impl BitsetScratch {
@@ -219,8 +204,6 @@ impl BitsetScratch {
         Self {
             tmp_a: ScratchBuffer::new(),
             tmp_b: ScratchBuffer::new(),
-            buf_a: ScratchBuffer::new(),
-            buf_b: ScratchBuffer::new(),
         }
     }
 
@@ -228,8 +211,6 @@ impl BitsetScratch {
         ScratchSlices {
             tmp_a: self.tmp_a.ensure(len),
             tmp_b: self.tmp_b.ensure(len),
-            buf_a: self.buf_a.ensure(len),
-            buf_b: self.buf_b.ensure(len),
         }
     }
 }
@@ -237,8 +218,29 @@ impl BitsetScratch {
 struct ScratchSlices<'a> {
     tmp_a: &'a mut [u64],
     tmp_b: &'a mut [u64],
-    buf_a: &'a mut [u64],
-    buf_b: &'a mut [u64],
+}
+
+fn roi_bounds(frame: &YPlaneFrame, roi: &RoiConfig) -> Option<(usize, usize, usize, usize)> {
+    let frame_w = frame.width() as usize;
+    let frame_h = frame.height() as usize;
+    if frame_w == 0 || frame_h == 0 {
+        return None;
+    }
+    let mut x0 = (roi.x.clamp(0.0, 1.0) * frame_w as f32).floor() as isize;
+    let mut y0 = (roi.y.clamp(0.0, 1.0) * frame_h as f32).floor() as isize;
+    let mut x1 = ((roi.x + roi.width).clamp(0.0, 1.0) * frame_w as f32).ceil() as isize;
+    let mut y1 = ((roi.y + roi.height).clamp(0.0, 1.0) * frame_h as f32).ceil() as isize;
+
+    x0 = x0.clamp(0, frame_w as isize - 1);
+    y0 = y0.clamp(0, frame_h as isize - 1);
+    x1 = x1.clamp(x0 + 1, frame_w as isize);
+    y1 = y1.clamp(y0 + 1, frame_h as isize);
+
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+
+    Some((x0 as usize, y0 as usize, x1 as usize, y1 as usize))
 }
 
 fn dilate_chebyshev_u64(
@@ -459,44 +461,71 @@ fn should_parallel(total_words: usize) -> bool {
     total_words >= PARALLEL_MIN_WORDS && rayon::current_num_threads() > 1
 }
 
-fn pack_mask_bits(
-    mask: &[f32],
+fn pack_mask_bits_fast(
+    frame: &YPlaneFrame,
+    x0: usize,
+    y0: usize,
     width: usize,
     height: usize,
     words_per_row: usize,
     last_word_mask: u64,
+    settings: &PreprocessSettings,
     use_parallel: bool,
 ) -> Vec<u64> {
     let mut bits = vec![0u64; words_per_row * height];
+    let stride = frame.stride();
+    let data = frame.data();
+    let lo = settings.target.saturating_sub(settings.delta.max(1)) as u8;
+    let hi = settings
+        .target
+        .saturating_add(settings.delta.max(1))
+        .min(255) as u8;
+
     if use_parallel {
-        mask.par_chunks_exact(width)
-            .zip(bits.par_chunks_mut(words_per_row))
-            .for_each(|(mask_row, bits_row)| pack_row(mask_row, bits_row, last_word_mask));
+        bits.par_chunks_mut(words_per_row)
+            .enumerate()
+            .for_each(|(row_idx, bits_row)| {
+                let row_start = (y0 + row_idx) * stride + x0;
+                pack_row_bytes(
+                    &data[row_start..row_start + width],
+                    bits_row,
+                    lo,
+                    hi,
+                    last_word_mask,
+                );
+            });
     } else {
-        for (mask_row, bits_row) in mask.chunks_exact(width).zip(bits.chunks_mut(words_per_row)) {
-            pack_row(mask_row, bits_row, last_word_mask);
+        for (row_idx, bits_row) in bits.chunks_mut(words_per_row).enumerate() {
+            let row_start = (y0 + row_idx) * stride + x0;
+            pack_row_bytes(
+                &data[row_start..row_start + width],
+                bits_row,
+                lo,
+                hi,
+                last_word_mask,
+            );
         }
     }
     bits
 }
 
-fn pack_row(mask_row: &[f32], bits_row: &mut [u64], last_word_mask: u64) {
+fn pack_row_bytes(row: &[u8], bits_row: &mut [u64], lo: u8, hi: u8, last_word_mask: u64) {
     let mut dst = 0usize;
-    for chunk in mask_row.chunks_exact(64) {
+    for chunk in row.chunks_exact(64) {
         let mut word = 0u64;
         for (i, &v) in chunk.iter().enumerate() {
-            if v >= 0.5 {
+            if v >= lo && v <= hi {
                 word |= 1u64 << i;
             }
         }
         bits_row[dst] = word;
         dst += 1;
     }
-    let rem = mask_row.chunks_exact(64).remainder();
+    let rem = row.chunks_exact(64).remainder();
     if !rem.is_empty() {
         let mut word = 0u64;
         for (i, &v) in rem.iter().enumerate() {
-            if v >= 0.5 {
+            if v >= lo && v <= hi {
                 word |= 1u64 << i;
             }
         }
