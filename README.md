@@ -12,6 +12,8 @@ that are combined by the CLI binary:
   reports candidate regions.
 - [`subtitle-fast-ocr`](crates/subtitle-fast-ocr/README.md) – converts cropped subtitle regions into text.
 
+License: [MIT](LICENSE)
+
 Together these crates let the CLI stream frames, detect subtitle bands, push them through OCR, and emit `.srt` files plus
 optional debug material.
 
