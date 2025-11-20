@@ -1,9 +1,11 @@
 # subtitle-fast
 
-subtitle-fast is a Rust workspace for turning video files into subtitle tracks. The workspace is made of four crates that
-are combined by the CLI binary:
+subtitle-fast is a Rust workspace for turning video files into subtitle tracks. The workspace is built from five crates
+that are combined by the CLI binary:
 
 - [`subtitle-fast`](crates/subtitle-fast/README.md) – drives the async pipeline and owns CLI configuration.
+- [`subtitle-fast-comparator`](crates/subtitle-fast-comparator/README.md) – compares successive subtitle regions to
+  decide when lines begin or end.
 - [`subtitle-fast-decoder`](crates/subtitle-fast-decoder/README.md) – selects a decoding backend and exposes frames as a
   luma (Y) plane stream.
 - [`subtitle-fast-validator`](crates/subtitle-fast-validator/README.md) – judges which frames contain subtitle bands and
@@ -22,9 +24,10 @@ Running the CLI walks through a fixed set of stages:
    decoder yields raw Y-plane frames with timestamps.
 2. **Frame preparation** – frames are sorted into presentation order and sampled at a configurable rate so later stages
    only inspect the minimum number of frames required for stable detection.
-3. **Subtitle detection** – sampled frames flow into the validator crate, which scores each frame and maintains tracks of
-   regions that look like subtitle bands.
-4. **OCR + authoring** – confirmed tracks are expanded into OCR regions, recognised by the configured OCR backend, and
+3. **Subtitle detection + comparison** – sampled frames flow into the validator crate, which scores each frame and keeps
+   the best regions. The comparator crate then checks whether the current region matches previous ones so the CLI can
+   decide when a subtitle line starts or ends.
+4. **OCR + authoring** – confirmed regions are expanded, recognised by the configured OCR backend, and
    emitted as `.srt` cues (with optional JSON metadata and annotated images for debugging).
 
 Each stage consumes an async stream of frames or regions and forwards a new stream downstream. Backpressure is preserved,
@@ -49,13 +52,14 @@ behaviour would require a stronger separation between persistent overlays and ne
 
 ## Configuration and models
 
-Configuration is merged from CLI flags, a `subtitle-fast.toml` file (if present or specified via `--config`), and
-platform-specific config directories. Paths are normalised, defaults are applied, and the resulting plan records where
-frames should be dumped, which OCR backend to use, and how aggressive detection should be.
+Configuration is merged from CLI flags (highest priority), an optional `--config` path, a `config.toml` in the current
+directory, and finally `config.toml` under the platform config directory (e.g. `~/.config/subtitle-fast/config.toml` on
+Unix). Paths are normalised, defaults are applied, and the resulting plan records where frames should be dumped, which OCR
+backend to use, and how aggressive detection should be.
 
 Detector tuning intentionally sticks to the two historical knobs: `--detector-target` and `--detector-delta` (or the
-`target` / `delta` keys under `[detection]` in `subtitle-fast.toml`). Every other heuristic now relies on the detector's
-internal defaults so behaviour stays predictable across runs.
+`target` / `delta` keys under `[detection]` in `config.toml`). Every other heuristic now relies on the detector's internal
+defaults so behaviour stays predictable across runs.
 
 OCR model paths can be provided as local paths or HTTP(S)/`file://` URLs. Remote models are cached locally the first time
 they are used so subsequent runs start quickly.

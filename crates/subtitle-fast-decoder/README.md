@@ -26,6 +26,13 @@ compiled backend before surfacing the error.
 When no feature is enabled, only the lightweight mock backend is compiled. GitHub CI automatically enables the mock backend
 so tests can exercise downstream logic without native dependencies.
 
+## Configuration knobs
+
+- Env vars: `SUBFAST_BACKEND`, `SUBFAST_INPUT`, and `SUBFAST_CHANNEL_CAPACITY` feed into `Configuration::from_env`.
+- Default backend: the first compiled backend is chosen in priority order (mock on CI; VideoToolbox then FFmpeg on macOS;
+  MFT then FFmpeg on Windows/other).
+- Channel capacity: `channel_capacity` limits the internal frame queue and governs backpressure.
+
 ## Error handling
 
 All failures map to `YPlaneError` variants:

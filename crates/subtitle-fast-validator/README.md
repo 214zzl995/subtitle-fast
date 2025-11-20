@@ -20,6 +20,15 @@ same luma-band analysis.
 The crate exposes a `FrameValidator` type that wraps this workflow and returns per-frame results including the best regions
 and their scores. Pipelines can also supply a temporary ROI override when subtitles are known to appear elsewhere.
 
+## Configuration and detectors
+
+- Detector kinds: `auto` (default) tries projection-band then integral-band; `macos-vision` is available on macOS when the
+  `detector-vision` feature is enabled.
+- ROI: provide an `RoiConfig` to focus detection on a portion of the frame (values are normalised 0–1).
+- Luma band tuning: `target` and `delta` (defaults 230/12) control which pixel intensities are treated as subtitle
+  candidates.
+- Debugging: set `REGION_DEBUG=1` to print per-region debug lines while running detectors.
+
 ## Feature flags
 
 | Feature | Description |

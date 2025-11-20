@@ -346,8 +346,7 @@ unsafe fn threshold_mask_sse2(
         if x < width {
             let remaining = width - x;
             let src_tail = unsafe { std::slice::from_raw_parts(src_ptr.add(x), remaining) };
-            let dst_tail =
-                unsafe { std::slice::from_raw_parts_mut(dst_ptr.add(x), remaining) };
+            let dst_tail = unsafe { std::slice::from_raw_parts_mut(dst_ptr.add(x), remaining) };
             threshold_mask_scalar_row(src_tail, dst_tail, lo, hi);
         }
     }

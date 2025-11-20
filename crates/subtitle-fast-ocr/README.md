@@ -12,6 +12,12 @@ structures plus optional engines tailored for macOS.
 
 The trait also offers a warm-up hook so engines can preload models or allocate resources before the first recognition call.
 
+## Engines
+
+- `VisionOcrEngine` (macOS, behind `engine-vision`) uses Apple Vision.
+- `NoopOcrEngine` returns empty results and is handy for pipeline or benchmarking tests.
+- Additional engines can be integrated by implementing `OcrEngine` and wiring it into the caller's configuration.
+
 ## Feature flags
 
 | Feature | Description |
