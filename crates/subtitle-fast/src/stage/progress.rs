@@ -289,8 +289,7 @@ impl ProgressMonitor {
             "[{COL_COUNT}counts{COL_RESET}] pf-skips {pf_skips} • ocr-empty {}",
             self.writer_empty_ocr
         );
-        self.bar
-            .set_message(format!("{avg_line}\n{counts_line}"));
+        self.bar.set_message(format!("{avg_line}\n{counts_line}"));
     }
 
     fn display_count(&self) -> u64 {

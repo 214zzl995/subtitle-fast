@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -14,10 +15,29 @@ use subtitle_fast_ocr::{LumaPlane, OcrEngine, OcrError, OcrRegion, OcrRequest, O
 use subtitle_fast_validator::subtitle_detection::RoiConfig;
 
 const OCR_CHANNEL_CAPACITY: usize = 4;
+const OCR_WORKER_CHANNEL_CAPACITY: usize = 2;
+const OCR_MAX_WORKERS: usize = 1;
 const PREFILTER_GRID: usize = 6;
 const PREFILTER_EDGE_THRESHOLD: u8 = 10;
 const PREFILTER_MIN_EDGES: usize = 5;
 const PREFILTER_MIN_SAMPLES: usize = 8;
+
+struct OcrJob {
+    seq: u64,
+    event: SegmenterEvent,
+}
+
+struct OrderedOcrResult {
+    seq: u64,
+    result: OcrStageResult,
+}
+
+fn ocr_worker_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| count.get().min(OCR_MAX_WORKERS))
+        .unwrap_or(1)
+        .max(1)
+}
 
 type RegionBounds = (usize, usize, usize, usize);
 #[derive(Debug, Clone, Copy)]
@@ -45,6 +65,7 @@ impl SubtitleOcr {
 
         let engine = self.engine;
         let (tx, rx) = mpsc::channel::<OcrStageResult>(OCR_CHANNEL_CAPACITY);
+        let worker_count = ocr_worker_count();
 
         tokio::spawn(async move {
             if let Err(err) = engine.warm_up() {
@@ -52,28 +73,69 @@ impl SubtitleOcr {
                 return;
             }
 
+            let (result_tx, result_rx) =
+                mpsc::channel::<OrderedOcrResult>(worker_count * OCR_CHANNEL_CAPACITY.max(1));
+            let mut job_senders = Vec::with_capacity(worker_count);
+
+            for _ in 0..worker_count {
+                let (job_tx, mut job_rx) = mpsc::channel::<OcrJob>(OCR_WORKER_CHANNEL_CAPACITY);
+                job_senders.push(job_tx);
+                let worker = OcrWorker::new(Arc::clone(&engine));
+                let result_tx = result_tx.clone();
+                tokio::spawn(async move {
+                    while let Some(job) = job_rx.recv().await {
+                        let result = worker.handle_event(job.event);
+                        let _ = result_tx
+                            .send(OrderedOcrResult {
+                                seq: job.seq,
+                                result,
+                            })
+                            .await;
+                    }
+                });
+            }
+
+            let forward = tokio::spawn(async move {
+                forward_ocr_results(result_rx, tx).await;
+            });
+
             let mut upstream = stream;
-            let worker = OcrWorker::new(engine);
+            let mut seq: u64 = 0;
+            let mut next_worker: usize = 0;
+            let result_tx_main = result_tx;
 
             while let Some(event) = upstream.next().await {
                 match event {
-                    Ok(segment_event) => match worker.handle_event(segment_event) {
-                        Ok(ocr_event) => {
-                            if tx.send(Ok(ocr_event)).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(err) => {
-                            let _ = tx.send(Err(err)).await;
+                    Ok(segment_event) => {
+                        if job_senders.is_empty() {
                             break;
                         }
-                    },
+                        let job = OcrJob {
+                            seq,
+                            event: segment_event,
+                        };
+                        let sender = &job_senders[next_worker];
+                        next_worker = (next_worker + 1) % job_senders.len();
+                        if sender.send(job).await.is_err() {
+                            break;
+                        }
+                        seq = seq.saturating_add(1);
+                    }
                     Err(err) => {
-                        let _ = tx.send(Err(OcrStageError::Segmenter(err))).await;
+                        let ordered = OrderedOcrResult {
+                            seq,
+                            result: Err(OcrStageError::Segmenter(err)),
+                        };
+                        let _ = result_tx_main.send(ordered).await;
                         break;
                     }
                 }
             }
+
+            drop(job_senders);
+            drop(result_tx_main);
+
+            let _ = forward.await;
         });
 
         let stream = Box::pin(unfold(rx, |mut receiver| async {
@@ -133,15 +195,13 @@ impl OcrWorker {
         let mut subtitles = Vec::with_capacity(event.intervals.len());
 
         for interval in event.intervals {
+            timings.intervals = timings.intervals.saturating_add(1);
             let region = roi_to_region(&interval.roi, &interval.first_yplane);
             let Some(bounds) = region_bounds(&region, &interval.first_yplane) else {
-                timings.intervals = timings.intervals.saturating_add(1);
                 timings.prefilter_runs = timings.prefilter_runs.saturating_add(1);
                 timings.prefilter_skips = timings.prefilter_skips.saturating_add(1);
                 continue;
             };
-
-            timings.intervals = timings.intervals.saturating_add(1);
 
             let prefilter_started = Instant::now();
             timings.prefilter_runs = timings.prefilter_runs.saturating_add(1);
@@ -163,7 +223,6 @@ impl OcrWorker {
                 .recognize(&request)
                 .map_err(OcrStageError::Engine)?;
             timings.ocr_calls = timings.ocr_calls.saturating_add(1);
-            timings.intervals = timings.intervals.saturating_add(1);
             timings.ocr_duration = timings.ocr_duration.saturating_add(ocr_started.elapsed());
             subtitles.push(OcredSubtitle {
                 interval,
@@ -180,6 +239,31 @@ impl OcrWorker {
             segment_timings: event.segment_timings,
             timings: Some(timings),
         })
+    }
+}
+
+async fn forward_ocr_results(
+    mut results: mpsc::Receiver<OrderedOcrResult>,
+    tx: mpsc::Sender<OcrStageResult>,
+) {
+    let mut next_seq: u64 = 0;
+    let mut buffer: BTreeMap<u64, OcrStageResult> = BTreeMap::new();
+
+    while let Some(OrderedOcrResult { seq, result }) = results.recv().await {
+        buffer.insert(seq, result);
+        while let Some(item) = buffer.remove(&next_seq) {
+            if tx.send(item).await.is_err() {
+                return;
+            }
+            next_seq = next_seq.saturating_add(1);
+        }
+    }
+
+    while let Some(item) = buffer.remove(&next_seq) {
+        if tx.send(item).await.is_err() {
+            return;
+        }
+        next_seq = next_seq.saturating_add(1);
     }
 }
 
@@ -313,11 +397,14 @@ fn prefilter_region(frame: &YPlaneFrame, bounds: RegionBounds) -> PrefilterResul
     }
 
     let col_hit_count = col_hits.iter().take(grid_x).filter(|hit| **hit).count();
-    let edges_needed = std::cmp::max(PREFILTER_MIN_EDGES, samples / 2);
+    // Require edges across most sampled rows/columns to reject smooth or empty ROIs.
+    let row_threshold = std::cmp::max(1, (grid_y * 2 + 2) / 3);
+    let col_threshold = std::cmp::max(1, (grid_x * 2 + 2) / 3);
+    let edges_needed = std::cmp::max(PREFILTER_MIN_EDGES, (samples * 3) / 5);
     let text_like = samples >= PREFILTER_MIN_SAMPLES
         && edge_count >= edges_needed
-        && row_hits >= grid_y.saturating_div(2)
-        && col_hit_count >= grid_x.saturating_div(2);
+        && row_hits >= row_threshold
+        && col_hit_count >= col_threshold;
     if samples == 0 {
         return PrefilterResult {
             text_like: false,
@@ -326,13 +413,13 @@ fn prefilter_region(frame: &YPlaneFrame, bounds: RegionBounds) -> PrefilterResul
     }
 
     let range = max.saturating_sub(min);
-    let low_contrast = if range <= 3 {
+    let low_contrast = if range <= 6 {
         true
     } else {
         let mean = sum as f64 / samples as f64;
         let variance = (sum_sq as f64 / samples as f64) - mean * mean;
         let stddev = variance.max(0.0).sqrt();
-        range <= 8 && stddev < 2.0
+        range <= 12 && stddev < 4.0
     };
 
     PrefilterResult {
