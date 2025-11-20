@@ -7,20 +7,28 @@ use std::time::{Duration, Instant};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use subtitle_fast_decoder::YPlaneFrame;
+#[cfg(all(feature = "detector-vision", target_os = "macos"))]
+use subtitle_fast_validator::subtitle_detection::VisionTextDetector;
 use subtitle_fast_validator::subtitle_detection::projection_band::ProjectionBandDetector;
 use subtitle_fast_validator::subtitle_detection::{
     IntegralBandDetector, LumaBandConfig, RoiConfig, SubtitleDetectionConfig,
-    SubtitleDetectionError, SubtitleDetector, SubtitleDetectorKind, VisionTextDetector,
+    SubtitleDetectionError, SubtitleDetector, SubtitleDetectorKind,
 };
 
 const TARGET: u8 = 235;
 const DELTA: u8 = 12;
 const PRESETS: &[(usize, usize)] = &[(1920, 1080), (1920, 824)];
 const YUV_DIR: &str = "./demo/decoder/yuv";
+#[cfg(all(feature = "detector-vision", target_os = "macos"))]
 const DETECTORS: &[SubtitleDetectorKind] = &[
     SubtitleDetectorKind::IntegralBand,
     SubtitleDetectorKind::ProjectionBand,
     SubtitleDetectorKind::MacVision,
+];
+#[cfg(not(all(feature = "detector-vision", target_os = "macos")))]
+const DETECTORS: &[SubtitleDetectorKind] = &[
+    SubtitleDetectorKind::IntegralBand,
+    SubtitleDetectorKind::ProjectionBand,
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -222,7 +230,12 @@ fn build_bench_detector(
         SubtitleDetectorKind::ProjectionBand => {
             Ok(Box::new(ProjectionBandDetector::new(config.clone())?))
         }
+        #[cfg(all(feature = "detector-vision", target_os = "macos"))]
         SubtitleDetectorKind::MacVision => Ok(Box::new(VisionTextDetector::new(config.clone())?)),
+        #[cfg(not(all(feature = "detector-vision", target_os = "macos")))]
+        SubtitleDetectorKind::MacVision => Err(SubtitleDetectionError::Unsupported {
+            backend: "vision-detector",
+        }),
         other => Err(SubtitleDetectionError::Unsupported {
             backend: other.as_str(),
         }),

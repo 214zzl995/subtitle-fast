@@ -7,10 +7,12 @@ use image::{Rgb, RgbImage};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde_json::json;
 use subtitle_fast_decoder::YPlaneFrame;
+#[cfg(all(feature = "detector-vision", target_os = "macos"))]
+use subtitle_fast_validator::subtitle_detection::VisionTextDetector;
 use subtitle_fast_validator::subtitle_detection::projection_band::ProjectionBandDetector;
 use subtitle_fast_validator::subtitle_detection::{
     DetectionRegion, IntegralBandDetector, LumaBandConfig, RoiConfig, SubtitleDetectionConfig,
-    SubtitleDetectionError, SubtitleDetector, VisionTextDetector,
+    SubtitleDetectionError, SubtitleDetector,
 };
 
 const TARGET: u8 = 235;
@@ -18,7 +20,10 @@ const DELTA: u8 = 12;
 const PRESETS: &[(usize, usize)] = &[(1920, 1080), (1920, 824)];
 const YUV_DIR: &str = "./demo/decoder/yuv";
 const OUT_DIR: &str = "./demo/validator";
+#[cfg(all(feature = "detector-vision", target_os = "macos"))]
 const DETECTORS: &[&str] = &["integral", "projection", "vision"];
+#[cfg(not(all(feature = "detector-vision", target_os = "macos")))]
+const DETECTORS: &[&str] = &["integral", "projection"];
 
 const DIGIT_WIDTH: i32 = 3;
 const DIGIT_HEIGHT: i32 = 5;
@@ -312,7 +317,12 @@ fn build_detector(
     match name {
         "integral" => Ok(Box::new(IntegralBandDetector::new(config)?)),
         "projection" => Ok(Box::new(ProjectionBandDetector::new(config)?)),
+        #[cfg(all(feature = "detector-vision", target_os = "macos"))]
         "vision" => Ok(Box::new(VisionTextDetector::new(config)?)),
+        #[cfg(not(all(feature = "detector-vision", target_os = "macos")))]
+        "vision" => Err(SubtitleDetectionError::Unsupported {
+            backend: "vision-detector",
+        }),
         other => {
             eprintln!("unknown detector '{other}', defaulting to unsupported error");
             Err(SubtitleDetectionError::Unsupported {
