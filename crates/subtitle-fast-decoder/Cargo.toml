@@ -30,3 +30,11 @@ cc = "1"
 [dev-dependencies]
 png = "0.18"
 indicatif = "0.17"
+
+[[example]]
+name = "decoder-bench"
+path = "examples/bench.rs"
+
+[[example]]
+name = "decoder-dump"
+path = "examples/dump.rs"
