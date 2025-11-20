@@ -541,7 +541,7 @@ unsafe fn threshold_pack_row_sse2(src: &[u8], dst: &mut [u8], lo: u8, hi: u8) ->
     let mut x = 0usize;
     let mut out_idx = 0usize;
     while x + 16 <= src.len() {
-        let pixels = _mm_loadu_si128(src.as_ptr().add(x) as *const __m128i);
+        let pixels = unsafe { _mm_loadu_si128(src.as_ptr().add(x) as *const __m128i) };
         let ge_lo = _mm_cmpeq_epi8(pixels, _mm_max_epu8(pixels, lo_vec));
         let le_hi = _mm_cmpeq_epi8(pixels, _mm_min_epu8(pixels, hi_vec));
         let mask_vec = _mm_and_si128(ge_lo, le_hi);

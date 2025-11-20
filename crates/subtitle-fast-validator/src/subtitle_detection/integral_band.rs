@@ -329,24 +329,25 @@ unsafe fn threshold_mask_sse2(
     let width = roi.width;
 
     for row in 0..roi.height {
-        let src_ptr = data.as_ptr().add((roi.y + row) * stride + roi.x);
-        let dst_ptr = mask.as_mut_ptr().add(row * width);
+        let src_ptr = unsafe { data.as_ptr().add((roi.y + row) * stride + roi.x) };
+        let dst_ptr = unsafe { mask.as_mut_ptr().add(row * width) };
 
         let mut x = 0usize;
         while x + 16 <= width {
-            let pixels = _mm_loadu_si128(src_ptr.add(x) as *const __m128i);
+            let pixels = unsafe { _mm_loadu_si128(src_ptr.add(x) as *const __m128i) };
             let ge_lo = _mm_cmpeq_epi8(pixels, _mm_max_epu8(pixels, lo_vec));
             let le_hi = _mm_cmpeq_epi8(pixels, _mm_min_epu8(pixels, hi_vec));
             let mut mask_vec = _mm_and_si128(ge_lo, le_hi);
             mask_vec = _mm_and_si128(mask_vec, ones);
-            _mm_storeu_si128(dst_ptr.add(x) as *mut __m128i, mask_vec);
+            unsafe { _mm_storeu_si128(dst_ptr.add(x) as *mut __m128i, mask_vec) };
             x += 16;
         }
 
         if x < width {
             let remaining = width - x;
-            let src_tail = std::slice::from_raw_parts(src_ptr.add(x), remaining);
-            let dst_tail = std::slice::from_raw_parts_mut(dst_ptr.add(x), remaining);
+            let src_tail = unsafe { std::slice::from_raw_parts(src_ptr.add(x), remaining) };
+            let dst_tail =
+                unsafe { std::slice::from_raw_parts_mut(dst_ptr.add(x), remaining) };
             threshold_mask_scalar_row(src_tail, dst_tail, lo, hi);
         }
     }
