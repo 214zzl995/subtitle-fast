@@ -1,6 +1,4 @@
-use crate::subtitle_detection::{
-    RoiConfig, SubtitleDetectorKind, DEFAULT_LUMA_DELTA, DEFAULT_LUMA_TARGET,
-};
+use crate::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET, RoiConfig, SubtitleDetectorKind};
 
 #[derive(Clone, Debug)]
 pub struct FrameValidatorConfig {
@@ -28,7 +26,7 @@ impl Default for SubtitleDetectionOptions {
         Self {
             enabled: true,
             roi: None,
-            detector: SubtitleDetectorKind::LumaBand,
+            detector: SubtitleDetectorKind::ProjectionBand,
             luma_band: LumaBandOptions::default(),
         }
     }
@@ -36,15 +34,15 @@ impl Default for SubtitleDetectionOptions {
 
 #[derive(Clone, Debug)]
 pub struct LumaBandOptions {
-    pub target_luma: u8,
+    pub target: u8,
     pub delta: u8,
 }
 
 impl Default for LumaBandOptions {
     fn default() -> Self {
         Self {
-            target_luma: DEFAULT_LUMA_TARGET,
-            delta: DEFAULT_LUMA_DELTA,
+            target: DEFAULT_TARGET,
+            delta: DEFAULT_DELTA,
         }
     }
 }

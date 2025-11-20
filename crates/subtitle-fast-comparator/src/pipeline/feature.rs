@@ -53,6 +53,8 @@ pub struct ComparisonReport {
     pub similarity: f32,
     pub same_segment: bool,
     pub details: Vec<ReportMetric>,
+    #[allow(dead_code)]
+    pub(crate) metrics: f32,
 }
 
 impl ComparisonReport {
@@ -61,6 +63,7 @@ impl ComparisonReport {
             similarity,
             same_segment,
             details: Vec::new(),
+            metrics: 0.0,
         }
     }
 
@@ -69,6 +72,7 @@ impl ComparisonReport {
             similarity,
             same_segment,
             details,
+            metrics: 0.0,
         }
     }
 }

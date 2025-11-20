@@ -12,8 +12,11 @@ use crate::core::{DynYPlaneProvider, YPlaneError, YPlaneResult};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Mock,
+    #[cfg(feature = "backend-ffmpeg")]
     Ffmpeg,
+    #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
     VideoToolbox,
+    #[cfg(all(feature = "backend-mft", target_os = "windows"))]
     Mft,
 }
 
@@ -23,8 +26,11 @@ impl FromStr for Backend {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "mock" => Ok(Backend::Mock),
+            #[cfg(feature = "backend-ffmpeg")]
             "ffmpeg" => Ok(Backend::Ffmpeg),
+            #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
             "videotoolbox" => Ok(Backend::VideoToolbox),
+            #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             "mft" => Ok(Backend::Mft),
             other => Err(YPlaneError::configuration(format!(
                 "unknown backend '{other}'"
@@ -37,9 +43,14 @@ impl Backend {
     pub fn as_str(&self) -> &'static str {
         match self {
             Backend::Mock => "mock",
+            #[cfg(feature = "backend-ffmpeg")]
             Backend::Ffmpeg => "ffmpeg",
+            #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
             Backend::VideoToolbox => "videotoolbox",
+            #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             Backend::Mft => "mft",
+            #[allow(unreachable_patterns)]
+            _ => "unsupported",
         }
     }
 }
@@ -84,10 +95,6 @@ fn append_platform_backends(backends: &mut Vec<Backend>) {
         if ffmpeg_runtime_available() {
             backends.push(Backend::Ffmpeg);
         }
-    }
-    #[cfg(feature = "backend-videotoolbox")]
-    {
-        backends.push(Backend::VideoToolbox);
     }
 }
 
@@ -163,49 +170,32 @@ impl Configuration {
                 }
                 return crate::backends::mock::boxed_mock(self.input.clone(), channel_capacity);
             }
+            #[cfg(feature = "backend-ffmpeg")]
             Backend::Ffmpeg => {
-                #[cfg(feature = "backend-ffmpeg")]
-                {
-                    let path = self.input.clone().ok_or_else(|| {
-                        YPlaneError::configuration("FFmpeg backend requires SUBFAST_INPUT")
-                    })?;
-                    return crate::backends::ffmpeg::boxed_ffmpeg(path, channel_capacity);
-                }
-                #[cfg(not(feature = "backend-ffmpeg"))]
-                {
-                    return Err(YPlaneError::unsupported("ffmpeg"));
-                }
+                let path = self.input.clone().ok_or_else(|| {
+                    YPlaneError::configuration("FFmpeg backend requires SUBFAST_INPUT")
+                })?;
+                return crate::backends::ffmpeg::boxed_ffmpeg(path, channel_capacity);
             }
+            #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
             Backend::VideoToolbox => {
-                #[cfg(feature = "backend-videotoolbox")]
-                {
-                    let path = self.input.clone().ok_or_else(|| {
-                        YPlaneError::configuration(
-                            "VideoToolbox backend requires SUBFAST_INPUT to be set",
-                        )
-                    })?;
-                    return crate::backends::videotoolbox::boxed_videotoolbox(
-                        path,
-                        channel_capacity,
-                    );
-                }
-                #[cfg(not(feature = "backend-videotoolbox"))]
-                {
-                    return Err(YPlaneError::unsupported("videotoolbox"));
-                }
+                let path = self.input.clone().ok_or_else(|| {
+                    YPlaneError::configuration(
+                        "VideoToolbox backend requires SUBFAST_INPUT to be set",
+                    )
+                })?;
+                return crate::backends::videotoolbox::boxed_videotoolbox(path, channel_capacity);
             }
+            #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             Backend::Mft => {
-                #[cfg(all(feature = "backend-mft", target_os = "windows"))]
-                {
-                    let path = self.input.clone().ok_or_else(|| {
-                        YPlaneError::configuration("MFT backend requires SUBFAST_INPUT to be set")
-                    })?;
-                    return crate::backends::mft::boxed_mft(path, channel_capacity);
-                }
-                #[cfg(not(all(feature = "backend-mft", target_os = "windows")))]
-                {
-                    return Err(YPlaneError::unsupported("mft"));
-                }
+                let path = self.input.clone().ok_or_else(|| {
+                    YPlaneError::configuration("MFT backend requires SUBFAST_INPUT to be set")
+                })?;
+                return crate::backends::mft::boxed_mft(path, channel_capacity);
+            }
+            #[allow(unreachable_patterns)]
+            other => {
+                return Err(YPlaneError::unsupported(other.as_str()));
             }
         }
     }
@@ -213,12 +203,13 @@ impl Configuration {
 
 fn default_backend() -> Backend {
     if github_ci_active() {
-        Backend::Mock
-    } else if cfg!(all(target_os = "windows", feature = "backend-mft")) {
-        Backend::Mft
-    } else {
-        Backend::Ffmpeg
+        return Backend::Mock;
     }
+    #[cfg(feature = "backend-ffmpeg")]
+    return Backend::Ffmpeg;
+
+    #[allow(unreachable_code)]
+    Backend::Mock
 }
 
 fn github_ci_active() -> bool {

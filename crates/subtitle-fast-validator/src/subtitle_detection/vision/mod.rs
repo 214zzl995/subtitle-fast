@@ -1,4 +1,4 @@
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 use std::slice;
 
 use super::{
@@ -30,7 +30,7 @@ struct CVisionResult {
     error: *mut c_char,
 }
 
-extern "C" {
+unsafe extern "C" {
     fn vision_detect_text_regions(
         data: *const u8,
         width: usize,

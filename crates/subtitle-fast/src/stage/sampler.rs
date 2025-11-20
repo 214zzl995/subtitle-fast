@@ -46,7 +46,7 @@ impl SamplerContext {
 }
 
 pub struct SampledFrame {
-    pub frame_index: u64,
+    frame_index: u64,
     frame: Arc<YPlaneFrame>,
     history: FrameHistory,
     context: Arc<SamplerContext>,
@@ -70,6 +70,15 @@ impl SampledFrame {
     #[allow(dead_code)]
     pub fn frame(&self) -> &YPlaneFrame {
         self.frame.as_ref()
+    }
+
+    pub fn frame_handle(&self) -> Arc<YPlaneFrame> {
+        Arc::clone(&self.frame)
+    }
+
+    #[allow(dead_code)]
+    pub fn frame_index(&self) -> u64 {
+        self.frame_index
     }
 
     #[allow(dead_code)]
@@ -128,6 +137,8 @@ impl FrameSampler {
                     }
                 }
             }
+
+            worker.emit_final_sample(&tx).await;
         });
 
         let stream = Box::pin(unfold(rx, |mut receiver| async {
@@ -147,6 +158,7 @@ struct SamplerWorker {
     schedule: SampleSchedule,
     fps: FpsEstimator,
     context: Arc<SamplerContext>,
+    last_sampled_index: Option<u64>,
 }
 
 impl SamplerWorker {
@@ -157,6 +169,7 @@ impl SamplerWorker {
             schedule: SampleSchedule::new(samples_per_second),
             fps: FpsEstimator::new(),
             context: Arc::new(SamplerContext::initial()),
+            last_sampled_index: None,
         }
     }
 
@@ -184,26 +197,45 @@ impl SamplerWorker {
         }
 
         let frame_arc = Arc::new(frame);
-        let history = if matches!(frame_type, FrameType::Sampled) {
-            Some(self.pool.snapshot())
-        } else {
-            None
-        };
-
         self.pool.push(PoolEntry::new(
             frame_index,
             frame_type,
             Arc::clone(&frame_arc),
         ));
 
+        let history = if matches!(frame_type, FrameType::Sampled) {
+            Some(self.pool.snapshot())
+        } else {
+            None
+        };
+
         if let Some(history) = history {
             let sample = SampledFrame::new(frame_index, frame_arc, history, self.context.clone());
             if tx.send(Ok(sample)).await.is_err() {
                 return Err(());
             }
+            self.last_sampled_index = Some(frame_index);
         }
 
         Ok(())
+    }
+
+    async fn emit_final_sample(&mut self, tx: &mpsc::Sender<SamplerResult>) {
+        let Some(latest) = self.pool.latest() else {
+            return;
+        };
+        if self.last_sampled_index == Some(latest.frame_index) {
+            return;
+        }
+        let history = self.pool.snapshot();
+        let sample = SampledFrame::new(
+            latest.frame_index,
+            latest.frame_handle(),
+            history,
+            self.context.clone(),
+        );
+        let _ = tx.send(Ok(sample)).await;
+        self.last_sampled_index = Some(latest.frame_index);
     }
 
     fn update_tuning(&mut self, fps: f64) {
@@ -248,6 +280,10 @@ impl SamplerPool {
     fn push(&mut self, entry: PoolEntry) {
         self.entries.push_back(entry);
         self.trim();
+    }
+
+    fn latest(&self) -> Option<&PoolEntry> {
+        self.entries.back()
     }
 
     fn snapshot(&self) -> FrameHistory {
@@ -401,6 +437,10 @@ impl PoolEntry {
             frame,
         }
     }
+
+    fn frame_handle(&self) -> Arc<YPlaneFrame> {
+        Arc::clone(&self.frame)
+    }
 }
 
 #[allow(dead_code)]
@@ -449,5 +489,76 @@ impl HistoryRecord {
     #[allow(dead_code)]
     pub fn frame_handle(&self) -> Arc<YPlaneFrame> {
         Arc::clone(&self.frame)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sampled_history_includes_current_frame() {
+        let mut worker = SamplerWorker::new(1);
+        let (tx, mut rx) = mpsc::channel(1);
+        let frame = YPlaneFrame::from_owned(2, 2, 2, Some(Duration::from_millis(0)), vec![0; 4])
+            .expect("frame");
+
+        worker
+            .handle_frame(frame, &tx)
+            .await
+            .expect("frame handled");
+
+        let sample = rx
+            .recv()
+            .await
+            .expect("sample missing")
+            .expect("sample result");
+        let frame_index = sample.frame_index();
+        let has_current = sample
+            .history()
+            .records()
+            .iter()
+            .any(|record| record.frame_index == frame_index);
+
+        assert!(has_current, "sample history should include current frame");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn final_sample_emitted_for_unsampled_tail() {
+        let mut worker = SamplerWorker::new(1);
+        let (tx, mut rx) = mpsc::channel(4);
+
+        let frame_a =
+            YPlaneFrame::from_owned(2, 2, 2, Some(Duration::from_millis(0)), vec![1; 4]).unwrap();
+        let frame_b =
+            YPlaneFrame::from_owned(2, 2, 2, Some(Duration::from_millis(10)), vec![2; 4]).unwrap();
+
+        worker
+            .handle_frame(frame_a, &tx)
+            .await
+            .expect("first frame");
+        let first = rx.recv().await.expect("first sample").expect("ok");
+        assert_eq!(first.frame_index(), 0);
+
+        worker
+            .handle_frame(frame_b, &tx)
+            .await
+            .expect("second frame");
+        assert!(
+            rx.try_recv().is_err(),
+            "second frame should not be sampled yet"
+        );
+
+        worker.emit_final_sample(&tx).await;
+        let final_sample = rx.recv().await.expect("final sample").expect("ok");
+        assert_eq!(final_sample.frame_index(), 1);
+        assert!(
+            final_sample
+                .history()
+                .records()
+                .iter()
+                .any(|record| record.frame_index == 1),
+            "final history should include latest frame"
+        );
     }
 }

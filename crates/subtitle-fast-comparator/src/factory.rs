@@ -2,27 +2,20 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::preprocess::PreprocessSettings;
-use crate::{
-    ChamferEdgeComparator, HybridMaskComparator, SpectralHashComparator, StructuralDssimComparator,
-    SubtitleComparator,
-};
+use crate::comparators::{BitsetCoverComparator, SparseChamferComparator, SubtitleComparator};
+use crate::pipeline::PreprocessSettings;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ComparatorKind {
-    SpectralHash,
-    StructuralDssim,
-    HybridMask,
-    EdgeChamfer,
+    BitsetCover,
+    SparseChamfer,
 }
 
 impl ComparatorKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            ComparatorKind::SpectralHash => "spectral-hash",
-            ComparatorKind::StructuralDssim => "structural-dssim",
-            ComparatorKind::HybridMask => "hybrid-mask",
-            ComparatorKind::EdgeChamfer => "edge-chamfer",
+            ComparatorKind::BitsetCover => "bitset-cover",
+            ComparatorKind::SparseChamfer => "sparse-chamfer",
         }
     }
 }
@@ -44,10 +37,8 @@ impl FromStr for ComparatorKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let lower = s.trim().to_ascii_lowercase();
         match lower.as_str() {
-            "spectral-hash" => Ok(ComparatorKind::SpectralHash),
-            "structural-dssim" => Ok(ComparatorKind::StructuralDssim),
-            "hybrid-mask" => Ok(ComparatorKind::HybridMask),
-            "edge-chamfer" => Ok(ComparatorKind::EdgeChamfer),
+            "bitset-cover" => Ok(ComparatorKind::BitsetCover),
+            "sparse-chamfer" => Ok(ComparatorKind::SparseChamfer),
             _ => Err(ComparatorKindParseError(lower)),
         }
     }
@@ -56,15 +47,15 @@ impl FromStr for ComparatorKind {
 #[derive(Copy, Clone, Debug)]
 pub struct ComparatorSettings {
     pub kind: ComparatorKind,
-    pub target_luma: u8,
-    pub luma_delta: u8,
+    pub target: u8,
+    pub delta: u8,
 }
 
 impl ComparatorSettings {
     fn preprocess(&self) -> PreprocessSettings {
         PreprocessSettings {
-            target_luma: self.target_luma,
-            luma_delta: self.luma_delta,
+            target: self.target,
+            delta: self.delta,
         }
     }
 }
@@ -81,10 +72,8 @@ impl ComparatorFactory {
     pub fn build(&self) -> Arc<dyn SubtitleComparator> {
         let preprocess = self.settings.preprocess();
         match self.settings.kind {
-            ComparatorKind::SpectralHash => Arc::new(SpectralHashComparator::new(preprocess)),
-            ComparatorKind::StructuralDssim => Arc::new(StructuralDssimComparator::new(preprocess)),
-            ComparatorKind::HybridMask => Arc::new(HybridMaskComparator::new(preprocess)),
-            ComparatorKind::EdgeChamfer => Arc::new(ChamferEdgeComparator::new(preprocess)),
+            ComparatorKind::BitsetCover => Arc::new(BitsetCoverComparator::new(preprocess)),
+            ComparatorKind::SparseChamfer => Arc::new(SparseChamferComparator::new(preprocess)),
         }
     }
 }

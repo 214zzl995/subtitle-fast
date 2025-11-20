@@ -1,42 +1,25 @@
 use std::path::PathBuf;
 
 use clap::parser::ValueSource;
-use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum};
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-pub enum DumpFormat {
-    Jpeg,
-    Png,
-    Webp,
-    Yuv,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-pub enum OcrBackend {
-    Auto,
-    Vision,
-    Noop,
-}
+use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
 
 #[derive(Debug, Default)]
 pub struct CliSources {
-    pub dump_format_from_cli: bool,
     pub detection_sps_from_cli: bool,
-    pub ocr_backend_from_cli: bool,
-    pub ocr_languages_from_cli: bool,
-    pub ocr_auto_detect_language_from_cli: bool,
     pub decoder_channel_capacity_from_cli: bool,
+    pub detector_target_from_cli: bool,
+    pub detector_delta_from_cli: bool,
+    pub comparator_from_cli: bool,
 }
 
 impl CliSources {
     fn from_matches(matches: &ArgMatches) -> Self {
         Self {
-            dump_format_from_cli: value_from_cli(matches, "dump_format"),
             detection_sps_from_cli: value_from_cli(matches, "detection_samples_per_second"),
-            ocr_backend_from_cli: value_from_cli(matches, "ocr_backend"),
-            ocr_languages_from_cli: value_from_cli(matches, "ocr_languages"),
-            ocr_auto_detect_language_from_cli: value_from_cli(matches, "ocr_auto_detect_language"),
             decoder_channel_capacity_from_cli: value_from_cli(matches, "decoder_channel_capacity"),
+            detector_target_from_cli: value_from_cli(matches, "detector_target"),
+            detector_delta_from_cli: value_from_cli(matches, "detector_delta"),
+            comparator_from_cli: value_from_cli(matches, "comparator"),
         }
     }
 }
@@ -73,62 +56,18 @@ pub struct CliArgs {
     #[arg(long = "config")]
     pub config: Option<PathBuf>,
 
-    /// Final output path for generated subtitle data (SRT)
-    #[arg(long = "output", value_name = "FILE")]
-    pub output: PathBuf,
-
-    /// Output directory for writing sampled frames as image files
-    #[arg(long = "dump-dir")]
-    pub dump_dir: Option<PathBuf>,
-
     /// Print the list of available decoding backends
     #[arg(long = "list-backends")]
     pub list_backends: bool,
-
-    /// Image format for dumped frames when --dump-dir is set
-    #[arg(long = "dump-format", value_enum, default_value_t = DumpFormat::Jpeg)]
-    pub dump_format: DumpFormat,
 
     /// Subtitle detection samples per second
     #[arg(
         long = "detection-samples-per-second",
         alias = "detection-sps",
         default_value_t = 7,
-        value_parser = clap::value_parser!(u32).range(1..)
+        value_parser = parse_positive_u32
     )]
     pub detection_samples_per_second: u32,
-
-    /// Preferred OCR backend
-    #[arg(long = "ocr-backend", value_enum, default_value_t = OcrBackend::Auto)]
-    pub ocr_backend: OcrBackend,
-
-    /// Restrict OCR to the provided language (repeatable)
-    #[arg(long = "ocr-language", id = "ocr_languages", value_name = "LANG")]
-    pub ocr_languages: Vec<String>,
-
-    /// Enable or disable automatic language detection inside the OCR backend
-    #[arg(
-        long = "ocr-auto-detect-language",
-        id = "ocr_auto_detect_language",
-        value_parser = clap::value_parser!(bool)
-    )]
-    pub ocr_auto_detect_language: Option<bool>,
-
-    /// Target Y-plane brightness used by the luma-band detector (0-255)
-    #[arg(
-        long = "detection-luma-target",
-        id = "detection_luma_target",
-        value_parser = clap::value_parser!(u8)
-    )]
-    pub detection_luma_target: Option<u8>,
-
-    /// Allowed deviation around the target brightness for the luma-band detector (0-255)
-    #[arg(
-        long = "detection-luma-delta",
-        id = "detection_luma_delta",
-        value_parser = clap::value_parser!(u8)
-    )]
-    pub detection_luma_delta: Option<u8>,
 
     /// Decoder frame queue capacity before applying backpressure
     #[arg(
@@ -138,6 +77,38 @@ pub struct CliArgs {
     )]
     pub decoder_channel_capacity: Option<usize>,
 
+    /// Override the detector target value (0-255)
+    #[arg(long = "detector-target", value_parser = parse_u8_byte)]
+    pub detector_target: Option<u8>,
+
+    /// Override the detector delta value (0-255)
+    #[arg(long = "detector-delta", value_parser = parse_u8_byte)]
+    pub detector_delta: Option<u8>,
+
+    /// Subtitle comparator to use (bitset-cover, sparse-chamfer)
+    #[arg(long = "comparator")]
+    pub comparator: Option<String>,
+
+    /// Output subtitle file path
+    #[arg(short = 'o', long = "output")]
+    pub output: Option<PathBuf>,
+
     /// Input video path
     pub input: Option<PathBuf>,
+}
+
+fn parse_u8_byte(value: &str) -> Result<u8, String> {
+    value
+        .parse::<u8>()
+        .map_err(|_| format!("'{value}' is not a valid 0-255 value"))
+}
+
+fn parse_positive_u32(value: &str) -> Result<u32, String> {
+    let parsed = value
+        .parse::<u32>()
+        .map_err(|_| format!("'{value}' is not a valid number"))?;
+    if parsed == 0 {
+        return Err("value must be at least 1".into());
+    }
+    Ok(parsed)
 }

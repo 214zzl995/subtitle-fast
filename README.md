@@ -53,6 +53,10 @@ Configuration is merged from CLI flags, a `subtitle-fast.toml` file (if present 
 platform-specific config directories. Paths are normalised, defaults are applied, and the resulting plan records where
 frames should be dumped, which OCR backend to use, and how aggressive detection should be.
 
+Detector tuning intentionally sticks to the two historical knobs: `--detector-target` and `--detector-delta` (or the
+`target` / `delta` keys under `[detection]` in `subtitle-fast.toml`). Every other heuristic now relies on the detector's
+internal defaults so behaviour stays predictable across runs.
+
 OCR model paths can be provided as local paths or HTTP(S)/`file://` URLs. Remote models are cached locally the first time
 they are used so subsequent runs start quickly.
 
@@ -77,6 +81,7 @@ Key CLI flags include:
 
 - `--backend` – lock decoding to a specific backend (`mock`, `ffmpeg`, `videotoolbox`, `mft`).
 - `--detection-samples-per-second` – tune the temporal sampling budget.
+- `--comparator` – choose the subtitle comparator (`bitset-cover` default, or `sparse-chamfer` for comparison).
 - `--ocr-backend` plus `--ocr-language` flags – steer OCR behaviour.
 - `--dump-dir` and `--dump-format` – emit annotated frames for visual inspection.
 

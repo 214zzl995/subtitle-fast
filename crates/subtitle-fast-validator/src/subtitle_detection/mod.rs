@@ -1,23 +1,35 @@
 use serde::Serialize;
+use std::env;
 use subtitle_fast_decoder::YPlaneFrame;
 use thiserror::Error;
 
-pub mod luma_band;
-pub use luma_band::LumaBandDetector;
+pub mod integral_band;
+pub mod projection_band;
+pub use integral_band::IntegralBandDetector;
+pub use projection_band::ProjectionBandDetector;
 
 #[cfg(all(feature = "detector-vision", target_os = "macos"))]
 pub mod vision;
 #[cfg(all(feature = "detector-vision", target_os = "macos"))]
 pub use vision::VisionTextDetector;
 
-pub const DEFAULT_LUMA_TARGET: u8 = 230;
-pub const DEFAULT_LUMA_DELTA: u8 = 12;
+pub const DEFAULT_TARGET: u8 = 230;
+pub const DEFAULT_DELTA: u8 = 12;
+pub const MIN_REGION_HEIGHT_PX: usize = 24;
+pub const MIN_REGION_WIDTH_PX: usize = 24;
+const REGION_DEBUG_ENV: &str = "REGION_DEBUG";
 
 #[cfg(target_os = "macos")]
-const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[SubtitleDetectorKind::LumaBand];
+const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[
+    SubtitleDetectorKind::ProjectionBand,
+    SubtitleDetectorKind::IntegralBand,
+];
 
 #[cfg(not(target_os = "macos"))]
-const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[SubtitleDetectorKind::LumaBand];
+const AUTO_DETECTOR_PRIORITY: &[SubtitleDetectorKind] = &[
+    SubtitleDetectorKind::ProjectionBand,
+    SubtitleDetectorKind::IntegralBand,
+];
 
 fn backend_for_kind(kind: SubtitleDetectorKind) -> Option<&'static dyn DetectorBackend> {
     match kind {
@@ -32,7 +44,8 @@ fn backend_for_kind(kind: SubtitleDetectorKind) -> Option<&'static dyn DetectorB
                 return None;
             }
         }
-        SubtitleDetectorKind::LumaBand => Some(&LUMA_BAND_BACKEND),
+        SubtitleDetectorKind::IntegralBand => Some(&INTEGRAL_BAND_BACKEND),
+        SubtitleDetectorKind::ProjectionBand => Some(&PROJECTION_BAND_BACKEND),
     }
 }
 
@@ -72,8 +85,14 @@ impl SubtitleDetectionResult {
 
 #[derive(Debug, Clone, Copy)]
 pub struct LumaBandConfig {
-    pub target_luma: u8,
+    pub target: u8,
     pub delta: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GapFillMode {
+    Distance,
+    Closing,
 }
 
 trait DetectorBackend {
@@ -115,29 +134,52 @@ impl DetectorBackend for VisionBackend {
 #[cfg(all(feature = "detector-vision", target_os = "macos"))]
 static VISION_BACKEND: VisionBackend = VisionBackend;
 
-struct LumaBandBackend;
+struct IntegralBandBackend;
 
-impl DetectorBackend for LumaBandBackend {
+impl DetectorBackend for IntegralBandBackend {
     fn kind(&self) -> SubtitleDetectorKind {
-        SubtitleDetectorKind::LumaBand
+        SubtitleDetectorKind::IntegralBand
     }
 
     fn ensure_available(
         &self,
         config: &SubtitleDetectionConfig,
     ) -> Result<(), SubtitleDetectionError> {
-        LumaBandDetector::ensure_available(config)
+        IntegralBandDetector::ensure_available(config)
     }
 
     fn build(
         &self,
         config: SubtitleDetectionConfig,
     ) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
-        Ok(Box::new(LumaBandDetector::new(config)?))
+        Ok(Box::new(IntegralBandDetector::new(config)?))
     }
 }
 
-static LUMA_BAND_BACKEND: LumaBandBackend = LumaBandBackend;
+struct ProjectionBandBackend;
+
+impl DetectorBackend for ProjectionBandBackend {
+    fn kind(&self) -> SubtitleDetectorKind {
+        SubtitleDetectorKind::ProjectionBand
+    }
+
+    fn ensure_available(
+        &self,
+        config: &SubtitleDetectionConfig,
+    ) -> Result<(), SubtitleDetectionError> {
+        ProjectionBandDetector::ensure_available(config)
+    }
+
+    fn build(
+        &self,
+        config: SubtitleDetectionConfig,
+    ) -> Result<Box<dyn SubtitleDetector>, SubtitleDetectionError> {
+        Ok(Box::new(ProjectionBandDetector::new(config)?))
+    }
+}
+
+static INTEGRAL_BAND_BACKEND: IntegralBandBackend = IntegralBandBackend;
+static PROJECTION_BAND_BACKEND: ProjectionBandBackend = ProjectionBandBackend;
 
 #[derive(Debug, Error)]
 pub enum SubtitleDetectionError {
@@ -173,8 +215,8 @@ impl SubtitleDetectionConfig {
                 height: 1.0,
             },
             luma_band: LumaBandConfig {
-                target_luma: DEFAULT_LUMA_TARGET,
-                delta: DEFAULT_LUMA_DELTA,
+                target: DEFAULT_TARGET,
+                delta: DEFAULT_DELTA,
             },
         }
     }
@@ -187,8 +229,11 @@ pub fn preflight_detection(kind: SubtitleDetectorKind) -> Result<(), SubtitleDet
         SubtitleDetectorKind::MacVision => {
             ensure_backend_available(SubtitleDetectorKind::MacVision, &probe_config)
         }
-        SubtitleDetectorKind::LumaBand => {
-            ensure_backend_available(SubtitleDetectorKind::LumaBand, &probe_config)
+        SubtitleDetectorKind::IntegralBand => {
+            ensure_backend_available(SubtitleDetectorKind::IntegralBand, &probe_config)
+        }
+        SubtitleDetectorKind::ProjectionBand => {
+            ensure_backend_available(SubtitleDetectorKind::ProjectionBand, &probe_config)
         }
     }
 }
@@ -220,7 +265,8 @@ fn preflight_auto(probe_config: &SubtitleDetectionConfig) -> Result<(), Subtitle
 pub enum SubtitleDetectorKind {
     Auto,
     MacVision,
-    LumaBand,
+    IntegralBand,
+    ProjectionBand,
 }
 
 impl SubtitleDetectorKind {
@@ -228,7 +274,8 @@ impl SubtitleDetectorKind {
         match self {
             SubtitleDetectorKind::Auto => "auto",
             SubtitleDetectorKind::MacVision => "macos-vision",
-            SubtitleDetectorKind::LumaBand => "luma",
+            SubtitleDetectorKind::IntegralBand => "integral-band",
+            SubtitleDetectorKind::ProjectionBand => "projection-band",
         }
     }
 }
@@ -263,6 +310,28 @@ pub fn build_detector(
 
 fn auto_backend_priority() -> &'static [SubtitleDetectorKind] {
     AUTO_DETECTOR_PRIORITY
+}
+
+fn region_debug_enabled() -> bool {
+    env::var_os(REGION_DEBUG_ENV).is_some()
+}
+
+pub(crate) fn log_region_debug(
+    detector: &str,
+    event: &str,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    score: f32,
+) {
+    if !region_debug_enabled() {
+        return;
+    }
+    eprintln!(
+        "[region-debug][{}] {} x={} y={} w={} h={} score={:.3}",
+        detector, event, x, y, width, height, score
+    );
 }
 
 fn build_auto(

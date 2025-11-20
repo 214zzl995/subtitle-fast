@@ -1,17 +1,13 @@
 mod backend;
 mod cli;
-mod pipeline;
-mod progress;
 mod settings;
 mod stage;
-mod tools;
 
 use backend::ExecutionPlan;
 use clap::CommandFactory;
 use cli::{CliArgs, CliSources, parse_cli};
-use pipeline::PipelineConfig;
 use settings::{ConfigError, resolve_settings};
-use std::fs;
+use stage::PipelineConfig;
 use std::num::NonZeroUsize;
 use subtitle_fast_decoder::YPlaneError;
 
@@ -49,14 +45,7 @@ async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, YPlaneError> 
     let resolved = resolve_settings(&cli_args, &cli_sources).map_err(map_config_error)?;
     let settings = resolved.settings;
 
-    if let Some(image) = settings.debug.image.as_ref() {
-        fs::create_dir_all(&image.dir)?;
-    }
-    if let Some(json) = settings.debug.json.as_ref() {
-        fs::create_dir_all(&json.dir)?;
-    }
-
-    let pipeline = PipelineConfig::from_settings(&settings);
+    let pipeline = PipelineConfig::from_settings(&settings, &input)?;
 
     let env_backend_present = std::env::var("SUBFAST_BACKEND").is_ok();
     let mut config = subtitle_fast_decoder::Configuration::from_env().unwrap_or_default();

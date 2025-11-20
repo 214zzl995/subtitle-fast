@@ -5,7 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [features]
-default = []
+default = ["backend-ffmpeg", "backend-videotoolbox", "backend-mft"]
 backend-ffmpeg = ["dep:ffmpeg-next"]
 backend-videotoolbox = [
     "dep:mp4",
@@ -26,3 +26,15 @@ rayon = { version = "1.10", optional = true }
 
 [build-dependencies]
 cc = "1"
+
+[dev-dependencies]
+png = "0.18"
+indicatif = "0.17"
+
+[[example]]
+name = "decoder-bench"
+path = "examples/bench.rs"
+
+[[example]]
+name = "decoder-dump"
+path = "examples/dump.rs"

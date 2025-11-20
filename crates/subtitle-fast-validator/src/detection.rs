@@ -1,7 +1,7 @@
 use crate::config::SubtitleDetectionOptions;
 use crate::subtitle_detection::{
-    build_detector, LumaBandConfig, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
-    SubtitleDetectionResult, SubtitleDetector, SubtitleDetectorKind,
+    LumaBandConfig, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
+    SubtitleDetectionResult, SubtitleDetector, SubtitleDetectorKind, build_detector,
 };
 use std::time::Duration;
 use subtitle_fast_decoder::YPlaneFrame;
@@ -106,7 +106,7 @@ impl SubtitleDetectionState {
             self.detector_roi = desired_roi;
             let mut detector_config = SubtitleDetectionConfig::for_frame(dims.0, dims.1, dims.2);
             detector_config.luma_band = LumaBandConfig {
-                target_luma: self.options.luma_band.target_luma,
+                target: self.options.luma_band.target,
                 delta: self.options.luma_band.delta,
             };
             if let Some(roi) = desired_roi {

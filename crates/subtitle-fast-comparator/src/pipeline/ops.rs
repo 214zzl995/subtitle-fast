@@ -66,12 +66,13 @@ pub fn gaussian_blur_3x3(pixels: &[f32], width: usize, height: usize) -> Vec<f32
     output
 }
 
-pub fn sobel_magnitude(pixels: &[f32], width: usize, height: usize) -> Vec<f32> {
+pub fn sobel_magnitude_into(pixels: &[f32], width: usize, height: usize, output: &mut Vec<f32>) {
     assert_eq!(pixels.len(), width * height);
+    output.clear();
     if width == 0 || height == 0 {
-        return Vec::new();
+        return;
     }
-    let mut output = vec![0.0f32; pixels.len()];
+    output.resize(pixels.len(), 0.0);
     for y in 1..height - 1 {
         for x in 1..width - 1 {
             let idx = y * width + x;
@@ -87,9 +88,14 @@ pub fn sobel_magnitude(pixels: &[f32], width: usize, height: usize) -> Vec<f32> 
                 - pixels[(y - 1) * width + (x - 1)]
                 - 2.0 * pixels[(y - 1) * width + x]
                 - pixels[(y - 1) * width + (x + 1)];
-            output[idx] = (gx * gx + gy * gy).sqrt();
+            output[idx] = gx.abs() + gy.abs();
         }
     }
+}
+
+pub fn sobel_magnitude(pixels: &[f32], width: usize, height: usize) -> Vec<f32> {
+    let mut output = Vec::new();
+    sobel_magnitude_into(pixels, width, height, &mut output);
     output
 }
 
@@ -111,15 +117,23 @@ pub fn normalize(values: &mut [f32]) {
     }
 }
 
+pub fn percentile_in_place(values: &mut [f32], pct: f32) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let len = values.len();
+    let target = ((len - 1) as f32 * pct.clamp(0.0, 1.0)).round() as usize;
+    let (_, value, _) =
+        values.select_nth_unstable_by(target, |a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    *value
+}
+
 pub fn percentile(values: &[f32], pct: f32) -> f32 {
     if values.is_empty() {
         return 0.0;
     }
     let mut buf: Vec<f32> = values.to_vec();
-    let target = ((buf.len() - 1) as f32 * pct.clamp(0.0, 1.0)).round() as usize;
-    let (_, value, _) =
-        buf.select_nth_unstable_by(target, |a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-    *value
+    percentile_in_place(&mut buf, pct)
 }
 
 pub fn distance_transform(edge_map: &[u8], width: usize, height: usize) -> Vec<f32> {
