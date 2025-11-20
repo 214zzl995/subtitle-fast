@@ -1,6 +1,7 @@
 pub mod detector;
 pub mod ocr;
 pub mod progress;
+pub mod progress_gui;
 pub mod sampler;
 pub mod segmenter;
 pub mod sorter;
@@ -17,6 +18,7 @@ use crate::settings::{DetectionSettings, EffectiveSettings};
 use detector::Detector;
 use ocr::{OcrStageError, SubtitleOcr};
 use progress::Progress;
+use progress_gui::GuiProgress;
 use sampler::FrameSampler;
 use segmenter::{SegmenterError, SubtitleSegmenter};
 use sorter::FrameSorter;
@@ -93,7 +95,11 @@ pub async fn run_pipeline(
     let segmented = SubtitleSegmenter::new(&pipeline.detection).attach(detected);
     let ocred = SubtitleOcr::new(Arc::clone(&pipeline.ocr.engine)).attach(segmented);
     let written = SubtitleWriter::new(pipeline.output.path.clone()).attach(ocred);
-    let monitored = Progress::new("pipeline").attach(written);
+    let monitored = if let Some(handle) = progress_gui::global_gui_progress() {
+        GuiProgress::new(handle).attach(written)
+    } else {
+        Progress::new("pipeline").attach(written)
+    };
 
     let StreamBundle { stream, .. }: StreamBundle<WriterResult> = monitored;
     let mut writer_stream = stream;

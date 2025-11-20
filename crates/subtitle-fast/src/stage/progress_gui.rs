@@ -1,0 +1,357 @@
+use std::ffi::CString;
+use std::os::raw::c_char;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use futures_util::{StreamExt, stream::unfold};
+use tokio::sync::mpsc;
+
+use super::StreamBundle;
+use super::detector::DetectionSample;
+use super::ocr::OcrTimings;
+use super::segmenter::SegmentTimings;
+use super::writer::{SubtitleWriterError, WriterResult, WriterStatus, WriterTimings};
+
+const GUI_PROGRESS_CHANNEL_CAPACITY: usize = 4;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GuiProgressCallbacks {
+    pub user_data: *mut std::os::raw::c_void,
+    pub on_progress: Option<extern "C" fn(*const GuiProgressUpdate, *mut std::os::raw::c_void)>,
+    pub on_error: Option<extern "C" fn(*const GuiProgressError, *mut std::os::raw::c_void)>,
+}
+
+unsafe impl Send for GuiProgressCallbacks {}
+unsafe impl Sync for GuiProgressCallbacks {}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct GuiProgressUpdate {
+    pub samples_seen: u64,
+    pub latest_frame_index: u64,
+    pub total_frames: u64,
+    pub fps: f64,
+    pub det_ms: f64,
+    pub seg_ms: f64,
+    pub pf_ms: f64,
+    pub ocr_ms: f64,
+    pub writer_ms: f64,
+    pub cues: u64,
+    pub ocr_empty: u64,
+    pub progress: f64,
+    pub completed: bool,
+}
+
+#[repr(C)]
+pub struct GuiProgressError {
+    pub message: *const c_char,
+}
+
+pub struct GuiProgressHandle {
+    inner: Arc<GuiProgressInner>,
+}
+
+impl GuiProgressHandle {
+    pub(crate) fn new(callbacks: GuiProgressCallbacks, total_frames: Option<u64>) -> Self {
+        Self {
+            inner: Arc::new(GuiProgressInner::new(callbacks, total_frames)),
+        }
+    }
+
+    pub(crate) fn inner(&self) -> Arc<GuiProgressInner> {
+        Arc::clone(&self.inner)
+    }
+}
+
+struct GuiProgressState {
+    total_frames: Option<u64>,
+    samples_seen: u64,
+    latest_frame_index: Option<u64>,
+    started: Instant,
+    avg_detection_ms: Option<f64>,
+    segment_frames: u64,
+    segment_total: Duration,
+    ocr_intervals: u64,
+    ocr_prefilter_runs: u64,
+    ocr_prefilter_total: Duration,
+    ocr_total: Duration,
+    writer_cues: u64,
+    writer_empty_ocr: u64,
+    writer_total: Duration,
+}
+
+pub(crate) struct GuiProgressInner {
+    callbacks: GuiProgressCallbacks,
+    state: Mutex<GuiProgressState>,
+}
+
+impl GuiProgressInner {
+    fn new(callbacks: GuiProgressCallbacks, total_frames: Option<u64>) -> Self {
+        let state = GuiProgressState {
+            total_frames,
+            samples_seen: 0,
+            latest_frame_index: None,
+            started: Instant::now(),
+            avg_detection_ms: None,
+            segment_frames: 0,
+            segment_total: Duration::ZERO,
+            ocr_intervals: 0,
+            ocr_prefilter_runs: 0,
+            ocr_prefilter_total: Duration::ZERO,
+            ocr_total: Duration::ZERO,
+            writer_cues: 0,
+            writer_empty_ocr: 0,
+            writer_total: Duration::ZERO,
+        };
+        Self {
+            callbacks,
+            state: Mutex::new(state),
+        }
+    }
+
+    fn set_total_frames(&self, total_frames: Option<u64>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.total_frames = total_frames;
+        }
+    }
+
+    fn observe(&self, event: &WriterResult) {
+        match event {
+            Ok(event) => {
+                self.observe_writer_event(event);
+            }
+            Err(err) => {
+                self.emit_error(err);
+            }
+        }
+    }
+
+    fn observe_writer_event(&self, event: &super::writer::WriterEvent) {
+        if let Ok(mut state) = self.state.lock() {
+            if let Some(sample) = &event.sample {
+                Self::observe_sample(&mut state, sample);
+            }
+            Self::observe_segment_time(&mut state, event.segment_timings);
+            Self::observe_ocr_time(&mut state, event.ocr_timings);
+            Self::observe_writer_time(&mut state, event.writer_timings);
+
+            let completed = matches!(event.status, WriterStatus::Completed { .. });
+            let update = Self::snapshot(&state, completed);
+            drop(state);
+            self.emit_progress(&update);
+        }
+    }
+
+    fn finish(&self) {
+        if let Ok(state) = self.state.lock() {
+            let update = Self::snapshot(&state, true);
+            drop(state);
+            self.emit_progress(&update);
+        }
+    }
+
+    fn observe_sample(state: &mut GuiProgressState, sample: &DetectionSample) {
+        state.samples_seen = state.samples_seen.saturating_add(1);
+        if let Some(total) = state.total_frames {
+            let frame_index = sample.sample.frame_index();
+            state.latest_frame_index = Some(frame_index);
+            let next = std::cmp::min(frame_index.saturating_add(1), total);
+            state.samples_seen = next;
+        }
+        Self::observe_detection_time(state, sample.elapsed);
+    }
+
+    fn observe_detection_time(state: &mut GuiProgressState, elapsed: Duration) {
+        let millis = elapsed.as_secs_f64() * 1000.0;
+        let alpha = 0.1;
+        state.avg_detection_ms = Some(match state.avg_detection_ms {
+            Some(current) => (1.0 - alpha) * current + alpha * millis,
+            None => millis,
+        });
+    }
+
+    fn observe_segment_time(state: &mut GuiProgressState, timings: Option<SegmentTimings>) {
+        let Some(timings) = timings else {
+            return;
+        };
+        state.segment_frames = state.segment_frames.saturating_add(timings.frames);
+        state.segment_total = state.segment_total.saturating_add(timings.total);
+    }
+
+    fn observe_ocr_time(state: &mut GuiProgressState, timings: Option<OcrTimings>) {
+        let Some(timings) = timings else {
+            return;
+        };
+        state.ocr_intervals = state.ocr_intervals.saturating_add(timings.intervals);
+        state.ocr_prefilter_runs = state
+            .ocr_prefilter_runs
+            .saturating_add(timings.prefilter_runs);
+        state.ocr_prefilter_total = state
+            .ocr_prefilter_total
+            .saturating_add(timings.prefilter_duration);
+        state.ocr_total = state.ocr_total.saturating_add(timings.total);
+    }
+
+    fn observe_writer_time(state: &mut GuiProgressState, timings: Option<WriterTimings>) {
+        let Some(timings) = timings else {
+            return;
+        };
+        if timings.cues > 0 {
+            state.writer_cues = state.writer_cues.saturating_add(timings.cues);
+        }
+        state.writer_empty_ocr = state.writer_empty_ocr.saturating_add(timings.ocr_empty);
+        state.writer_total = state.writer_total.saturating_add(timings.total);
+    }
+
+    fn snapshot(state: &GuiProgressState, completed: bool) -> GuiProgressUpdate {
+        let total_frames = state.total_frames.unwrap_or(0);
+        let latest = state.latest_frame_index.unwrap_or(state.samples_seen);
+        let elapsed = state.started.elapsed().as_secs_f64();
+        GuiProgressUpdate {
+            samples_seen: state.samples_seen,
+            latest_frame_index: latest,
+            total_frames,
+            fps: if elapsed > 0.0 {
+                (latest as f64) / elapsed
+            } else {
+                0.0
+            },
+            det_ms: state.avg_detection_ms.unwrap_or(0.0),
+            seg_ms: average_ms(state.segment_total, state.segment_frames),
+            pf_ms: average_ms(state.ocr_prefilter_total, state.ocr_prefilter_runs),
+            ocr_ms: average_ms(state.ocr_total, state.ocr_intervals),
+            writer_ms: average_ms(state.writer_total, state.writer_cues),
+            cues: state.writer_cues,
+            ocr_empty: state.writer_empty_ocr,
+            progress: if total_frames > 0 {
+                (latest as f64) / (total_frames as f64)
+            } else {
+                0.0
+            },
+            completed,
+        }
+    }
+
+    fn emit_progress(&self, update: &GuiProgressUpdate) {
+        let callbacks = self.callbacks;
+        if let Some(on_progress) = callbacks.on_progress {
+            on_progress(update as *const GuiProgressUpdate, callbacks.user_data);
+        }
+    }
+
+    fn emit_error(&self, err: &SubtitleWriterError) {
+        let Some(on_error) = self.callbacks.on_error else {
+            return;
+        };
+
+        let message = describe_error(err);
+        if let Ok(c_string) = CString::new(message) {
+            let err = GuiProgressError {
+                message: c_string.as_ptr(),
+            };
+            on_error(&err, self.callbacks.user_data);
+            // c_string is dropped after callback; consumers must copy if needed.
+        }
+    }
+}
+
+pub struct GuiProgress {
+    handle: Arc<GuiProgressInner>,
+}
+
+impl GuiProgress {
+    pub(crate) fn new(handle: Arc<GuiProgressInner>) -> Self {
+        Self { handle }
+    }
+
+    pub fn attach(self, input: StreamBundle<WriterResult>) -> StreamBundle<WriterResult> {
+        let StreamBundle {
+            stream,
+            total_frames,
+        } = input;
+
+        self.handle.set_total_frames(total_frames);
+
+        let (tx, rx) = mpsc::channel::<WriterResult>(GUI_PROGRESS_CHANNEL_CAPACITY);
+        let handle = self.handle;
+
+        tokio::spawn(async move {
+            let mut upstream = stream;
+            while let Some(event) = upstream.next().await {
+                handle.observe(&event);
+                if tx.send(event).await.is_err() {
+                    return;
+                }
+            }
+            handle.finish();
+        });
+
+        let stream = Box::pin(unfold(rx, |mut receiver| async {
+            match receiver.recv().await {
+                Some(item) => Some((item, receiver)),
+                None => None,
+            }
+        }));
+
+        StreamBundle::new(stream, total_frames)
+    }
+}
+
+static GLOBAL_PROGRESS: Mutex<Option<Arc<GuiProgressInner>>> = Mutex::new(None);
+
+pub fn set_global_gui_callbacks(callbacks: GuiProgressCallbacks, total_frames: Option<u64>) {
+    let handle = GuiProgressHandle::new(callbacks, total_frames).inner();
+    if let Ok(mut slot) = GLOBAL_PROGRESS.lock() {
+        *slot = Some(handle);
+    }
+}
+
+pub fn clear_global_gui_callbacks() {
+    if let Ok(mut slot) = GLOBAL_PROGRESS.lock() {
+        *slot = None;
+    }
+}
+
+pub(crate) fn global_gui_progress() -> Option<Arc<GuiProgressInner>> {
+    GLOBAL_PROGRESS.lock().ok().and_then(|opt| opt.clone())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn progress_gui_init(callbacks: GuiProgressCallbacks) {
+    set_global_gui_callbacks(callbacks, None);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn progress_gui_shutdown() {
+    clear_global_gui_callbacks();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn progress_gui_version() -> *const c_char {
+    static VERSION: &[u8] = b"0.1.0\0";
+    VERSION.as_ptr() as *const c_char
+}
+
+fn average_ms(total: Duration, units: u64) -> f64 {
+    if units == 0 {
+        return 0.0;
+    }
+    total.as_secs_f64() * 1000.0 / units as f64
+}
+
+fn describe_error(err: &SubtitleWriterError) -> String {
+    match err {
+        SubtitleWriterError::Ocr(ocr_err) => match ocr_err {
+            super::ocr::OcrStageError::Segmenter(segmenter_err) => {
+                format!("segmenter error: {segmenter_err:?}")
+            }
+            super::ocr::OcrStageError::Engine(engine_err) => {
+                format!("ocr error: {engine_err}")
+            }
+        },
+        SubtitleWriterError::Io { path, source } => {
+            format!("writer error ({}): {source}", path.display())
+        }
+    }
+}
