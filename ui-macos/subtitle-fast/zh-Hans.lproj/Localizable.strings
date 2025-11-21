@@ -3,6 +3,7 @@
 "ui.reset_selection" = "重置选区";
 "ui.locale_toggle_hint" = "在中英文之间切换";
 "ui.placeholder_no_video" = "选择视频以预览并检测字幕";
+"ui.preview" = "预览";
 "ui.highlight_values" = "高亮 ≥%d 宽容度 ±%d";
 "ui.selection_summary" = "选区概览";
 "ui.region" = "区域";
@@ -15,7 +16,14 @@
 "ui.highlight" = "亮度高亮";
 "ui.start_detection" = "开始检测";
 "ui.detection_progress" = "检测进度";
+"ui.status_ready" = "就绪";
+"ui.status_idle" = "空闲";
 "ui.metric_counts" = "字幕 %d · OCR 空白 %d";
+"ui.metrics_fps" = "帧率";
+"ui.metrics_detection" = "检测";
+"ui.metrics_ocr" = "OCR";
+"ui.metrics_cues" = "字幕数";
+"ui.metrics_empty" = "空白 OCR";
 "ui.subtitles" = "字幕列表";
 "ui.detecting" = "检测中…";
 "ui.no_subtitles" = "暂无字幕";
@@ -23,3 +31,12 @@
 "ui.sample_subtitle" = "检测到的字幕";
 "ui.error_no_file" = "请先选择视频文件。";
 "ui.error_no_selection" = "请在画面上选择字幕区域。";
+"ui.error_start_failed" = "检测启动失败，请检查输入后重试。";
+"ui.cancel" = "取消";
+"ui.language" = "语言";
+"ui.export" = "导出字幕";
+"ui.select_region" = "选择区域";
+"ui.finish_region" = "完成选择";
+"ui.select_color" = "拾取颜色";
+"ui.finish_color" = "完成拾取";
+"ui.color_picker_hint" = "点击字幕以拾取颜色";

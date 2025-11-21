@@ -261,7 +261,39 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/../target/release",
+					/opt/homebrew/lib,
+					/usr/local/lib,
+				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lsubtitle_fast",
+					"-lavcodec",
+					"-lavformat",
+					"-lavutil",
+					"-lswscale",
+					"-lswresample",
+					"-lavdevice",
+					"-lavfilter",
+					"-framework",
+					CoreMedia,
+					"-framework",
+					CoreVideo,
+					"-framework",
+					VideoToolbox,
+					"-framework",
+					AudioToolbox,
+					"-framework",
+					AVFoundation,
+					"-framework",
+					Vision,
+					"-lz",
+					"-liconv",
+					"-lc++",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.wei.subtitle-fast";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -291,7 +323,39 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/../target/release",
+					/opt/homebrew/lib,
+					/usr/local/lib,
+				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lsubtitle_fast",
+					"-lavcodec",
+					"-lavformat",
+					"-lavutil",
+					"-lswscale",
+					"-lswresample",
+					"-lavdevice",
+					"-lavfilter",
+					"-framework",
+					CoreMedia,
+					"-framework",
+					CoreVideo,
+					"-framework",
+					VideoToolbox,
+					"-framework",
+					AudioToolbox,
+					"-framework",
+					AVFoundation,
+					"-framework",
+					Vision,
+					"-lz",
+					"-liconv",
+					"-lc++",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.wei.subtitle-fast";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

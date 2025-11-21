@@ -318,8 +318,12 @@ pub(crate) fn global_gui_progress() -> Option<Arc<GuiProgressInner>> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn progress_gui_init(callbacks: GuiProgressCallbacks) {
-    set_global_gui_callbacks(callbacks, None);
+pub extern "C" fn progress_gui_init(callbacks: *const GuiProgressCallbacks) {
+    if !callbacks.is_null() {
+        unsafe {
+            set_global_gui_callbacks(*callbacks, None);
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

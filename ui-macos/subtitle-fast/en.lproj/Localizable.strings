@@ -3,6 +3,7 @@
 "ui.reset_selection" = "Reset Selection";
 "ui.locale_toggle_hint" = "Switch between English and Chinese";
 "ui.placeholder_no_video" = "Select a video to preview and detect subtitles";
+"ui.preview" = "Preview";
 "ui.highlight_values" = "Highlight ≥%d tol ±%d";
 "ui.selection_summary" = "Selection summary";
 "ui.region" = "Region";
@@ -15,7 +16,14 @@
 "ui.highlight" = "Highlight brightness";
 "ui.start_detection" = "Start detection";
 "ui.detection_progress" = "Detection progress";
+"ui.status_ready" = "Ready";
+"ui.status_idle" = "Idle";
 "ui.metric_counts" = "Cues %d · OCR-empty %d";
+"ui.metrics_fps" = "FPS";
+"ui.metrics_detection" = "Detection";
+"ui.metrics_ocr" = "OCR";
+"ui.metrics_cues" = "Cues";
+"ui.metrics_empty" = "Empty OCR";
 "ui.subtitles" = "Subtitles";
 "ui.detecting" = "Detecting…";
 "ui.no_subtitles" = "No subtitles yet";
@@ -23,3 +31,12 @@
 "ui.sample_subtitle" = "Detected subtitle";
 "ui.error_no_file" = "Select a video file first.";
 "ui.error_no_selection" = "Select a region on the frame.";
+"ui.error_start_failed" = "Failed to start detection. Check the input and retry.";
+"ui.cancel" = "Cancel";
+"ui.language" = "Language";
+"ui.export" = "Export SRT";
+"ui.select_region" = "Select Region";
+"ui.finish_region" = "Finish Selection";
+"ui.select_color" = "Pick Color";
+"ui.finish_color" = "Finish Picking";
+"ui.color_picker_hint" = "Click on the subtitle to pick its color";
