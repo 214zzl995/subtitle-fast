@@ -94,6 +94,17 @@ pub async fn run(plan: ExecutionPlan) -> Result<(), YPlaneError> {
     }
 }
 
+#[allow(dead_code)]
+pub async fn run_with_progress(
+    mut plan: ExecutionPlan,
+    handle_id: u64,
+    pause_rx: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), YPlaneError> {
+    plan.pipeline.progress = crate::stage::progress_gui::progress_for_handle(handle_id);
+    plan.pipeline.pause = Some(pause_rx);
+    run(plan).await
+}
+
 pub fn display_available_backends() {
     let names: Vec<&'static str> = Configuration::available_backends()
         .iter()

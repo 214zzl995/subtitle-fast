@@ -30,6 +30,24 @@ enum DetectionStatus {
     case completed
     case failed(String)
     case canceled
+    case paused
+}
+
+extension DetectionStatus: Equatable {
+    static func == (lhs: DetectionStatus, rhs: DetectionStatus) -> Bool {
+        switch (lhs, rhs) {
+        case (.idle, .idle),
+             (.detecting, .detecting),
+             (.completed, .completed),
+             (.canceled, .canceled),
+             (.paused, .paused):
+            return true
+        case (.failed(let lhsMessage), .failed(let rhsMessage)):
+            return lhsMessage == rhsMessage
+        default:
+            return false
+        }
+    }
 }
 
 struct TrackedFile: Identifiable {
@@ -45,6 +63,7 @@ struct TrackedFile: Identifiable {
     var cues: Int
     var status: DetectionStatus
     var errorMessage: String?
+    var handle: UInt64?
 }
 
 enum PreviewMode: String, CaseIterable, Identifiable, Hashable {
@@ -77,45 +96,52 @@ final class DetectionSession: ObservableObject {
     @Published var activeFileID: UUID?
 
     // MARK: Detection
-    @Published var isDetecting = false
     @Published var progress: Double = 0
     @Published var errorMessage: String?
     @Published var metrics = DetectionMetrics.empty
     @Published var subtitles: [SubtitleItem] = []
 
-    private var detectionHandle: UInt64?
+    var activeFile: TrackedFile? {
+        files.first(where: { $0.id == activeFileID })
+    }
+    var activeStatus: DetectionStatus {
+        activeFile?.status ?? .idle
+    }
+    var isActiveDetecting: Bool {
+        if case .detecting = activeStatus { return true }
+        if case .paused = activeStatus { return true }
+        return false
+    }
+
     private var timeObserver: Any?
     private var scopedURL: URL?
-    private var detectionScopedURL: URL?
     private var outputURL: URL?
-    private var activeDetectionFileID: UUID?
     private var currentAsset: AVAsset?
+    private var lastCuePerHandle: [UInt64: Int] = [:]
     private var lastCueCount: Int = 0
+    private var handleToFile: [UInt64: UUID] = [:]
+    private var detectionScopedURLs: [UInt64: URL] = [:]
     private let samplesPerSecond: UInt32 = 7
     private let ffi = SubtitleFastFFI.shared
 
     init() {
         ffi.registerCallbacks(
-            onProgress: { [weak self] update in
+            onProgress: { [weak self] payload in
                 DispatchQueue.main.async {
-                    self?.handleProgress(update)
+                    self?.handleProgress(payload)
                 }
             },
             onError: { [weak self] message in
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.errorMessage = message
-                    if let fileID = self.activeDetectionFileID {
+                    if let handleID = self.handleToFile.first?.key, let fileID = self.handleToFile[handleID] {
                         self.updateFile(id: fileID) { file in
                             file.status = .failed(message)
                             file.errorMessage = message
                         }
                         self.notifyCompletion(for: fileID, success: false)
                     }
-                    self.isDetecting = false
-                    self.detectionHandle = nil
-                    self.activeDetectionFileID = nil
-                    self.clearDetectionScopeIfNeeded()
                 }
             }
         )
@@ -189,7 +215,7 @@ final class DetectionSession: ObservableObject {
             player.removeTimeObserver(observer)
             timeObserver = nil
         }
-        if let scoped = scopedURL, scoped != detectionScopedURL {
+        if let scoped = scopedURL {
             scoped.stopAccessingSecurityScopedResource()
         }
         if url.startAccessingSecurityScopedResource() {
@@ -304,13 +330,6 @@ final class DetectionSession: ObservableObject {
         mutate(&files[index])
     }
 
-    private func clearDetectionScopeIfNeeded() {
-        if let url = detectionScopedURL, url != scopedURL {
-            url.stopAccessingSecurityScopedResource()
-        }
-        detectionScopedURL = nil
-    }
-
     // MARK: - Selection
 
     func resetSelection() {
@@ -338,7 +357,6 @@ final class DetectionSession: ObservableObject {
     // MARK: - Detection
 
     func startDetection() {
-        guard !isDetecting else { return }
         guard let fileID = activeFileID, let file = files.first(where: { $0.id == fileID }) else {
             errorMessage = NSLocalizedString("ui.error_no_file", comment: "no file")
             return
@@ -366,10 +384,16 @@ final class DetectionSession: ObservableObject {
             entry.outputURL = output
             entry.errorMessage = nil
             entry.cues = 0
+            entry.handle = nil
+            self.lastCueCount = 0
         }
 
-        if detectionScopedURL != file.url && file.url.startAccessingSecurityScopedResource() {
-            detectionScopedURL = file.url
+        if let scoped = scopedURL, scoped != file.url {
+            scoped.stopAccessingSecurityScopedResource()
+        }
+        var pendingScopedURL: URL?
+        if file.url.startAccessingSecurityScopedResource() {
+            pendingScopedURL = file.url
         }
 
         let target = UInt8(clamping: Int(threshold))
@@ -387,38 +411,72 @@ final class DetectionSession: ObservableObject {
 
         switch result {
         case .success(let handle):
-            detectionHandle = handle
-            activeDetectionFileID = fileID
-            isDetecting = true
+            handleToFile[handle] = fileID
             player?.pause()
             isPlaying = false
+            updateFile(id: fileID) { entry in
+                entry.handle = handle
+                entry.status = .detecting
+            }
+            lastCuePerHandle[handle] = 0
+            if let url = pendingScopedURL {
+                detectionScopedURLs[handle] = url
+            }
         case .failure(let error):
             errorMessage = error.localizedDescription
             updateFile(id: fileID) { entry in
                 entry.status = .failed(error.localizedDescription)
                 entry.errorMessage = error.localizedDescription
             }
-            detectionHandle = nil
-            activeDetectionFileID = nil
-            clearDetectionScopeIfNeeded()
+            if let url = pendingScopedURL {
+                url.stopAccessingSecurityScopedResource()
+            }
         }
     }
 
     func cancelDetection() {
-        guard let handle = detectionHandle else { return }
-        let fileID = activeDetectionFileID
+        guard let fileID = activeFileID,
+              let handle = files.first(where: { $0.id == fileID })?.handle else { return }
         _ = ffi.cancel(handle: handle)
-        detectionHandle = nil
-        isDetecting = false
-        activeDetectionFileID = nil
-        if let fileID {
-            updateFile(id: fileID) { $0.status = .canceled }
+        handleToFile.removeValue(forKey: handle)
+        lastCuePerHandle.removeValue(forKey: handle)
+        updateFile(id: fileID) { file in
+            file.status = .canceled
+            file.handle = nil
         }
-        clearDetectionScopeIfNeeded()
+        if let scoped = detectionScopedURLs.removeValue(forKey: handle) {
+            scoped.stopAccessingSecurityScopedResource()
+        }
+    }
+    
+    func pauseDetection() {
+        guard let fileID = activeFileID,
+              let handle = files.first(where: { $0.id == fileID })?.handle else { return }
+        switch ffi.pause(handle: handle) {
+        case .success:
+            updateFile(id: fileID) { $0.status = .paused }
+        case .failure(let error):
+            errorMessage = error.localizedDescription
+        }
+    }
+    
+    func resumeDetection() {
+        guard let fileID = activeFileID,
+              let handle = files.first(where: { $0.id == fileID })?.handle else { return }
+        switch ffi.resume(handle: handle) {
+        case .success:
+            updateFile(id: fileID) { $0.status = .detecting }
+        case .failure(let error):
+            errorMessage = error.localizedDescription
+        }
     }
 
-    private func handleProgress(_ update: GuiProgressUpdate) {
-        guard let fileID = activeDetectionFileID else { return }
+    private func handleProgress(_ payload: GuiProgressPayload) {
+        let update = payload.update
+        guard let fileID = handleToFile[update.handle_id] else { return }
+
+        let lastCues = lastCuePerHandle[update.handle_id] ?? 0
+        let newCueCount = Int(update.cues)
 
         let snapshot = DetectionMetrics(
             fps: update.fps,
@@ -427,31 +485,62 @@ final class DetectionSession: ObservableObject {
             cues: Int(update.cues),
             ocrEmpty: Int(update.ocr_empty)
         )
-        metrics = snapshot
-        progress = max(0, min(1, update.progress))
+        let newProgress = max(0, min(1, update.progress))
         updateFile(id: fileID) { entry in
             entry.metrics = snapshot
-            entry.progress = progress
+            entry.progress = newProgress
             entry.cues = Int(update.cues)
-            entry.status = .detecting
+            if entry.status != .paused {
+                entry.status = .detecting
+            }
+        }
+        if let activeID = activeFileID, activeID == fileID {
+            metrics = snapshot
+            progress = newProgress
         }
 
-        if Int(update.cues) > lastCueCount {
-            loadSubtitlesFromOutput(for: fileID)
-            lastCueCount = Int(update.cues)
+        if newCueCount > lastCues {
+            if let text = payload.subtitleText, !text.isEmpty {
+                let item = SubtitleItem(
+                    index: newCueCount,
+                    timecode: update.subtitle_start_ms / 1000.0,
+                    endTime: update.subtitle_end_ms / 1000.0,
+                    text: text,
+                    confidence: nil
+                )
+                appendSubtitle(item, for: fileID)
+            }
         }
+
+        lastCuePerHandle[update.handle_id] = max(lastCues, newCueCount)
 
         if update.completed {
-            isDetecting = false
-            detectionHandle = nil
-            activeDetectionFileID = nil
             updateFile(id: fileID) { entry in
                 entry.status = .completed
                 entry.progress = 1.0
+                entry.handle = nil
             }
             loadSubtitlesFromOutput(for: fileID)
             notifyCompletion(for: fileID, success: true)
-            clearDetectionScopeIfNeeded()
+            handleToFile.removeValue(forKey: update.handle_id)
+            lastCuePerHandle.removeValue(forKey: update.handle_id)
+            if let scoped = detectionScopedURLs.removeValue(forKey: update.handle_id) {
+                scoped.stopAccessingSecurityScopedResource()
+            }
+            if let activeID = activeFileID, activeID == fileID {
+                metrics = snapshot
+                progress = newProgress
+            }
+        }
+    }
+
+    private func appendSubtitle(_ item: SubtitleItem, for fileID: UUID) {
+        updateFile(id: fileID) { entry in
+            entry.subtitles.append(item)
+            entry.cues = entry.subtitles.count
+        }
+        if activeFileID == fileID {
+            subtitles.append(item)
         }
     }
 

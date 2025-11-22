@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::raw::c_char;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::{StreamExt, stream::unfold};
@@ -13,6 +14,7 @@ use super::segmenter::SegmentTimings;
 use super::writer::{SubtitleWriterError, WriterResult, WriterStatus, WriterTimings};
 
 const GUI_PROGRESS_CHANNEL_CAPACITY: usize = 4;
+const SUBTITLE_TEXT_MAX_BYTES: usize = 2048;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -28,6 +30,7 @@ unsafe impl Sync for GuiProgressCallbacks {}
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct GuiProgressUpdate {
+    pub handle_id: u64,
     pub samples_seen: u64,
     pub latest_frame_index: u64,
     pub total_frames: u64,
@@ -41,6 +44,10 @@ pub struct GuiProgressUpdate {
     pub ocr_empty: u64,
     pub progress: f64,
     pub completed: bool,
+    pub subtitle_start_ms: f64,
+    pub subtitle_end_ms: f64,
+    pub subtitle_text: *const c_char,
+    pub subtitle_present: u8,
 }
 
 #[repr(C)]
@@ -48,14 +55,20 @@ pub struct GuiProgressError {
     pub message: *const c_char,
 }
 
+#[allow(dead_code)]
 pub struct GuiProgressHandle {
     inner: Arc<GuiProgressInner>,
 }
 
+#[allow(dead_code)]
 impl GuiProgressHandle {
-    pub(crate) fn new(callbacks: GuiProgressCallbacks, total_frames: Option<u64>) -> Self {
+    pub(crate) fn new(
+        handle_id: u64,
+        callbacks: GuiProgressCallbacks,
+        total_frames: Option<u64>,
+    ) -> Self {
         Self {
-            inner: Arc::new(GuiProgressInner::new(callbacks, total_frames)),
+            inner: Arc::new(GuiProgressInner::new(handle_id, callbacks, total_frames)),
         }
     }
 
@@ -65,6 +78,7 @@ impl GuiProgressHandle {
 }
 
 struct GuiProgressState {
+    handle_id: u64,
     total_frames: Option<u64>,
     samples_seen: u64,
     latest_frame_index: Option<u64>,
@@ -84,11 +98,21 @@ struct GuiProgressState {
 pub(crate) struct GuiProgressInner {
     callbacks: GuiProgressCallbacks,
     state: Mutex<GuiProgressState>,
+    last_subtitle: Mutex<Option<GuiSubtitleEvent>>,
+}
+
+#[derive(Clone)]
+struct GuiSubtitleEvent {
+    start_ms: f64,
+    end_ms: f64,
+    text: CString,
 }
 
 impl GuiProgressInner {
-    fn new(callbacks: GuiProgressCallbacks, total_frames: Option<u64>) -> Self {
+    #[allow(dead_code)]
+    fn new(handle_id: u64, callbacks: GuiProgressCallbacks, total_frames: Option<u64>) -> Self {
         let state = GuiProgressState {
+            handle_id,
             total_frames,
             samples_seen: 0,
             latest_frame_index: None,
@@ -107,6 +131,7 @@ impl GuiProgressInner {
         Self {
             callbacks,
             state: Mutex::new(state),
+            last_subtitle: Mutex::new(None),
         }
     }
 
@@ -135,6 +160,23 @@ impl GuiProgressInner {
             Self::observe_segment_time(&mut state, event.segment_timings);
             Self::observe_ocr_time(&mut state, event.ocr_timings);
             Self::observe_writer_time(&mut state, event.writer_timings);
+            if let Some(subtitle) = event.last_subtitle.as_ref() {
+                let limited = subtitle
+                    .text
+                    .chars()
+                    .take(SUBTITLE_TEXT_MAX_BYTES)
+                    .collect::<String>();
+                if let Ok(text) = CString::new(limited) {
+                    let event = GuiSubtitleEvent {
+                        start_ms: subtitle.start_ms,
+                        end_ms: subtitle.end_ms,
+                        text,
+                    };
+                    if let Ok(mut slot) = self.last_subtitle.lock() {
+                        *slot = Some(event);
+                    }
+                }
+            }
 
             let completed = matches!(event.status, WriterStatus::Completed { .. });
             let update = Self::snapshot(&state, completed);
@@ -209,6 +251,7 @@ impl GuiProgressInner {
         let latest = state.latest_frame_index.unwrap_or(state.samples_seen);
         let elapsed = state.started.elapsed().as_secs_f64();
         GuiProgressUpdate {
+            handle_id: state.handle_id,
             samples_seen: state.samples_seen,
             latest_frame_index: latest,
             total_frames,
@@ -230,13 +273,34 @@ impl GuiProgressInner {
                 0.0
             },
             completed,
+            subtitle_start_ms: 0.0,
+            subtitle_end_ms: 0.0,
+            subtitle_text: std::ptr::null(),
+            subtitle_present: 0,
         }
     }
 
     fn emit_progress(&self, update: &GuiProgressUpdate) {
         let callbacks = self.callbacks;
         if let Some(on_progress) = callbacks.on_progress {
-            on_progress(update as *const GuiProgressUpdate, callbacks.user_data);
+            let mut update_with_sub = *update;
+            if let Ok(mut slot) = self.last_subtitle.lock() {
+                if let Some(sub) = slot.take() {
+                    update_with_sub.subtitle_present = 1;
+                    update_with_sub.subtitle_start_ms = sub.start_ms;
+                    update_with_sub.subtitle_end_ms = sub.end_ms;
+                    update_with_sub.subtitle_text = sub.text.as_ptr();
+                    on_progress(
+                        &update_with_sub as *const GuiProgressUpdate,
+                        callbacks.user_data,
+                    );
+                    return;
+                }
+            }
+            on_progress(
+                &update_with_sub as *const GuiProgressUpdate,
+                callbacks.user_data,
+            );
         }
     }
 
@@ -298,37 +362,70 @@ impl GuiProgress {
     }
 }
 
-static GLOBAL_PROGRESS: Mutex<Option<Arc<GuiProgressInner>>> = Mutex::new(None);
+static GLOBAL_CALLBACKS: Mutex<Option<GuiProgressCallbacks>> = Mutex::new(None);
+static HANDLE_MAP: LazyLock<Mutex<HashMap<u64, Arc<GuiProgressInner>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-pub fn set_global_gui_callbacks(callbacks: GuiProgressCallbacks, total_frames: Option<u64>) {
-    let handle = GuiProgressHandle::new(callbacks, total_frames).inner();
-    if let Ok(mut slot) = GLOBAL_PROGRESS.lock() {
-        *slot = Some(handle);
+pub(crate) fn install_callbacks(callbacks: GuiProgressCallbacks) {
+    if let Ok(mut slot) = GLOBAL_CALLBACKS.lock() {
+        *slot = Some(callbacks);
     }
 }
 
-pub fn clear_global_gui_callbacks() {
-    if let Ok(mut slot) = GLOBAL_PROGRESS.lock() {
-        *slot = None;
+#[allow(dead_code)]
+pub(crate) fn callbacks() -> Option<GuiProgressCallbacks> {
+    GLOBAL_CALLBACKS
+        .lock()
+        .ok()
+        .and_then(|c| c.as_ref().copied())
+}
+
+#[allow(dead_code)]
+pub(crate) fn create_progress_handle(
+    handle_id: u64,
+    total_frames: Option<u64>,
+) -> Option<Arc<GuiProgressInner>> {
+    let callbacks = callbacks()?;
+    let handle = GuiProgressHandle::new(handle_id, callbacks, total_frames).inner();
+    if let Ok(mut map) = HANDLE_MAP.lock() {
+        map.insert(handle_id, Arc::clone(&handle));
+    }
+    Some(handle)
+}
+
+#[allow(dead_code)]
+pub(crate) fn drop_progress_handle(handle_id: u64) {
+    if let Ok(mut map) = HANDLE_MAP.lock() {
+        map.remove(&handle_id);
     }
 }
 
-pub(crate) fn global_gui_progress() -> Option<Arc<GuiProgressInner>> {
-    GLOBAL_PROGRESS.lock().ok().and_then(|opt| opt.clone())
+#[allow(dead_code)]
+pub(crate) fn progress_for_handle(handle_id: u64) -> Option<Arc<GuiProgressInner>> {
+    HANDLE_MAP
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&handle_id).cloned())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn progress_gui_init(callbacks: *const GuiProgressCallbacks) {
-    if !callbacks.is_null() {
-        unsafe {
-            set_global_gui_callbacks(*callbacks, None);
-        }
+    if callbacks.is_null() {
+        return;
+    }
+    unsafe {
+        install_callbacks(*callbacks);
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn progress_gui_shutdown() {
-    clear_global_gui_callbacks();
+    if let Ok(mut map) = HANDLE_MAP.lock() {
+        map.clear();
+    }
+    if let Ok(mut slot) = GLOBAL_CALLBACKS.lock() {
+        *slot = None;
+    }
 }
 
 #[unsafe(no_mangle)]

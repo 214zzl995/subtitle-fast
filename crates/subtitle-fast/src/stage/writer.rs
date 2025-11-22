@@ -80,6 +80,14 @@ pub struct WriterEvent {
     pub ocr_timings: Option<OcrTimings>,
     pub writer_timings: Option<WriterTimings>,
     pub status: WriterStatus,
+    pub last_subtitle: Option<GuiSubtitleInfo>,
+}
+
+#[derive(Clone)]
+pub struct GuiSubtitleInfo {
+    pub start_ms: f64,
+    pub end_ms: f64,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -104,6 +112,7 @@ pub enum SubtitleWriterError {
     },
 }
 
+#[derive(Clone)]
 struct SubtitleCue {
     start_time: Duration,
     end_time: Duration,
@@ -129,6 +138,7 @@ impl SubtitleWriterWorker {
         let started = Instant::now();
         let mut buffered = 0_u64;
         let mut ocr_empty = 0_u64;
+        let mut last_subtitle: Option<GuiSubtitleInfo> = None;
 
         for subtitle in event.subtitles {
             let text = response_to_text(&subtitle.response);
@@ -144,8 +154,13 @@ impl SubtitleWriterWorker {
                 text,
                 center,
             };
-            self.cues.push(cue);
+            self.cues.push(cue.clone());
             buffered = buffered.saturating_add(1);
+            last_subtitle = Some(GuiSubtitleInfo {
+                start_ms: subtitle.interval.start_time.as_secs_f64() * 1000.0,
+                end_ms: subtitle.interval.end_time.as_secs_f64() * 1000.0,
+                text: cue.text.clone(),
+            });
         }
 
         let timings = WriterTimings {
@@ -160,6 +175,7 @@ impl SubtitleWriterWorker {
             ocr_timings: event.timings,
             writer_timings: Some(timings),
             status: WriterStatus::Pending,
+            last_subtitle,
         }
     }
 
@@ -207,6 +223,7 @@ impl SubtitleWriterWorker {
                 path: output_path,
                 cues: cue_count,
             },
+            last_subtitle: None,
         })
     }
 }

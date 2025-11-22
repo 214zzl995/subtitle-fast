@@ -19,6 +19,7 @@
 "ui.detection_progress" = "Detection progress";
 "ui.status_ready" = "Ready";
 "ui.status_idle" = "Idle";
+"ui.status_paused" = "Paused";
 "ui.metric_counts" = "Cues %d · OCR-empty %d";
 "ui.metrics_fps" = "FPS";
 "ui.metrics_detection" = "Detection";
@@ -36,6 +37,8 @@
 "ui.error_no_selection" = "Select a region on the frame.";
 "ui.error_start_failed" = "Failed to start detection. Check the input and retry.";
 "ui.cancel" = "Cancel";
+"ui.pause" = "Pause";
+"ui.resume" = "Resume";
 "ui.language" = "Language";
 "ui.export" = "Export SRT";
 "ui.select_region" = "Select Region";

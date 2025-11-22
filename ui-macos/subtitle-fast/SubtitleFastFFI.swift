@@ -26,6 +26,7 @@ struct GuiRunResult {
 
 /// Progress update from the detection process
 struct GuiProgressUpdate {
+    var handle_id: UInt64
     var samples_seen: UInt64
     var latest_frame_index: UInt64
     var total_frames: UInt64
@@ -39,6 +40,15 @@ struct GuiProgressUpdate {
     var ocr_empty: UInt64
     var progress: Double
     var completed: Bool
+    var subtitle_start_ms: Double
+    var subtitle_end_ms: Double
+    var subtitle_text: UnsafePointer<CChar>?
+    var subtitle_present: UInt8
+}
+
+struct GuiProgressPayload {
+    var update: GuiProgressUpdate
+    var subtitleText: String?
 }
 
 /// Error message from the detection process
@@ -71,6 +81,12 @@ func subtitle_fast_gui_start(_ config: UnsafePointer<GuiRunConfig>?) -> GuiRunRe
 @_silgen_name("subtitle_fast_gui_cancel")
 func subtitle_fast_gui_cancel(_ handle: UInt64) -> Int32
 
+@_silgen_name("subtitle_fast_gui_pause")
+func subtitle_fast_gui_pause(_ handle: UInt64) -> Int32
+
+@_silgen_name("subtitle_fast_gui_resume")
+func subtitle_fast_gui_resume(_ handle: UInt64) -> Int32
+
 // MARK: - FFI Bridge
 
 /// Swift bridge to the Rust subtitle-fast library
@@ -78,7 +94,7 @@ final class SubtitleFastFFI {
     static let shared = SubtitleFastFFI()
     
     private var callbacksRegistered = false
-    private var progressHandler: ((GuiProgressUpdate) -> Void)?
+    private var progressHandler: ((GuiProgressPayload) -> Void)?
     private var errorHandler: ((String) -> Void)?
     
     private init() {}
@@ -93,7 +109,7 @@ final class SubtitleFastFFI {
     
     /// Register callbacks for progress and error handling
     func registerCallbacks(
-        onProgress: @escaping (GuiProgressUpdate) -> Void,
+        onProgress: @escaping (GuiProgressPayload) -> Void,
         onError: @escaping (String) -> Void
     ) {
         progressHandler = onProgress
@@ -179,6 +195,16 @@ final class SubtitleFastFFI {
         }
     }
     
+    func pause(handle: UInt64) -> Result<Void, Error> {
+        let code = subtitle_fast_gui_pause(handle)
+        return code == 0 ? .success(()) : .failure(FFIError.cancelFailed(code: code))
+    }
+    
+    func resume(handle: UInt64) -> Result<Void, Error> {
+        let code = subtitle_fast_gui_resume(handle)
+        return code == 0 ? .success(()) : .failure(FFIError.cancelFailed(code: code))
+    }
+    
     // MARK: - Private Helpers
     
     private func invokeStart(
@@ -195,8 +221,8 @@ final class SubtitleFastFFI {
         }
     }
     
-    fileprivate func handleProgress(_ update: GuiProgressUpdate) {
-        progressHandler?(update)
+    fileprivate func handleProgress(_ payload: GuiProgressPayload) {
+        progressHandler?(payload)
     }
     
     fileprivate func handleError(_ message: String) {
@@ -223,7 +249,10 @@ enum FFIError: Error, LocalizedError {
 private let progressTrampoline: ProgressCallback = { updatePtr, _ in
     guard let updatePtr = updatePtr else { return }
     let update = updatePtr.assumingMemoryBound(to: GuiProgressUpdate.self).pointee
-    SubtitleFastFFI.shared.handleProgress(update)
+    let text = (update.subtitle_present != 0 && update.subtitle_text != nil)
+        ? String(validatingUTF8: update.subtitle_text!)
+        : nil
+    SubtitleFastFFI.shared.handleProgress(GuiProgressPayload(update: update, subtitleText: text))
 }
 
 private let errorTrampoline: ErrorCallback = { errorPtr, _ in

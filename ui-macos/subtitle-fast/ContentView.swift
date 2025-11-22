@@ -3,19 +3,27 @@ import AVKit
 import CoreImage
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 
 struct ContentView: View {
     @StateObject private var session = DetectionSession()
     @State private var showingFilePicker = false
+    private let minLeftWidth: CGFloat = 540
+    private let minRightWidth: CGFloat = 240
 
     var body: some View {
         NavigationSplitView {
             SidebarView(session: session, showingFilePicker: $showingFilePicker)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
         } detail: {
-            HSplitView {
+            NativeSplitView(
+                minLeftWidth: minLeftWidth,
+                minRightWidth: minRightWidth,
+                initialRightWidth: minRightWidth
+            ) {
                 leftColumn
                     .frame(maxHeight: .infinity, alignment: .top)
+            } right: {
                 rightColumn
                     .frame(maxHeight: .infinity, alignment: .top)
             }
@@ -58,7 +66,7 @@ struct ContentView: View {
             PreviewPanel(session: session)
             ControlPanel(session: session)
         }
-        .frame(minWidth: 540, maxHeight: .infinity, alignment: .top)
+        .frame(minWidth: minLeftWidth, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     @ViewBuilder
@@ -67,7 +75,7 @@ struct ContentView: View {
             StatusPanel(session: session)
             SubtitleListPanel(session: session)
         }
-        .frame(minWidth: 320, maxWidth: 420, maxHeight: .infinity, alignment: .top)
+        .frame(minWidth: minRightWidth, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -124,8 +132,12 @@ private struct SidebarFiles: View {
             return false
         }()
         let isDetecting: Bool = {
-            if case .detecting = file.status { return true }
-            return false
+            switch file.status {
+            case .detecting, .paused:
+                return true
+            default:
+                return false
+            }
         }()
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 10) {
@@ -173,7 +185,86 @@ private struct SidebarFiles: View {
             return NSLocalizedString("ui.status_failed", comment: "failed")
         case .canceled:
             return NSLocalizedString("ui.status_canceled", comment: "canceled")
+        case .paused:
+            return NSLocalizedString("ui.status_paused", comment: "paused")
         }
+    }
+}
+
+private struct NativeSplitView<Left: View, Right: View>: NSViewControllerRepresentable {
+    let minLeftWidth: CGFloat
+    let minRightWidth: CGFloat
+    let initialRightWidth: CGFloat
+    @ViewBuilder let left: () -> Left
+    @ViewBuilder let right: () -> Right
+
+    func makeNSViewController(context: Context) -> SplitHostController<Left, Right> {
+        SplitHostController(
+            minLeftWidth: minLeftWidth,
+            minRightWidth: minRightWidth,
+            initialRightWidth: initialRightWidth,
+            left: left(),
+            right: right()
+        )
+    }
+
+    func updateNSViewController(_ controller: SplitHostController<Left, Right>, context: Context) {
+        controller.update(left: left(), right: right())
+    }
+}
+
+private final class SplitHostController<Left: View, Right: View>: NSSplitViewController {
+    private var leftHost: NSHostingController<Left>
+    private var rightHost: NSHostingController<Right>
+    private let minLeftWidth: CGFloat
+    private let minRightWidth: CGFloat
+    private let initialRightWidth: CGFloat
+    private var didSetInitial = false
+
+    init(
+        minLeftWidth: CGFloat,
+        minRightWidth: CGFloat,
+        initialRightWidth: CGFloat,
+        left: Left,
+        right: Right
+    ) {
+        self.leftHost = NSHostingController(rootView: left)
+        self.rightHost = NSHostingController(rootView: right)
+        self.minLeftWidth = minLeftWidth
+        self.minRightWidth = minRightWidth
+        self.initialRightWidth = initialRightWidth
+        super.init(nibName: nil, bundle: nil)
+
+        splitView.isVertical = true
+
+        let leftItem = NSSplitViewItem(viewController: leftHost)
+        leftItem.minimumThickness = minLeftWidth
+        leftItem.holdingPriority = NSLayoutConstraint.Priority.defaultLow
+
+        let rightItem = NSSplitViewItem(viewController: rightHost)
+        rightItem.minimumThickness = minRightWidth
+        rightItem.holdingPriority = NSLayoutConstraint.Priority.defaultLow
+
+        addSplitViewItem(leftItem)
+        addSplitViewItem(rightItem)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        guard !didSetInitial else { return }
+        let total = splitView.bounds.width
+        let target = max(total - initialRightWidth, minLeftWidth)
+        splitView.setPosition(target, ofDividerAt: 0)
+        didSetInitial = true
+    }
+
+    func update(left: Left, right: Right) {
+        leftHost.rootView = left
+        rightHost.rootView = right
     }
 }
 
@@ -272,24 +363,37 @@ private struct ControlPanel: View {
                 Spacer()
 
                 Button {
-                    if session.isDetecting {
-                        session.cancelDetection()
-                    } else {
+                    switch session.activeStatus {
+                    case .detecting:
+                        session.pauseDetection()
+                    case .paused:
+                        session.resumeDetection()
+                    default:
                         session.startDetection()
                     }
                 } label: {
                     Label(
-                        session.isDetecting ? "ui.cancel" : "ui.start_detection",
-                        systemImage: session.isDetecting ? "stop.fill" : "play.fill"
+                        primaryButtonTitle(for: session.activeStatus),
+                        systemImage: primaryButtonIcon(for: session.activeStatus)
                     )
                     .font(.title3.weight(.semibold))
                     .padding(.horizontal, 18)
                     .padding(.vertical, 10)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(session.isDetecting ? .red : .accentColor)
+                .tint(session.activeStatus == .detecting ? .yellow : .accentColor)
                 .controlSize(.large)
                 .disabled(session.selection == nil || session.selectedFile == nil)
+                
+                if session.activeStatus == .detecting || session.activeStatus == .paused {
+                    Button {
+                        session.cancelDetection()
+                    } label: {
+                        Label("ui.cancel", systemImage: "stop.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                }
             }
         }
         .padding(.vertical, 8)
@@ -306,6 +410,26 @@ private struct ControlPanel: View {
             Text(String(format: "%.0f", value))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private func primaryButtonTitle(for status: DetectionStatus) -> LocalizedStringKey {
+        switch status {
+        case .detecting:
+            return "ui.pause"
+        case .paused:
+            return "ui.resume"
+        default:
+            return "ui.start_detection"
+        }
+    }
+
+    private func primaryButtonIcon(for status: DetectionStatus) -> String {
+        switch status {
+        case .detecting:
+            return "pause.fill"
+        default:
+            return "play.fill"
         }
     }
 }
@@ -361,7 +485,7 @@ private struct StatusPanel: View {
                 Label("ui.detection_progress", systemImage: "speedometer")
                     .font(.headline)
                 Spacer()
-                if session.isDetecting {
+                if session.activeStatus == .detecting {
                     ProgressView()
                         .controlSize(.small)
                 }
@@ -390,14 +514,7 @@ private struct StatusPanel: View {
     }
 
     private var statusTitle: String {
-        if session.isDetecting {
-            return NSLocalizedString("ui.detecting", comment: "detecting")
-        }
-        guard let activeID = session.activeFileID,
-              let status = session.files.first(where: { $0.id == activeID })?.status else {
-            return NSLocalizedString("ui.status_idle", comment: "idle")
-        }
-        switch status {
+        switch session.activeStatus {
         case .idle:
             return session.selection == nil
                 ? NSLocalizedString("ui.select_region", comment: "select region")
@@ -410,6 +527,8 @@ private struct StatusPanel: View {
             return NSLocalizedString("ui.status_failed", comment: "failed")
         case .canceled:
             return NSLocalizedString("ui.status_canceled", comment: "canceled")
+        case .paused:
+            return NSLocalizedString("ui.status_paused", comment: "paused")
         }
     }
 }
@@ -419,19 +538,8 @@ private struct SubtitleListPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("ui.subtitles", systemImage: "text.bubble")
-                    .font(.headline)
-                Spacer()
-                if !session.subtitles.isEmpty {
-                    Button {
-                        session.exportSubtitles()
-                    } label: {
-                        Label("ui.export", systemImage: "square.and.arrow.up")
-                    }
-                    .controlSize(.small)
-                }
-            }
+            Label("ui.subtitles", systemImage: "text.bubble")
+                .font(.headline)
 
             SubtitleListView(session: session)
                 .frame(minHeight: 240, maxHeight: .infinity)
@@ -447,29 +555,63 @@ private struct MetricsGrid: View {
     let subtitles: Int
     
     var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
-            GridRow {
-                label("ui.metrics_fps", systemImage: "speedometer")
-                Text(String(format: "%.1f", metrics.fps)).fontWeight(.semibold)
-                Text("fps").foregroundStyle(.secondary)
-                
-                label("ui.metrics_detection", systemImage: "waveform.path.ecg")
-                Text(String(format: "%.1f", metrics.det)).fontWeight(.semibold)
-                Text("ms").foregroundStyle(.secondary)
+        ViewThatFits(in: .horizontal) {
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
+                GridRow {
+                    label("ui.metrics_fps", systemImage: "speedometer")
+                    Text(String(format: "%.1f", metrics.fps)).fontWeight(.semibold)
+                    Text("fps").foregroundStyle(.secondary)
+                    
+                    label("ui.metrics_detection", systemImage: "waveform.path.ecg")
+                    Text(String(format: "%.1f", metrics.det)).fontWeight(.semibold)
+                    Text("ms").foregroundStyle(.secondary)
+                }
+                GridRow {
+                    label("ui.metrics_ocr", systemImage: "text.viewfinder")
+                    Text(String(format: "%.1f", metrics.ocr)).fontWeight(.semibold)
+                    Text("ms").foregroundStyle(.secondary)
+                    
+                    label("ui.metrics_cues", systemImage: "text.bubble")
+                    Text("\(subtitles)").fontWeight(.semibold)
+                    Text(LocalizedStringKey("ui.metrics_cues_unit")).foregroundStyle(.secondary)
+                }
+                GridRow {
+                    label("ui.metrics_empty", systemImage: "eye.slash")
+                    Text("\(metrics.ocrEmpty)").fontWeight(.semibold)
+                    Text(LocalizedStringKey("ui.metrics_empty_unit")).foregroundStyle(.secondary)
+                }
             }
-            GridRow {
-                label("ui.metrics_ocr", systemImage: "text.viewfinder")
-                Text(String(format: "%.1f", metrics.ocr)).fontWeight(.semibold)
-                Text("ms").foregroundStyle(.secondary)
-                
-                label("ui.metrics_cues", systemImage: "text.bubble")
-                Text("\(subtitles)").fontWeight(.semibold)
-                Text(LocalizedStringKey("ui.metrics_cues_unit")).foregroundStyle(.secondary)
-            }
-            GridRow {
-                label("ui.metrics_empty", systemImage: "eye.slash")
-                Text("\(metrics.ocrEmpty)").fontWeight(.semibold)
-                Text(LocalizedStringKey("ui.metrics_empty_unit")).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                compactRow(
+                    key: "ui.metrics_fps",
+                    value: String(format: "%.1f", metrics.fps),
+                    unit: "fps",
+                    systemImage: "speedometer"
+                )
+                compactRow(
+                    key: "ui.metrics_detection",
+                    value: String(format: "%.1f", metrics.det),
+                    unit: "ms",
+                    systemImage: "waveform.path.ecg"
+                )
+                compactRow(
+                    key: "ui.metrics_ocr",
+                    value: String(format: "%.1f", metrics.ocr),
+                    unit: "ms",
+                    systemImage: "text.viewfinder"
+                )
+                compactRow(
+                    key: "ui.metrics_cues",
+                    value: "\(subtitles)",
+                    unitKey: "ui.metrics_cues_unit",
+                    systemImage: "text.bubble"
+                )
+                compactRow(
+                    key: "ui.metrics_empty",
+                    value: "\(metrics.ocrEmpty)",
+                    unitKey: "ui.metrics_empty_unit",
+                    systemImage: "eye.slash"
+                )
             }
         }
         .font(.caption.monospacedDigit())
@@ -478,6 +620,29 @@ private struct MetricsGrid: View {
     private func label(_ key: String, systemImage: String) -> some View {
         Label(LocalizedStringKey(key), systemImage: systemImage)
             .foregroundStyle(.secondary)
+    }
+    
+    private func compactRow(
+        key: String,
+        value: String,
+        unit: String? = nil,
+        unitKey: String? = nil,
+        systemImage: String
+    ) -> some View {
+        HStack(spacing: 6) {
+            Label(LocalizedStringKey(key), systemImage: systemImage)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .fontWeight(.semibold)
+            if let unitKey {
+                Text(LocalizedStringKey(unitKey))
+                    .foregroundStyle(.secondary)
+            } else if let unit {
+                Text(unit)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
@@ -676,37 +841,40 @@ struct SubtitleListView: View {
         List {
             Section(header: Text("ui.subtitles").font(.caption).foregroundStyle(.secondary)) {
                 ForEach(session.subtitles) { item in
-                    HStack(alignment: .top, spacing: 12) {
-                        Text(formattedTime(item.timecode))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 70, alignment: .leading)
-                        
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(item.text)
-                                .font(.body)
-                                .textSelection(.enabled)
-                            
-                            if let confidence = item.confidence {
-                                Text(String(format: "%.0f%%", confidence * 100))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
+                    subtitleRow(item: item)
+                        .onTapGesture {
+                            session.seek(to: item.timecode)
                         }
-                        Spacer(minLength: 0)
-                    }
-                    .onTapGesture {
-                        session.seek(to: item.timecode)
-                    }
                 }
             }
         }
         .listStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
         .scrollContentBackground(.hidden)
         .background(Color.clear)
         .overlay {
             if session.subtitles.isEmpty {
                 ContentUnavailableView("ui.no_subtitles", systemImage: "text.bubble", description: Text("ui.no_subtitles_hint"))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func subtitleRow(item: SubtitleItem) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(formattedRange(start: item.timecode, end: item.endTime))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Text(item.text)
+                .font(.body)
+                .textSelection(.enabled)
+
+            if let confidence = item.confidence {
+                Text(String(format: "%.0f%%", confidence * 100))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -724,6 +892,23 @@ func formattedTime(_ time: TimeInterval) -> String {
         return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
     }
     return String(format: "%02d:%02d", minutes, seconds)
+}
+
+func formattedTimestamp(_ time: TimeInterval) -> String {
+    guard time.isFinite else { return "--:--" }
+    let totalMillis = Int((time * 1000).rounded())
+    let millis = totalMillis % 1000
+    let seconds = (totalMillis / 1000) % 60
+    let minutes = (totalMillis / 60_000) % 60
+    let hours = totalMillis / 3_600_000
+    if hours > 0 {
+        return String(format: "%02d:%02d:%02d.%03d", hours, minutes, seconds, millis)
+    }
+    return String(format: "%02d:%02d.%03d", minutes, seconds, millis)
+}
+
+func formattedRange(start: TimeInterval, end: TimeInterval) -> String {
+    "\(formattedTimestamp(start)) – \(formattedTimestamp(end))"
 }
 
 extension CGRect {

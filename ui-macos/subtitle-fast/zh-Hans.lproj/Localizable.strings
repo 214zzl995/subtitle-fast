@@ -19,6 +19,7 @@
 "ui.detection_progress" = "检测进度";
 "ui.status_ready" = "就绪";
 "ui.status_idle" = "空闲";
+"ui.status_paused" = "已暂停";
 "ui.metric_counts" = "字幕 %d · OCR 空白 %d";
 "ui.metrics_fps" = "帧率";
 "ui.metrics_detection" = "检测";
@@ -36,6 +37,8 @@
 "ui.error_no_selection" = "请在画面上选择字幕区域。";
 "ui.error_start_failed" = "检测启动失败，请检查输入后重试。";
 "ui.cancel" = "取消";
+"ui.pause" = "暂停";
+"ui.resume" = "继续";
 "ui.language" = "语言";
 "ui.export" = "导出字幕";
 "ui.select_region" = "选择区域";

@@ -9,6 +9,7 @@ use std::sync::{LazyLock, Mutex};
 use futures_util::future::{AbortHandle, Abortable};
 use subtitle_fast_decoder::{Backend, Configuration, YPlaneError};
 use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET, RoiConfig};
+use tokio::sync::watch;
 
 pub mod backend;
 pub mod cli;
@@ -16,8 +17,8 @@ pub mod settings;
 pub mod stage;
 
 pub use stage::progress_gui::{
-    GuiProgressCallbacks, GuiProgressError, GuiProgressUpdate, clear_global_gui_callbacks,
-    progress_gui_init, progress_gui_shutdown, set_global_gui_callbacks,
+    GuiProgressCallbacks, GuiProgressError, GuiProgressUpdate, progress_gui_init,
+    progress_gui_shutdown,
 };
 
 use backend::ExecutionPlan;
@@ -52,7 +53,13 @@ pub struct GuiRunResult {
 }
 
 static NEXT_HANDLE_ID: AtomicU64 = AtomicU64::new(1);
-static HANDLES: LazyLock<Mutex<HashMap<u64, AbortHandle>>> =
+#[derive(Clone)]
+struct HandleState {
+    abort: AbortHandle,
+    pause: watch::Sender<bool>,
+}
+
+static HANDLES: LazyLock<Mutex<HashMap<u64, HandleState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[unsafe(no_mangle)]
@@ -70,8 +77,19 @@ pub extern "C" fn subtitle_fast_gui_start(config: *const GuiRunConfig) -> GuiRun
         Ok(plan) => {
             let handle_id = NEXT_HANDLE_ID.fetch_add(1, Ordering::SeqCst);
             let (abort_handle, abort_reg) = AbortHandle::new_pair();
+            let (pause_tx, pause_rx) = watch::channel(false);
+
+            if let Some(progress) = stage::progress_gui::create_progress_handle(handle_id, None) {
+                let _ = progress;
+            }
             if let Ok(mut map) = HANDLES.lock() {
-                map.insert(handle_id, abort_handle);
+                map.insert(
+                    handle_id,
+                    HandleState {
+                        abort: abort_handle,
+                        pause: pause_tx,
+                    },
+                );
             }
 
             std::thread::spawn(move || {
@@ -82,8 +100,12 @@ pub extern "C" fn subtitle_fast_gui_start(config: *const GuiRunConfig) -> GuiRun
                     Ok(rt) => rt,
                     Err(_) => return,
                 };
-                let fut = Abortable::new(async move { backend::run(plan).await }, abort_reg);
+                let fut = Abortable::new(
+                    async move { backend::run_with_progress(plan, handle_id, pause_rx).await },
+                    abort_reg,
+                );
                 let _ = rt.block_on(fut);
+                stage::progress_gui::drop_progress_handle(handle_id);
                 if let Ok(mut map) = HANDLES.lock() {
                     map.remove(&handle_id);
                 }
@@ -107,12 +129,33 @@ pub extern "C" fn subtitle_fast_gui_cancel(handle_id: u64) -> i32 {
         return 1;
     }
     if let Ok(mut map) = HANDLES.lock() {
-        if let Some(abort) = map.remove(&handle_id) {
-            abort.abort();
+        if let Some(state) = map.remove(&handle_id) {
+            state.abort.abort();
+            stage::progress_gui::drop_progress_handle(handle_id);
             return 0;
         }
     }
     2
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn subtitle_fast_gui_pause(handle_id: u64) -> i32 {
+    if let Some(state) = HANDLES.lock().ok().and_then(|m| m.get(&handle_id).cloned()) {
+        let _ = state.pause.send(true);
+        0
+    } else {
+        1
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn subtitle_fast_gui_resume(handle_id: u64) -> i32 {
+    if let Some(state) = HANDLES.lock().ok().and_then(|m| m.get(&handle_id).cloned()) {
+        let _ = state.pause.send(false);
+        0
+    } else {
+        1
+    }
 }
 
 fn build_plan(cfg: &GuiRunConfig) -> Result<ExecutionPlan, YPlaneError> {
