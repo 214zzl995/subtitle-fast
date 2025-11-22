@@ -58,6 +58,7 @@ impl Detector {
         let mut detection_options = SubtitleDetectionOptions::default();
         detection_options.luma_band.target = settings.target;
         detection_options.luma_band.delta = settings.delta;
+        detection_options.roi = settings.roi;
 
         let config = FrameValidatorConfig {
             detection: detection_options,

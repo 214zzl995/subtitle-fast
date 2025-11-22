@@ -7,7 +7,7 @@ use std::str::FromStr;
 use directories::ProjectDirs;
 use serde::Deserialize;
 use subtitle_fast_comparator::ComparatorKind;
-use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET};
+use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET, RoiConfig};
 
 use crate::cli::{CliArgs, CliSources};
 
@@ -59,6 +59,7 @@ pub struct DetectionSettings {
     pub target: u8,
     pub delta: u8,
     pub comparator: Option<ComparatorKind>,
+    pub roi: Option<RoiConfig>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -266,6 +267,7 @@ fn merge(
             target: detector_target,
             delta: detector_delta,
             comparator: comparator_kind,
+            roi: None,
         },
         decoder: decoder_settings,
         output: output_settings,
