@@ -19,6 +19,7 @@ struct SubtitleListPanel: View {
 
 struct SubtitleListView: View {
     @ObservedObject var session: DetectionSession
+    private let subtitleTapOffset: TimeInterval = 0.1
 
     var body: some View {
         List {
@@ -26,7 +27,7 @@ struct SubtitleListView: View {
                 ForEach(session.subtitles) { item in
                     subtitleRow(item: item)
                         .onTapGesture {
-                            session.seek(to: item.timecode)
+                            session.seek(to: item.timecode + subtitleTapOffset)
                         }
                 }
             }
