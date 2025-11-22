@@ -8,7 +8,7 @@ use std::sync::{LazyLock, Mutex};
 
 use futures_util::future::{AbortHandle, Abortable};
 use subtitle_fast_decoder::{Backend, Configuration, YPlaneError};
-use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET};
+use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET, RoiConfig};
 
 pub mod backend;
 pub mod cli;
@@ -32,6 +32,12 @@ pub struct GuiRunConfig {
     pub detection_samples_per_second: u32,
     pub detector_target: u8,
     pub detector_delta: u8,
+    pub roi_x: f32,
+    pub roi_y: f32,
+    pub roi_width: f32,
+    pub roi_height: f32,
+    /// 0 for disabled, non-zero for enabled
+    pub roi_enabled: u8,
 }
 
 unsafe impl Send for GuiRunConfig {}
@@ -140,6 +146,7 @@ fn build_plan(cfg: &GuiRunConfig) -> Result<ExecutionPlan, YPlaneError> {
             cfg.detector_delta
         },
         comparator: None,
+        roi: gui_roi(cfg),
     };
 
     let effective = EffectiveSettings {
@@ -157,6 +164,28 @@ fn build_plan(cfg: &GuiRunConfig) -> Result<ExecutionPlan, YPlaneError> {
         config: decoder_config,
         backend_locked,
         pipeline,
+    })
+}
+
+fn gui_roi(cfg: &GuiRunConfig) -> Option<RoiConfig> {
+    if cfg.roi_enabled == 0 {
+        return None;
+    }
+    let clamp_unit = |v: f32| v.clamp(0.0, 1.0);
+    let x = clamp_unit(cfg.roi_x);
+    let y = clamp_unit(cfg.roi_y);
+    let max_width = (1.0 - x).max(0.0);
+    let max_height = (1.0 - y).max(0.0);
+    let width = clamp_unit(cfg.roi_width).min(max_width);
+    let height = clamp_unit(cfg.roi_height).min(max_height);
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    Some(RoiConfig {
+        x,
+        y,
+        width,
+        height,
     })
 }
 

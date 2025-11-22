@@ -1,5 +1,6 @@
 "ui.no_file" = "No file selected";
 "ui.open_file" = "Open Video";
+"ui.files" = "Videos";
 "ui.reset_selection" = "Reset Selection";
 "ui.locale_toggle_hint" = "Switch between English and Chinese";
 "ui.placeholder_no_video" = "Select a video to preview and detect subtitles";
@@ -24,6 +25,8 @@
 "ui.metrics_ocr" = "OCR";
 "ui.metrics_cues" = "Cues";
 "ui.metrics_empty" = "Empty OCR";
+"ui.metrics_cues_unit" = "cues";
+"ui.metrics_empty_unit" = "frames";
 "ui.subtitles" = "Subtitles";
 "ui.detecting" = "Detecting…";
 "ui.no_subtitles" = "No subtitles yet";
@@ -40,3 +43,12 @@
 "ui.select_color" = "Pick Color";
 "ui.finish_color" = "Finish Picking";
 "ui.color_picker_hint" = "Click on the subtitle to pick its color";
+"ui.status_completed" = "Completed";
+"ui.status_failed" = "Failed";
+"ui.status_canceled" = "Canceled";
+"ui.preview_mode_color" = "Color";
+"ui.preview_mode_luma" = "Y-plane";
+"ui.notification_done_title" = "Detection finished";
+"ui.notification_done_body" = "Finished detecting subtitles for %@.";
+"ui.notification_failed_title" = "Detection failed";
+"ui.notification_failed_body" = "Detection failed for %@.";

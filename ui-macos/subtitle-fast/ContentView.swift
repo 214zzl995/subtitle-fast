@@ -1,73 +1,178 @@
 import AVFoundation
 import AVKit
+import CoreImage
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var session = DetectionSession()
     @State private var showingFilePicker = false
-    @AppStorage("appLanguage") private var appLanguage: AppLanguage = .systemDefault()
 
     var body: some View {
-        NavigationStack {
+        NavigationSplitView {
+            SidebarView(session: session, showingFilePicker: $showingFilePicker)
+                .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
+        } detail: {
             HSplitView {
-                VStack(spacing: 12) {
-                    PreviewPanel(session: session)
-                    ControlPanel(session: session)
-                }
-                .frame(minWidth: 640)
-
-                VStack(spacing: 12) {
-                    StatusPanel(session: session)
-                    SubtitleListPanel(session: session)
-                }
-                .frame(minWidth: 360)
+                leftColumn
+                    .frame(maxHeight: .infinity, alignment: .top)
+                rightColumn
+                    .frame(maxHeight: .infinity, alignment: .top)
             }
-            .padding(16)
-            .background(Color(nsColor: .windowBackgroundColor))
-            .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    Button {
-                        showingFilePicker = true
-                    } label: {
-                        Label("ui.open_file", systemImage: "folder.badge.plus")
-                    }
-                }
-
-                ToolbarItem(placement: .principal) {
-                    VStack(spacing: 2) {
-                        Text(session.selectedFile?.lastPathComponent ?? NSLocalizedString("ui.no_file", comment: "no file"))
-                            .font(.headline)
-                        if session.isDetecting {
-                            Text(NSLocalizedString("ui.detecting", comment: "detecting"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                ToolbarItem {
-                    Menu {
-                        Picker("ui.language", selection: $appLanguage) {
-                            ForEach(AppLanguage.allCases) { lang in
-                                Text(lang.label).tag(lang)
-                            }
-                        }
-                    } label: {
-                        Label(appLanguage.label, systemImage: "globe")
-                    }
-                    .help("ui.locale_toggle_hint")
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                LinearGradient(
+                    colors: [
+                        Color(nsColor: .windowBackgroundColor).opacity(0.9),
+                        Color(nsColor: .textBackgroundColor).opacity(0.85)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+        }
+        .frame(minWidth: 1050, minHeight: 720)
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    showingFilePicker = true
+                } label: {
+                    Label("ui.open_file", systemImage: "folder.badge.plus")
                 }
             }
-            .environment(\.locale, appLanguage.locale)
-            .fileImporter(
-                isPresented: $showingFilePicker,
-                allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie],
-                allowsMultipleSelection: false
-            ) { result in
-                guard case .success(let urls) = result, let url = urls.first else { return }
-                session.load(from: url)
+        }
+        .fileImporter(
+            isPresented: $showingFilePicker,
+            allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie],
+            allowsMultipleSelection: true
+        ) { result in
+            guard case .success(let urls) = result else { return }
+            session.load(from: urls)
+        }
+    }
+
+    @ViewBuilder
+    private var leftColumn: some View {
+        VStack(spacing: 10) {
+            PreviewPanel(session: session)
+            ControlPanel(session: session)
+        }
+        .frame(minWidth: 540, maxHeight: .infinity, alignment: .top)
+    }
+
+    @ViewBuilder
+    private var rightColumn: some View {
+        VStack(spacing: 10) {
+            StatusPanel(session: session)
+            SubtitleListPanel(session: session)
+        }
+        .frame(minWidth: 320, maxWidth: 420, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+// MARK: - Sidebar
+
+private struct SidebarView: View {
+    @ObservedObject var session: DetectionSession
+    @Binding var showingFilePicker: Bool
+
+    var body: some View {
+        List {
+            Section {
+                Button {
+                    showingFilePicker = true
+                } label: {
+                    Label("ui.open_file", systemImage: "folder.badge.plus")
+                }
+                .buttonStyle(.borderless)
             }
+
+            Section(header: Text("ui.files")) {
+                SidebarFiles(session: session)
+            }
+        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+    }
+}
+
+private struct SidebarFiles: View {
+    @ObservedObject var session: DetectionSession
+
+    var body: some View {
+        if session.files.isEmpty {
+            ContentUnavailableView("ui.no_file", systemImage: "film", description: Text("ui.placeholder_no_video"))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            ForEach(session.files) { file in
+                Button {
+                    session.activateFile(id: file.id)
+                } label: {
+                    fileRow(for: file)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fileRow(for file: TrackedFile) -> some View {
+        let isActive = session.activeFileID == file.id
+        let isDone: Bool = {
+            if case .completed = file.status { return true }
+            return false
+        }()
+        let isDetecting: Bool = {
+            if case .detecting = file.status { return true }
+            return false
+        }()
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: isActive ? "play.rectangle.fill" : "film")
+                    .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(file.url.lastPathComponent)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+
+                    Text(statusLabel(for: file))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if file.progress > 0 || isDone {
+                    Text(String(format: "%.0f%%", min(max(file.progress, 0), 1) * 100))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ProgressView(value: file.progress, total: 1.0)
+                .progressViewStyle(.linear)
+                .opacity(isDetecting || file.progress > 0 ? 1 : 0.25)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(isActive ? Color.accentColor.opacity(0.08) : Color.clear)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func statusLabel(for file: TrackedFile) -> String {
+        switch file.status {
+        case .idle:
+            return NSLocalizedString("ui.status_idle", comment: "idle")
+        case .detecting:
+            return NSLocalizedString("ui.detecting", comment: "detecting")
+        case .completed:
+            return NSLocalizedString("ui.status_completed", comment: "completed")
+        case .failed:
+            return NSLocalizedString("ui.status_failed", comment: "failed")
+        case .canceled:
+            return NSLocalizedString("ui.status_canceled", comment: "canceled")
         }
     }
 }
@@ -78,15 +183,27 @@ private struct PreviewPanel: View {
     @ObservedObject var session: DetectionSession
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("ui.preview", systemImage: "sparkles.tv.fill")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("ui.preview", systemImage: "sparkles.tv.fill")
+                    .font(.headline)
+                Spacer()
+                Picker("", selection: $session.previewMode) {
+                    Text("ui.preview_mode_color").tag(PreviewMode.color)
+                    Text("ui.preview_mode_luma").tag(PreviewMode.luma)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+            }
 
             VideoPreviewView(session: session)
                 .frame(minHeight: 340)
+                .onChange(of: session.previewMode) { _, _ in
+                    session.applyPreviewMode()
+                }
         }
-        .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.vertical, 8)
+        .padding(.horizontal, 8)
     }
 }
 
@@ -94,7 +211,7 @@ private struct ControlPanel: View {
     @ObservedObject var session: DetectionSession
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             Label("ui.selection_summary", systemImage: "cursorarrow.motionlines")
                 .font(.headline)
 
@@ -165,7 +282,9 @@ private struct ControlPanel: View {
                         session.isDetecting ? "ui.cancel" : "ui.start_detection",
                         systemImage: session.isDetecting ? "stop.fill" : "play.fill"
                     )
-                    .frame(maxWidth: 200)
+                    .font(.title3.weight(.semibold))
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(session.isDetecting ? .red : .accentColor)
@@ -173,8 +292,8 @@ private struct ControlPanel: View {
                 .disabled(session.selection == nil || session.selectedFile == nil)
             }
         }
-        .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
     }
 
     @ViewBuilder
@@ -237,7 +356,7 @@ private struct StatusPanel: View {
     @ObservedObject var session: DetectionSession
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label("ui.detection_progress", systemImage: "speedometer")
                     .font(.headline)
@@ -266,21 +385,32 @@ private struct StatusPanel: View {
                     .foregroundStyle(.red)
             }
         }
-        .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.vertical, 10)
+        .padding(.horizontal, 10)
     }
 
     private var statusTitle: String {
         if session.isDetecting {
             return NSLocalizedString("ui.detecting", comment: "detecting")
         }
-        if session.selectedFile == nil {
+        guard let activeID = session.activeFileID,
+              let status = session.files.first(where: { $0.id == activeID })?.status else {
             return NSLocalizedString("ui.status_idle", comment: "idle")
         }
-        if session.selection == nil {
-            return NSLocalizedString("ui.select_region", comment: "select region")
+        switch status {
+        case .idle:
+            return session.selection == nil
+                ? NSLocalizedString("ui.select_region", comment: "select region")
+                : NSLocalizedString("ui.status_ready", comment: "ready")
+        case .detecting:
+            return NSLocalizedString("ui.detecting", comment: "detecting")
+        case .completed:
+            return NSLocalizedString("ui.status_completed", comment: "completed")
+        case .failed:
+            return NSLocalizedString("ui.status_failed", comment: "failed")
+        case .canceled:
+            return NSLocalizedString("ui.status_canceled", comment: "canceled")
         }
-        return NSLocalizedString("ui.status_ready", comment: "ready")
     }
 }
 
@@ -288,7 +418,7 @@ private struct SubtitleListPanel: View {
     @ObservedObject var session: DetectionSession
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("ui.subtitles", systemImage: "text.bubble")
                     .font(.headline)
@@ -304,10 +434,11 @@ private struct SubtitleListPanel: View {
             }
 
             SubtitleListView(session: session)
-                .frame(minHeight: 260)
+                .frame(minHeight: 240, maxHeight: .infinity)
         }
-        .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.vertical, 10)
+        .padding(.horizontal, 10)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -316,31 +447,36 @@ private struct MetricsGrid: View {
     let subtitles: Int
     
     var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
             GridRow {
                 label("ui.metrics_fps", systemImage: "speedometer")
-                Text(String(format: "%.1f", metrics.fps)).bold()
+                Text(String(format: "%.1f", metrics.fps)).fontWeight(.semibold)
+                Text("fps").foregroundStyle(.secondary)
                 
                 label("ui.metrics_detection", systemImage: "waveform.path.ecg")
-                Text(String(format: "%.1f ms", metrics.det)).bold()
+                Text(String(format: "%.1f", metrics.det)).fontWeight(.semibold)
+                Text("ms").foregroundStyle(.secondary)
             }
             GridRow {
                 label("ui.metrics_ocr", systemImage: "text.viewfinder")
-                Text(String(format: "%.1f ms", metrics.ocr)).bold()
+                Text(String(format: "%.1f", metrics.ocr)).fontWeight(.semibold)
+                Text("ms").foregroundStyle(.secondary)
                 
                 label("ui.metrics_cues", systemImage: "text.bubble")
-                Text("\(subtitles)").bold()
+                Text("\(subtitles)").fontWeight(.semibold)
+                Text(LocalizedStringKey("ui.metrics_cues_unit")).foregroundStyle(.secondary)
             }
             GridRow {
                 label("ui.metrics_empty", systemImage: "eye.slash")
-                Text("\(metrics.ocrEmpty)").bold()
+                Text("\(metrics.ocrEmpty)").fontWeight(.semibold)
+                Text(LocalizedStringKey("ui.metrics_empty_unit")).foregroundStyle(.secondary)
             }
         }
         .font(.caption.monospacedDigit())
     }
     
     private func label(_ key: String, systemImage: String) -> some View {
-        Label(key, systemImage: systemImage)
+        Label(LocalizedStringKey(key), systemImage: systemImage)
             .foregroundStyle(.secondary)
     }
 }
@@ -378,8 +514,9 @@ private struct VideoCanvas: View {
                 Color.black
 
                 if let player = session.player {
-                    VideoPlayerLayer(player: player)
+                    PlayerContainerView(player: player)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .allowsHitTesting(false)
 
                     if let videoRect = videoRect(in: proxy.size), let selection = session.selection {
                         let rectInVideo = selection.denormalized(in: videoRect.size)
@@ -449,22 +586,22 @@ private struct VideoCanvas: View {
     }
 }
 
-struct VideoPlayerLayer: NSViewRepresentable {
+struct PlayerContainerView: NSViewRepresentable {
     let player: AVPlayer
     
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        let layer = AVPlayerLayer(player: player)
-        layer.videoGravity = .resizeAspect
-        view.layer = layer
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .none
+        view.showsFrameSteppingButtons = false
+        view.showsSharingServiceButton = false
+        view.updatesNowPlayingInfoCenter = false
+        view.allowsPictureInPicturePlayback = false
+        view.videoGravity = .resizeAspect
         return view
     }
     
-    func updateNSView(_ nsView: NSView, context: Context) {
-        if let layer = nsView.layer as? AVPlayerLayer {
-            layer.player = player
-        }
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        nsView.player = player
     }
 }
 
@@ -472,18 +609,19 @@ struct PlaybackControls: View {
     @ObservedObject var session: DetectionSession
     
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .center, spacing: 14) {
             Button {
                 session.togglePlayPause()
             } label: {
                 Image(systemName: session.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.title3)
+                    .font(.title3.weight(.semibold))
+                    .frame(width: 34, height: 34)
             }
             .buttonStyle(.plain)
-            .padding(8)
-            .background(.thinMaterial, in: Circle())
+            .background(.ultraThinMaterial, in: Circle())
+            .overlay(Circle().stroke(Color.primary.opacity(0.06)))
             
-            VStack(spacing: 2) {
+            VStack(alignment: .leading, spacing: 6) {
                 Slider(
                     value: Binding(
                         get: { session.currentTime },
@@ -503,8 +641,9 @@ struct PlaybackControls: View {
                 .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -611,5 +750,28 @@ extension CGRect {
 extension CGPoint {
     func offsetBy(dx: CGFloat, dy: CGFloat) -> CGPoint {
         CGPoint(x: x + dx, y: y + dy)
+    }
+}
+
+// MARK: - Glass helper
+
+private struct GlassBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(.ultraThinMaterial)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.08))
+            )
+            .shadow(color: .black.opacity(0.08), radius: 10, x: 0, y: 8)
+    }
+}
+
+private extension View {
+    func glassSurface() -> some View {
+        modifier(GlassBackground())
     }
 }

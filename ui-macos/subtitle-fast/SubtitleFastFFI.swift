@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 // MARK: - C FFI Structures
@@ -10,6 +11,11 @@ struct GuiRunConfig {
     var detection_samples_per_second: UInt32
     var detector_target: UInt8
     var detector_delta: UInt8
+    var roi_x: Float
+    var roi_y: Float
+    var roi_width: Float
+    var roi_height: Float
+    var roi_enabled: UInt8
 }
 
 /// Result from starting a detection run
@@ -114,7 +120,8 @@ final class SubtitleFastFFI {
         decoderBackend: String?,
         samplesPerSecond: UInt32,
         detectorTarget: UInt8,
-        detectorDelta: UInt8
+        detectorDelta: UInt8,
+        roi: CGRect?
     ) -> Result<UInt64, Error> {
         var config = GuiRunConfig(
             input_path: nil,
@@ -122,8 +129,25 @@ final class SubtitleFastFFI {
             decoder_backend: nil,
             detection_samples_per_second: samplesPerSecond,
             detector_target: detectorTarget,
-            detector_delta: detectorDelta
+            detector_delta: detectorDelta,
+            roi_x: 0,
+            roi_y: 0,
+            roi_width: 0,
+            roi_height: 0,
+            roi_enabled: 0
         )
+        
+        if let roi {
+            let clampedX = max(0, min(roi.origin.x, 1))
+            let clampedY = max(0, min(roi.origin.y, 1))
+            let clampedWidth = max(0, min(roi.size.width, 1))
+            let clampedHeight = max(0, min(roi.size.height, 1))
+            config.roi_x = Float(clampedX)
+            config.roi_y = Float(clampedY)
+            config.roi_width = Float(clampedWidth)
+            config.roi_height = Float(clampedHeight)
+            config.roi_enabled = 1
+        }
         
         let result: GuiRunResult = input.path.withCString { inputPtr in
             config.input_path = inputPtr

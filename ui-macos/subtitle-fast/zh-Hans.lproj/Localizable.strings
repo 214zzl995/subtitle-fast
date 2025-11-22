@@ -1,5 +1,6 @@
 "ui.no_file" = "未选择文件";
 "ui.open_file" = "打开视频";
+"ui.files" = "视频";
 "ui.reset_selection" = "重置选区";
 "ui.locale_toggle_hint" = "在中英文之间切换";
 "ui.placeholder_no_video" = "选择视频以预览并检测字幕";
@@ -24,6 +25,8 @@
 "ui.metrics_ocr" = "OCR";
 "ui.metrics_cues" = "字幕数";
 "ui.metrics_empty" = "空白 OCR";
+"ui.metrics_cues_unit" = "条";
+"ui.metrics_empty_unit" = "帧";
 "ui.subtitles" = "字幕列表";
 "ui.detecting" = "检测中…";
 "ui.no_subtitles" = "暂无字幕";
@@ -40,3 +43,12 @@
 "ui.select_color" = "拾取颜色";
 "ui.finish_color" = "完成拾取";
 "ui.color_picker_hint" = "点击字幕以拾取颜色";
+"ui.status_completed" = "完成";
+"ui.status_failed" = "失败";
+"ui.status_canceled" = "已取消";
+"ui.preview_mode_color" = "彩色";
+"ui.preview_mode_luma" = "Y平面";
+"ui.notification_done_title" = "检测完成";
+"ui.notification_done_body" = "已完成 %@ 的字幕检测。";
+"ui.notification_failed_title" = "检测失败";
+"ui.notification_failed_body" = "%@ 的检测失败。";
