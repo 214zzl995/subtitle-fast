@@ -20,8 +20,13 @@ struct PreviewPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("ui.preview", systemImage: "sparkles.tv.fill")
-                    .font(.headline)
+                Label {
+                    Text("ui.preview")
+                        .font(.headline)
+                } icon: {
+                    Image(systemName: "sparkles.tv.fill")
+                        .font(.headline.weight(.semibold))
+                }
                 Spacer()
                 HStack(spacing: 6) {
                     HeaderIconButton(
@@ -93,20 +98,25 @@ struct VideoPreviewView: View {
     @ObservedObject var session: DetectionSession
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 10) {
             VideoCanvas(session: session)
                 .frame(minHeight: 280)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color(nsColor: .underPageBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.primary.opacity(0.06))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             PlaybackControls(session: session)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 4)
+                .padding(.bottom, 6)
         }
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06))
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -318,7 +328,7 @@ struct VideoCanvas: View {
         GeometryReader { proxy in
             let currentVideoRect = videoRect(in: proxy.size)
             ZStack {
-                Color.black
+                Color(nsColor: .underPageBackgroundColor)
 
                 if let player = session.player {
                     PlayerContainerView(player: player)
@@ -724,42 +734,106 @@ struct PlayerContainerView: NSViewRepresentable {
 struct PlaybackControls: View {
     @ObservedObject var session: DetectionSession
     
+    private var totalFrames: Int? {
+        guard let fps = session.videoFrameRate, fps > 0, session.duration > 0 else { return nil }
+        let count = Int((session.duration * fps).rounded(.down))
+        return max(count, 1)
+    }
+
+    private var currentFrame: Int? {
+        guard let fps = session.videoFrameRate, fps > 0 else { return nil }
+        let frameIndex = Int((session.currentTime * fps).rounded(.down)) + 1
+        guard let total = totalFrames else { return max(frameIndex, 1) }
+        return min(total, max(frameIndex, 1))
+    }
+
+    private var frameDisplay: String {
+        guard let current = currentFrame else { return "Frame --" }
+        if let total = totalFrames {
+            return "Frame \(current)/\(total)"
+        }
+        return "Frame \(current)"
+    }
+
     var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            Button {
-                session.togglePlayPause()
-            } label: {
-                Image(systemName: session.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.title3.weight(.semibold))
-                    .frame(width: 34, height: 34)
-            }
-            .buttonStyle(.plain)
-            .background(.ultraThinMaterial, in: Circle())
-            .overlay(Circle().stroke(Color.primary.opacity(0.06)))
-            
-            VStack(alignment: .leading, spacing: 6) {
-                Slider(
-                    value: Binding(
-                        get: { session.currentTime },
-                        set: { session.seek(to: $0) }
-                    ),
-                    in: 0...(max(session.duration, 1))
-                )
-                .controlSize(.small)
-                
-                HStack {
+        let controlHeight: CGFloat = 70
+
+        ZStack {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.thinMaterial)
+
+            VStack(spacing: 6) {
+                HStack(alignment: .center, spacing: 8) {
+                    Button {
+                        session.togglePlayPause()
+                    } label: {
+                        Image(systemName: session.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.title3.weight(.semibold))
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .overlay(Circle().stroke(Color.primary.opacity(0.08)))
+
+                    Slider(
+                        value: Binding(
+                            get: { session.currentTime },
+                            set: { session.seek(to: $0) }
+                        ),
+                        in: 0...(max(session.duration, 1))
+                    )
+                    .controlSize(.small)
+                }
+
+                HStack(alignment: .center, spacing: 10) {
                     Text(formattedTime(session.currentTime))
                         .font(.caption2.monospacedDigit())
+
+                    Text(frameDisplay)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+
                     Spacer()
+
+                    HStack(spacing: 6) {
+                        pillButton(title: "-1f") { session.stepFrame(forward: false) }
+                        pillButton(title: "+1f") { session.stepFrame(forward: true) }
+                    }
+
+                    HStack(spacing: 6) {
+                        pillButton(title: "-1s") { session.jumpBy(seconds: -1) }
+                        pillButton(title: "+1s") { session.jumpBy(seconds: 1) }
+                    }
+
                     Text(formattedTime(session.duration))
                         .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
-                .foregroundStyle(.secondary)
             }
+            .padding(.top, 14)
+            .padding([.horizontal, .bottom], 8)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(height: controlHeight)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(0.08))
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func pillButton(title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 6)
+                .frame(height: 22)
+        }
+        .buttonStyle(.plain)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color.primary.opacity(0.08))
+        )
     }
 }
 

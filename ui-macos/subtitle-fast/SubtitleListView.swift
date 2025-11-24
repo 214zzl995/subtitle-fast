@@ -38,7 +38,17 @@ struct SubtitleListView: View {
         .background(Color.clear)
         .overlay {
             if session.subtitles.isEmpty {
-                ContentUnavailableView("ui.no_subtitles", systemImage: "text.bubble", description: Text("ui.no_subtitles_hint"))
+                VStack(spacing: 10) {
+                    Image(systemName: "text.bubble")
+                        .font(.system(size: 24, weight: .light))
+                        .foregroundStyle(.secondary)
+                    Text("ui.no_subtitles_hint")
+                        .font(.system(size: 12, weight: .light))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .padding(.vertical, 16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
         }
     }

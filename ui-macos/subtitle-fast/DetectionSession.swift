@@ -55,6 +55,7 @@ struct TrackedFile: Identifiable {
     let id: UUID
     let url: URL
     var duration: TimeInterval
+    var frameRate: Double?
     var size: CGSize?
     var selection: CGRect?
     var outputURL: URL?
@@ -92,6 +93,7 @@ final class DetectionSession: ObservableObject {
     @Published var isPlaying = false
     @Published var currentTime: TimeInterval = 0
     @Published var duration: TimeInterval = 0
+    @Published var videoFrameRate: Double?
     @Published var previewMode: PreviewMode = .color
     
     // File list
@@ -181,6 +183,7 @@ final class DetectionSession: ObservableObject {
                 id: UUID(),
                 url: url,
                 duration: 0,
+                frameRate: nil,
                 size: nil,
                 selection: clampNormalized(defaultSelectionNormalized),
                 outputURL: nil,
@@ -212,6 +215,7 @@ final class DetectionSession: ObservableObject {
         errorMessage = entry.errorMessage
         outputURL = entry.outputURL
         duration = entry.duration
+        videoFrameRate = entry.frameRate
         videoSize = entry.size
         lastCueCount = entry.cues
         ensureSelection(for: id)
@@ -293,15 +297,38 @@ final class DetectionSession: ObservableObject {
             let transformed = track.naturalSize.applying(track.preferredTransform)
             let size = CGSize(width: abs(transformed.width), height: abs(transformed.height))
             videoSize = size
-            updateFile(id: fileID) { $0.size = size }
+            let fps = resolvedFrameRate(from: track)
+            videoFrameRate = fps
+            updateFile(id: fileID) {
+                $0.size = size
+                $0.frameRate = fps
+            }
         } else {
             videoSize = nil
+            videoFrameRate = nil
+            updateFile(id: fileID) {
+                $0.size = nil
+                $0.frameRate = nil
+            }
         }
         let length = asset.duration.seconds
         if length.isFinite {
             duration = length
             updateFile(id: fileID) { $0.duration = length }
+        } else {
+            duration = 0
         }
+    }
+
+    private func resolvedFrameRate(from track: AVAssetTrack) -> Double? {
+        if track.nominalFrameRate > 0 {
+            return Double(track.nominalFrameRate)
+        }
+        let minDuration = track.minFrameDuration
+        if minDuration.isNumeric && minDuration.value != 0 {
+            return Double(minDuration.timescale) / Double(minDuration.value)
+        }
+        return nil
     }
 
     func togglePlayPause() {
@@ -332,6 +359,33 @@ final class DetectionSession: ObservableObject {
         if wasPlaying {
             player.play()
         }
+    }
+
+    func stepFrame(forward: Bool) {
+        guard let player else { return }
+        player.pause()
+        isPlaying = false
+
+        if let item = player.currentItem {
+            let stepCount = forward ? 1 : -1
+            item.step(byCount: stepCount)
+            currentTime = player.currentTime().seconds
+            return
+        }
+
+        guard let fps = videoFrameRate, fps > 0 else { return }
+        let delta = 1.0 / fps
+        let target = forward ? currentTime + delta : currentTime - delta
+        seek(to: target)
+    }
+
+    func jumpBy(seconds: Double) {
+        guard let player else { return }
+        let maxDuration = duration > 0 ? duration : player.currentItem?.duration.seconds ?? 0
+        let effectiveDuration = maxDuration.isFinite ? maxDuration : 0
+        let clampedUpperBound = effectiveDuration > 0 ? effectiveDuration : currentTime + seconds
+        let target = max(0, min(clampedUpperBound, currentTime + seconds))
+        seek(to: target)
     }
 
     func snapshotCurrentFrame(lumaOnly: Bool) -> CGImage? {
@@ -737,6 +791,7 @@ final class DetectionSession: ObservableObject {
         subtitles = []
         errorMessage = nil
         duration = 0
+        videoFrameRate = nil
         videoSize = nil
         outputURL = nil
         currentAsset = nil

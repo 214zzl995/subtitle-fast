@@ -5,8 +5,14 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("ui.files")
-                .font(.headline)
+            Label {
+                Text("ui.files")
+                    .font(.headline)
+            } icon: {
+                Image(systemName: "film.stack")
+                    .font(.headline.weight(.semibold))
+            }
+            .padding(.leading, 6)
             SidebarFiles(session: session)
         }
         .padding(.vertical, 6)
@@ -23,15 +29,29 @@ struct SidebarFiles: View {
     var body: some View {
         ScrollView {
             if session.files.isEmpty {
-                ContentUnavailableView("ui.no_file", systemImage: "film", description: Text("ui.placeholder_no_video"))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 12)
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 LazyVStack(spacing: 8) {
                     ForEach(session.files) { file in
                         fileRow(for: file)
                     }
                 }
+            }
+        }
+        .overlay(alignment: .center) {
+            if session.files.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "film")
+                        .font(.system(size: 30, weight: .light))
+                        .foregroundStyle(.secondary)
+                    Text("ui.placeholder_no_video")
+                        .font(.system(size: 15, weight: .light))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .padding(.vertical, 16)
+                .padding(.horizontal, 8)
             }
         }
         .alert(isPresented: $showingRemoveConfirm) {
