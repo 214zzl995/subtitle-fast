@@ -12,35 +12,6 @@ struct ControlPanel: View {
 
             Divider()
 
-            HStack(spacing: 8) {
-                Button {
-                    session.startRegionSelection()
-                } label: {
-                    Label(
-                        session.isSelectingRegion ? "ui.finish_region" : "ui.select_region",
-                        systemImage: session.isSelectingRegion ? "viewfinder.circle.fill" : "viewfinder.circle"
-                    )
-                }
-                .buttonStyle(.bordered)
-                .tint(session.isSelectingRegion ? .green : .primary)
-
-                Toggle(isOn: $session.isHighlightActive) {
-                    Label("ui.highlight", systemImage: "light.max")
-                }
-                .toggleStyle(.button)
-
-                if session.selection != nil {
-                    Button {
-                        session.resetSelection()
-                    } label: {
-                        Label("ui.reset_selection", systemImage: "arrow.counterclockwise")
-                    }
-                    .buttonStyle(.bordered)
-                }
-
-                Spacer()
-            }
-
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
                 GridRow {
                     sliderLabel(text: "ui.threshold", value: session.threshold)

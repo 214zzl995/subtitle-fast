@@ -4,6 +4,7 @@ import AVFoundation
 import AppKit
 import UniformTypeIdentifiers
 import UserNotifications
+import CoreImage
 
 struct SubtitleItem: Identifiable {
     let id = UUID()
@@ -80,7 +81,8 @@ final class DetectionSession: ObservableObject {
     @Published var threshold: Double = 230
     @Published var tolerance: Double = 20
     @Published var isHighlightActive = false
-    @Published var isSelectingRegion = false
+    @Published var highlightTint: NSColor = .controlAccentColor
+    @Published var selectionVisible = true
 
     // MARK: Playback
     @Published private(set) var selectedFile: URL?
@@ -123,6 +125,8 @@ final class DetectionSession: ObservableObject {
     private var detectionScopedURLs: [UInt64: URL] = [:]
     private let samplesPerSecond: UInt32 = 7
     private let ffi = SubtitleFastFFI.shared
+    private let ciContext = CIContext()
+    private let defaultSelectionNormalized = CGRect(x: 0.15, y: 0.75, width: 0.7, height: 0.25)
 
     init() {
         ffi.registerCallbacks(
@@ -176,7 +180,7 @@ final class DetectionSession: ObservableObject {
                 url: url,
                 duration: 0,
                 size: nil,
-                selection: nil,
+                selection: clampNormalized(defaultSelectionNormalized),
                 outputURL: nil,
                 subtitles: [],
                 metrics: .empty,
@@ -197,7 +201,7 @@ final class DetectionSession: ObservableObject {
         guard let entry = files.first(where: { $0.id == id }) else { return }
         activeFileID = id
         selectedFile = entry.url
-        selection = entry.selection
+        selection = clampNormalized(entry.selection ?? defaultSelectionNormalized)
         metrics = entry.metrics
         progress = entry.progress
         subtitles = entry.subtitles
@@ -206,6 +210,7 @@ final class DetectionSession: ObservableObject {
         duration = entry.duration
         videoSize = entry.size
         lastCueCount = entry.cues
+        ensureSelection(for: id)
         configurePlayer(for: entry)
     }
 
@@ -325,32 +330,67 @@ final class DetectionSession: ObservableObject {
         }
     }
 
+    func snapshotCurrentFrame(lumaOnly: Bool) -> CGImage? {
+        guard let asset = currentAsset else { return nil }
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceAfter = .zero
+        generator.requestedTimeToleranceBefore = .zero
+        let time = player?.currentTime() ?? .zero
+        do {
+            let image = try generator.copyCGImage(at: time, actualTime: nil)
+            guard lumaOnly else { return image }
+            let ciImage = CIImage(cgImage: image).applyingFilter(
+                "CIColorControls",
+                parameters: [kCIInputSaturationKey: 0.0]
+            )
+            return ciContext.createCGImage(ciImage, from: ciImage.extent) ?? image
+        } catch {
+            return nil
+        }
+    }
+
     private func updateFile(id: UUID, mutate: (inout TrackedFile) -> Void) {
         guard let index = files.firstIndex(where: { $0.id == id }) else { return }
         mutate(&files[index])
     }
 
-    // MARK: - Selection
-
-    func resetSelection() {
-        selection = nil
-        if let id = activeFileID {
-            updateFile(id: id) { $0.selection = nil }
+    private func ensureSelection(for id: UUID) {
+        let rect = clampNormalized(defaultSelectionNormalized)
+        guard let index = files.firstIndex(where: { $0.id == id }) else { return }
+        if files[index].selection == nil {
+            files[index].selection = rect
+        }
+        if selection == nil || activeFileID == id {
+            selection = files[index].selection ?? rect
         }
     }
 
-    func startRegionSelection() {
-        isSelectingRegion.toggle()
+    private func clampNormalized(_ rect: CGRect) -> CGRect {
+        CGRect(
+            x: min(max(rect.origin.x, 0), 1),
+            y: min(max(rect.origin.y, 0), 1),
+            width: min(max(rect.width, 0), 1 - min(max(rect.origin.x, 0), 1)),
+            height: min(max(rect.height, 0), 1 - min(max(rect.origin.y, 0), 1))
+        )
     }
 
-    func finishRegionSelection() {
-        isSelectingRegion = false
+    // MARK: - Selection
+
+    func resetSelection() {
+        let rect = clampNormalized(defaultSelectionNormalized)
+        selection = rect
+        selectionVisible = true
+        if let id = activeFileID {
+            updateFile(id: id) { $0.selection = rect }
+        }
     }
 
     func updateSelection(normalized rect: CGRect) {
-        selection = rect
+        let clamped = clampNormalized(rect)
+        selection = clamped
         if let id = activeFileID {
-            updateFile(id: id) { $0.selection = rect }
+            updateFile(id: id) { $0.selection = clamped }
         }
     }
 
