@@ -2,49 +2,103 @@ import SwiftUI
 
 struct SidebarView: View {
     @ObservedObject var session: DetectionSession
-    @Binding var showingFilePicker: Bool
 
     var body: some View {
-        List {
-            Section {
-                Button {
-                    showingFilePicker = true
-                } label: {
-                    Label("ui.open_file", systemImage: "folder.badge.plus")
-                }
-                .buttonStyle(.borderless)
-            }
-
-            Section(header: Text("ui.files")) {
-                SidebarFiles(session: session)
-            }
+        VStack(alignment: .leading, spacing: 8) {
+            Text("ui.files")
+                .font(.headline)
+            SidebarFiles(session: session)
         }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 4)
     }
 }
 
 struct SidebarFiles: View {
     @ObservedObject var session: DetectionSession
+    @State private var filePendingRemovalID: UUID?
+    @State private var filePendingRemovalName: String = ""
+    @State private var showingRemoveConfirm = false
 
     var body: some View {
-        if session.files.isEmpty {
-            ContentUnavailableView("ui.no_file", systemImage: "film", description: Text("ui.placeholder_no_video"))
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            ForEach(session.files) { file in
-                Button {
-                    session.activateFile(id: file.id)
-                } label: {
-                    fileRow(for: file)
+        ScrollView {
+            if session.files.isEmpty {
+                ContentUnavailableView("ui.no_file", systemImage: "film", description: Text("ui.placeholder_no_video"))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 12)
+            } else {
+                LazyVStack(spacing: 8) {
+                    ForEach(session.files) { file in
+                        fileRow(for: file)
+                    }
                 }
-                .buttonStyle(.plain)
             }
+        }
+        .alert(isPresented: $showingRemoveConfirm) {
+            Alert(
+                title: Text(NSLocalizedString("ui.remove_confirm_title", comment: "Remove job title")),
+                message: Text(
+                    String(
+                        format: NSLocalizedString("ui.remove_confirm_message", comment: "Remove job message"),
+                        filePendingRemovalName
+                    )
+                ),
+                primaryButton: .destructive(Text(NSLocalizedString("ui.remove", comment: "Remove job"))) {
+                    if let id = filePendingRemovalID {
+                        session.removeFile(id: id)
+                    }
+                    filePendingRemovalID = nil
+                    showingRemoveConfirm = false
+                },
+                secondaryButton: .cancel {
+                    filePendingRemovalID = nil
+                    showingRemoveConfirm = false
+                }
+            )
         }
     }
 
     @ViewBuilder
     private func fileRow(for file: TrackedFile) -> some View {
+        let isDetecting = isDetecting(file)
+        let isPaused = isPaused(file)
+        HStack(alignment: .center, spacing: 8) {
+            fileCard(for: file)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .onTapGesture {
+                    session.activateFile(id: file.id)
+                }
+        }
+        .padding(.horizontal, 4)
+        .contextMenu {
+            Button(role: .destructive) {
+                filePendingRemovalID = file.id
+                filePendingRemovalName = file.url.lastPathComponent
+                showingRemoveConfirm = true
+            } label: {
+                Label(NSLocalizedString("ui.remove", comment: "Remove job"), systemImage: "trash")
+            }
+            .disabled(isDetecting)
+
+            Button {
+                session.pauseFile(id: file.id)
+            } label: {
+                Label(NSLocalizedString("ui.pause", comment: "Pause job"), systemImage: "pause.fill")
+            }
+            .disabled(!isDetecting)
+
+            Button {
+                session.resumeFile(id: file.id)
+            } label: {
+                Label(NSLocalizedString("ui.resume", comment: "Resume job"), systemImage: "play.fill")
+            }
+            .disabled(!isPaused)
+        }
+    }
+
+    @ViewBuilder
+    private func fileCard(for file: TrackedFile) -> some View {
         let isActive = session.activeFileID == file.id
         let isDone: Bool = {
             if case .completed = file.status { return true }
@@ -90,6 +144,16 @@ struct SidebarFiles: View {
                 .fill(isActive ? Color.accentColor.opacity(0.08) : Color.clear)
         )
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func isDetecting(_ file: TrackedFile) -> Bool {
+        if case .detecting = file.status { return true }
+        return false
+    }
+
+    private func isPaused(_ file: TrackedFile) -> Bool {
+        if case .paused = file.status { return true }
+        return false
     }
 
     private func statusLabel(for file: TrackedFile) -> String {

@@ -43,6 +43,9 @@
 "ui.resume" = "Resume";
 "ui.language" = "Language";
 "ui.export" = "Export SRT";
+"ui.remove" = "Remove";
+"ui.remove_confirm_title" = "Remove this item?";
+"ui.remove_confirm_message" = "Remove \"%@\"?";
 "ui.select_region" = "Select Region";
 "ui.finish_region" = "Finish Selection";
 "ui.select_color" = "Pick Color";

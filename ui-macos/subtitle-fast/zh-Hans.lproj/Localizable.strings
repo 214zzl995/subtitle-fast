@@ -43,6 +43,9 @@
 "ui.resume" = "继续";
 "ui.language" = "语言";
 "ui.export" = "导出字幕";
+"ui.remove" = "移除";
+"ui.remove_confirm_title" = "确认移除？";
+"ui.remove_confirm_message" = "移除“%@”？";
 "ui.select_region" = "选择区域";
 "ui.finish_region" = "完成选择";
 "ui.select_color" = "拾取颜色";

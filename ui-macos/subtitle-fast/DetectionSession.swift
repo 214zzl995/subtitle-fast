@@ -477,37 +477,73 @@ final class DetectionSession: ObservableObject {
     func cancelDetection() {
         guard let fileID = activeFileID,
               let handle = files.first(where: { $0.id == fileID })?.handle else { return }
-        _ = ffi.cancel(handle: handle)
-        handleToFile.removeValue(forKey: handle)
-        lastCuePerHandle.removeValue(forKey: handle)
+        cancelHandle(handle)
         updateFile(id: fileID) { file in
             file.status = .canceled
             file.handle = nil
         }
-        if let scoped = detectionScopedURLs.removeValue(forKey: handle) {
-            scoped.stopAccessingSecurityScopedResource()
-        }
     }
     
     func pauseDetection() {
-        guard let fileID = activeFileID,
-              let handle = files.first(where: { $0.id == fileID })?.handle else { return }
-        switch ffi.pause(handle: handle) {
-        case .success:
-            updateFile(id: fileID) { $0.status = .paused }
-        case .failure(let error):
-            errorMessage = error.localizedDescription
-        }
+        guard let fileID = activeFileID else { return }
+        pauseFile(id: fileID)
     }
     
     func resumeDetection() {
-        guard let fileID = activeFileID,
-              let handle = files.first(where: { $0.id == fileID })?.handle else { return }
+        guard let fileID = activeFileID else { return }
+        resumeFile(id: fileID)
+    }
+
+    func removeFile(id: UUID) {
+        guard let index = files.firstIndex(where: { $0.id == id }) else { return }
+        let file = files[index]
+        if case .detecting = file.status {
+            return
+        }
+
+        if let handle = file.handle {
+            cancelHandle(handle)
+        }
+
+        let wasActive = activeFileID == file.id
+        files.remove(at: index)
+
+        if wasActive {
+            clearActiveState()
+            if let next = files.first {
+                activateFile(id: next.id)
+            }
+        }
+    }
+
+    func pauseFile(id: UUID) {
+        guard let file = files.first(where: { $0.id == id }), let handle = file.handle else { return }
+        switch ffi.pause(handle: handle) {
+        case .success:
+            updateFile(id: id) { $0.status = .paused }
+            if activeFileID == id {
+                // Keep progress visible but flag paused state.
+                errorMessage = nil
+            }
+        case .failure(let error):
+            if activeFileID == id {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func resumeFile(id: UUID) {
+        guard let file = files.first(where: { $0.id == id }), let handle = file.handle else { return }
         switch ffi.resume(handle: handle) {
         case .success:
-            updateFile(id: fileID) { $0.status = .detecting }
+            updateFile(id: id) { $0.status = .detecting }
+            if activeFileID == id {
+                errorMessage = nil
+            }
         case .failure(let error):
-            errorMessage = error.localizedDescription
+            if activeFileID == id {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -639,6 +675,42 @@ final class DetectionSession: ObservableObject {
             success: success,
             message: success ? nil : errorMessage
         )
+    }
+
+    private func cancelHandle(_ handle: UInt64) {
+        _ = ffi.cancel(handle: handle)
+        handleToFile.removeValue(forKey: handle)
+        lastCuePerHandle.removeValue(forKey: handle)
+        if let scoped = detectionScopedURLs.removeValue(forKey: handle) {
+            scoped.stopAccessingSecurityScopedResource()
+        }
+    }
+
+    private func clearActiveState() {
+        if let observer = timeObserver, let player {
+            player.removeTimeObserver(observer)
+            timeObserver = nil
+        }
+        player?.pause()
+        player = nil
+        isPlaying = false
+        selectedFile = nil
+        selection = nil
+        metrics = .empty
+        progress = 0
+        currentTime = 0
+        subtitles = []
+        errorMessage = nil
+        duration = 0
+        videoSize = nil
+        outputURL = nil
+        currentAsset = nil
+        lastCueCount = 0
+        activeFileID = nil
+        if let scoped = scopedURL {
+            scoped.stopAccessingSecurityScopedResource()
+            scopedURL = nil
+        }
     }
 }
 

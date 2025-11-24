@@ -23,7 +23,7 @@ struct PreviewPanel: View {
                 Label("ui.preview", systemImage: "sparkles.tv.fill")
                     .font(.headline)
                 Spacer()
-                HStack(spacing: 10) {
+                HStack(spacing: 6) {
                     HeaderIconButton(
                         systemName: session.selectionVisible ? "eye.fill" : "eye.slash",
                         active: session.selectionVisible,
@@ -60,12 +60,7 @@ struct PreviewPanel: View {
 
                     Divider().frame(height: 22)
 
-                    Picker("", selection: $session.previewMode) {
-                        Text("ui.preview_mode_color").tag(PreviewMode.color)
-                        Text("ui.preview_mode_luma").tag(PreviewMode.luma)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 180)
+                    PreviewModeToggle(selection: $session.previewMode)
                 }
             }
 
@@ -76,7 +71,7 @@ struct PreviewPanel: View {
                 }
         }
         .padding(.vertical, 8)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 10)
     }
 }
 
@@ -134,7 +129,11 @@ private struct ColorMenuButton: View {
         let resolvedCurrent = normalizedColor(current)
         Button {
             guard !disabled else { return }
-            isOpen.toggle()
+            isOpen = false
+            // Open on next run loop to avoid stale state keeping the popover closed.
+            DispatchQueue.main.async {
+                isOpen = true
+            }
         } label: {
             HStack(spacing: 6) {
                 Circle()
@@ -158,6 +157,11 @@ private struct ColorMenuButton: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .opacity(disabled ? 0.35 : 1)
+        .onChange(of: disabled) { value in
+            if value {
+                isOpen = false
+            }
+        }
         .popover(isPresented: $isOpen, arrowEdge: .bottom) {
             VStack(spacing: 0) {
                 ForEach(Array(highlightPalette.enumerated()), id: \.offset) { index, swatch in
@@ -235,6 +239,51 @@ private struct ColorMenuButton: View {
         case NSColor.systemBlue: return "Blue"
         case NSColor.systemPurple: return "Purple"
         default: return "Accent"
+        }
+    }
+}
+
+private struct PreviewModeToggle: View {
+    @Binding var selection: PreviewMode
+
+    var body: some View {
+        HStack(spacing: 1) {
+            ForEach(PreviewMode.allCases) { mode in
+                let isSelected = selection == mode
+                Button {
+                    selection = mode
+                } label: {
+                    Text(label(for: mode))
+                        .font(.caption.weight(.semibold))
+                        .frame(width: 74, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+                )
+            }
+        }
+        .frame(height: 28)
+        .padding(.horizontal, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primary.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    private func label(for mode: PreviewMode) -> LocalizedStringKey {
+        switch mode {
+        case .color:
+            return "ui.preview_mode_color"
+        case .luma:
+            return "ui.preview_mode_luma"
         }
     }
 }

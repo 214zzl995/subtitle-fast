@@ -10,7 +10,7 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(session: session, showingFilePicker: $showingFilePicker)
+            SidebarView(session: session)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
         } detail: {
             NativeSplitView(
@@ -24,8 +24,8 @@ struct ContentView: View {
                 rightColumn
                     .frame(maxHeight: .infinity, alignment: .top)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 0)
+            .padding(.vertical, 0)
             .background(
                 LinearGradient(
                     colors: [
