@@ -11,6 +11,8 @@
 "ui.region_none" = "No region selected";
 "ui.subtitle_color" = "Subtitle color";
 "ui.threshold" = "Brightness";
+"ui.sample_threshold" = "Sample brightness";
+"ui.sampling_hint" = "Click the video to set brightness from a pixel. Press Esc to cancel.";
 "ui.tolerance" = "Tolerance";
 "ui.start_color" = "Start color selection";
 "ui.start_region" = "Start region selection";

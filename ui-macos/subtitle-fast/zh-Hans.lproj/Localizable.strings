@@ -11,6 +11,8 @@
 "ui.region_none" = "尚未选择区域";
 "ui.subtitle_color" = "字幕颜色";
 "ui.threshold" = "亮度阈值";
+"ui.sample_threshold" = "取样亮度";
+"ui.sampling_hint" = "在视频上点击像素以设置亮度阈值，按 Esc 取消。";
 "ui.tolerance" = "宽容度";
 "ui.start_color" = "开始选择颜色";
 "ui.start_region" = "开始选择区域";

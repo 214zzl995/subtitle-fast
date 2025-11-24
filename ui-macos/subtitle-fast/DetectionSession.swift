@@ -83,6 +83,7 @@ final class DetectionSession: ObservableObject {
     @Published var isHighlightActive = false
     @Published var highlightTint: NSColor = .controlAccentColor
     @Published var selectionVisible = true
+    @Published var isSamplingThreshold = false
 
     // MARK: Playback
     @Published private(set) var selectedFile: URL?
@@ -127,6 +128,7 @@ final class DetectionSession: ObservableObject {
     private let ffi = SubtitleFastFFI.shared
     private let ciContext = CIContext()
     private let defaultSelectionNormalized = CGRect(x: 0.15, y: 0.75, width: 0.7, height: 0.25)
+    private var resumePlaybackAfterSampling = false
 
     init() {
         ffi.registerCallbacks(
@@ -199,6 +201,8 @@ final class DetectionSession: ObservableObject {
 
     func activateFile(id: UUID) {
         guard let entry = files.first(where: { $0.id == id }) else { return }
+        isSamplingThreshold = false
+        resumePlaybackAfterSampling = false
         activeFileID = id
         selectedFile = entry.url
         selection = clampNormalized(entry.selection ?? defaultSelectionNormalized)
@@ -376,6 +380,37 @@ final class DetectionSession: ObservableObject {
     }
 
     // MARK: - Selection
+
+    func beginThresholdSampling() {
+        guard selectedFile != nil else { return }
+        if isSamplingThreshold { return }
+        resumePlaybackAfterSampling = isPlaying
+        if isPlaying {
+            player?.pause()
+            isPlaying = false
+        }
+        isSamplingThreshold = true
+    }
+
+    func applySampledThreshold(_ value: Double) {
+        let clamped = min(255, max(0, value.rounded()))
+        threshold = clamped
+        finishThresholdSampling()
+    }
+
+    func cancelThresholdSampling() {
+        finishThresholdSampling()
+    }
+
+    private func finishThresholdSampling() {
+        guard isSamplingThreshold else { return }
+        isSamplingThreshold = false
+        if resumePlaybackAfterSampling, let player {
+            player.play()
+            isPlaying = true
+        }
+        resumePlaybackAfterSampling = false
+    }
 
     func resetSelection() {
         let rect = clampNormalized(defaultSelectionNormalized)

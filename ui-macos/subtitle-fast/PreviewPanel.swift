@@ -51,6 +51,20 @@ struct PreviewPanel: View {
                     )
                     .help(LocalizedStringKey("ui.highlight"))
 
+                    HeaderIconButton(
+                        systemName: "scope",
+                        active: session.isSamplingThreshold,
+                        disabled: session.selectedFile == nil,
+                        action: {
+                            if session.isSamplingThreshold {
+                                session.cancelThresholdSampling()
+                            } else {
+                                session.beginThresholdSampling()
+                            }
+                        }
+                    )
+                    .help(LocalizedStringKey("ui.sample_threshold"))
+
                     ColorMenuButton(
                         current: session.highlightTint,
                         disabled: session.selection == nil || session.selectedFile == nil || !session.isHighlightActive
@@ -295,9 +309,14 @@ struct VideoCanvas: View {
     @State private var handleStartRect: CGRect?
     @State private var highlightImage: CGImage?
     @State private var isComputingHighlight = false
+    @State private var samplingFrame: CGImage?
+    @State private var samplingHoverLocation: CGPoint?
+    @State private var samplingBrightness: Double?
+    @State private var magnifierImage: CGImage?
 
     var body: some View {
         GeometryReader { proxy in
+            let currentVideoRect = videoRect(in: proxy.size)
             ZStack {
                 Color.black
 
@@ -342,6 +361,33 @@ struct VideoCanvas: View {
                 } else {
                     ContentUnavailableView("ui.placeholder_no_video", systemImage: "film", description: Text("ui.no_file"))
                 }
+
+                if session.isSamplingThreshold, let videoRect = currentVideoRect {
+                    SamplingCaptureView(
+                        onMove: { location in
+                            handleSamplingHover(location: location, videoRect: videoRect)
+                        },
+                        onClick: { location in
+                            handleSamplingClick(location: location, videoRect: videoRect)
+                        },
+                        onExit: { resetSamplingHover() }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if let location = samplingHoverLocation, let brightness = samplingBrightness {
+                        MagnifierOverlay(
+                            image: magnifierImage,
+                            brightness: brightness
+                        )
+                        .position(magnifierPosition(for: location, in: proxy.size))
+                        .allowsHitTesting(false)
+                    }
+
+                    SamplingHintView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .padding(10)
+                        .allowsHitTesting(false)
+                }
             }
             .contentShape(Rectangle())
             .gesture(
@@ -372,18 +418,43 @@ struct VideoCanvas: View {
             .onChange(of: session.selection) { _, _ in
                 refreshHighlightMask()
             }
-            .onChange(of: session.currentTime) { _, _ in refreshHighlightMask() }
+            .onChange(of: session.isSamplingThreshold) { _, isSampling in
+                if isSampling {
+                    samplingFrame = session.snapshotCurrentFrame(lumaOnly: false)
+                    resetSamplingHover()
+                } else {
+                    samplingFrame = nil
+                    resetSamplingHover()
+                }
+            }
+            .onChange(of: session.currentTime) { _, _ in
+                refreshHighlightMask()
+                if session.isSamplingThreshold {
+                    samplingFrame = nil
+                }
+            }
             .onChange(of: session.isPlaying) { _, _ in refreshHighlightMask() }
-            .onChange(of: session.previewMode) { _, _ in refreshHighlightMask(clearFirst: true) }
+            .onChange(of: session.previewMode) { _, _ in
+                refreshHighlightMask(clearFirst: true)
+                if session.isSamplingThreshold {
+                    samplingFrame = nil
+                }
+            }
             .onAppear {
                 if session.isHighlightActive {
                     refreshHighlightMask()
+                }
+            }
+            .onExitCommand {
+                if session.isSamplingThreshold {
+                    session.cancelThresholdSampling()
                 }
             }
         }
     }
 
     private func handleDragChanged(value: DragGesture.Value, in containerSize: CGSize) {
+        guard !session.isSamplingThreshold else { return }
         guard session.selectionVisible, let videoRect = videoRect(in: containerSize) else { return }
         if dragOrigin == nil {
             guard videoRect.contains(value.startLocation) else { return }
@@ -397,6 +468,7 @@ struct VideoCanvas: View {
     }
 
     private func handleDragEnded() {
+        guard !session.isSamplingThreshold else { return }
         dragOrigin = nil
         handleStartRect = nil
     }
@@ -513,6 +585,120 @@ struct VideoCanvas: View {
                 }
             }
         }
+    }
+
+    private func handleSamplingHover(location: CGPoint, videoRect: CGRect) {
+        guard session.isSamplingThreshold else { return }
+        guard videoRect.contains(location) else {
+            resetSamplingHover()
+            return
+        }
+        guard let frame = ensureSamplingFrame() else {
+            resetSamplingHover()
+            return
+        }
+        let pixel = pixelPoint(for: location, in: videoRect, frame: frame)
+        samplingBrightness = brightness(at: pixel, in: frame)
+        magnifierImage = makeMagnifierImage(from: frame, around: pixel)
+        samplingHoverLocation = location
+    }
+
+    private func handleSamplingClick(location: CGPoint, videoRect: CGRect) {
+        guard session.isSamplingThreshold else { return }
+        guard videoRect.contains(location) else {
+            session.cancelThresholdSampling()
+            resetSamplingHover()
+            return
+        }
+        guard let frame = ensureSamplingFrame() else {
+            session.cancelThresholdSampling()
+            resetSamplingHover()
+            return
+        }
+        let pixel = pixelPoint(for: location, in: videoRect, frame: frame)
+        if let value = brightness(at: pixel, in: frame) {
+            session.applySampledThreshold(value)
+        } else {
+            session.cancelThresholdSampling()
+        }
+        resetSamplingHover()
+    }
+
+    private func resetSamplingHover() {
+        samplingHoverLocation = nil
+        samplingBrightness = nil
+        magnifierImage = nil
+    }
+
+    private func ensureSamplingFrame() -> CGImage? {
+        if let frame = samplingFrame { return frame }
+        guard let snapshot = session.snapshotCurrentFrame(lumaOnly: false) else { return nil }
+        samplingFrame = snapshot
+        return snapshot
+    }
+
+    private func pixelPoint(for location: CGPoint, in videoRect: CGRect, frame: CGImage) -> CGPoint {
+        let normalized = CGPoint(
+            x: (location.x - videoRect.minX) / videoRect.width,
+            y: (location.y - videoRect.minY) / videoRect.height
+        )
+        let clampedX = min(max(normalized.x, 0), 1)
+        let clampedY = min(max(normalized.y, 0), 1)
+        return CGPoint(
+            x: clampedX * CGFloat(frame.width - 1),
+            y: clampedY * CGFloat(frame.height - 1)
+        )
+    }
+
+    private func brightness(at pixel: CGPoint, in frame: CGImage) -> Double? {
+        let x = Int(pixel.x.rounded())
+        let y = Int(pixel.y.rounded())
+        guard x >= 0, x < frame.width, y >= 0, y < frame.height else { return nil }
+        guard let cropped = frame.cropping(to: CGRect(x: x, y: y, width: 1, height: 1)) else { return nil }
+        var data = [UInt8](repeating: 0, count: 4)
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        guard let context = CGContext(
+            data: &data,
+            width: 1,
+            height: 1,
+            bitsPerComponent: 8,
+            bytesPerRow: 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        ) else { return nil }
+        context.draw(cropped, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let r = Double(data[0])
+        let g = Double(data[1])
+        let b = Double(data[2])
+        return 0.299 * r + 0.587 * g + 0.114 * b
+    }
+
+    private func makeMagnifierImage(from frame: CGImage, around pixel: CGPoint) -> CGImage? {
+        let sampleSize = 18
+        let half = sampleSize / 2
+        let originX = max(0, Int(pixel.x) - half)
+        let originY = max(0, Int(pixel.y) - half)
+        let width = min(sampleSize, frame.width - originX)
+        let height = min(sampleSize, frame.height - originY)
+        guard width > 0, height > 0 else { return nil }
+        let rect = CGRect(x: originX, y: originY, width: width, height: height)
+        return frame.cropping(to: rect)
+    }
+
+    private func magnifierPosition(for location: CGPoint, in containerSize: CGSize) -> CGPoint {
+        let offset: CGFloat = 80
+        var x = location.x + offset
+        var y = location.y - offset
+        let padding: CGFloat = 60
+        if x + padding > containerSize.width {
+            x = location.x - offset
+        }
+        if y - padding < 0 {
+            y = location.y + offset
+        }
+        x = min(max(x, 24), containerSize.width - 24)
+        y = min(max(y, 24), containerSize.height - 24)
+        return CGPoint(x: x, y: y)
     }
 }
 
@@ -653,6 +839,182 @@ struct SelectionOverlay: View {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
                     .stroke(color, lineWidth: 1.5)
             )
+    }
+}
+
+private struct SamplingCaptureView: NSViewRepresentable {
+    let onMove: (CGPoint) -> Void
+    let onClick: (CGPoint) -> Void
+    let onExit: () -> Void
+
+    func makeNSView(context: Context) -> SamplingTrackingView {
+        let view = SamplingTrackingView()
+        view.onMove = onMove
+        view.onClick = onClick
+        view.onExit = onExit
+        return view
+    }
+
+    func updateNSView(_ nsView: SamplingTrackingView, context: Context) {
+        nsView.onMove = onMove
+        nsView.onClick = onClick
+        nsView.onExit = onExit
+    }
+}
+
+private final class SamplingTrackingView: NSView {
+    var onMove: ((CGPoint) -> Void)?
+    var onClick: ((CGPoint) -> Void)?
+    var onExit: (() -> Void)?
+    private var trackingArea: NSTrackingArea?
+    private var cursorPushed = false
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let options: NSTrackingArea.Options = [
+            .mouseMoved,
+            .mouseEnteredAndExited,
+            .activeInKeyWindow,
+            .inVisibleRect,
+            .enabledDuringMouseDrag
+        ]
+        let area = NSTrackingArea(rect: bounds, options: options, owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.acceptsMouseMovedEvents = true
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        pushCursor()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        pushCursor()
+        onMove?(flipped(event))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        popCursor()
+        onExit?()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        onClick?(flipped(event))
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .crosshair)
+    }
+
+    deinit {
+        popCursor()
+    }
+
+    private func pushCursor() {
+        guard !cursorPushed else { return }
+        NSCursor.crosshair.push()
+        cursorPushed = true
+    }
+
+    private func popCursor() {
+        guard cursorPushed else { return }
+        NSCursor.pop()
+        cursorPushed = false
+    }
+
+    private func flipped(_ event: NSEvent) -> CGPoint {
+        let point = convert(event.locationInWindow, from: nil)
+        return CGPoint(x: point.x, y: bounds.height - point.y)
+    }
+}
+
+private struct MagnifierOverlay: View {
+    let image: CGImage?
+    let brightness: Double
+
+    var body: some View {
+        VStack(spacing: 8) {
+            if let image {
+                ZStack {
+                    Image(decorative: image, scale: 1.0)
+                        .resizable()
+                        .interpolation(.none)
+                        .frame(width: 96, height: 96)
+                        .background(.thinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(Color.primary.opacity(0.15), lineWidth: 1)
+                        )
+
+                    CenterPointer()
+                }
+            }
+
+            HStack(spacing: 6) {
+                Image(systemName: "sun.max")
+                Text(LocalizedStringKey("ui.threshold"))
+                Text(String(format: "%.0f", brightness))
+                    .font(.caption.monospacedDigit())
+            }
+            .font(.caption)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
+            .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 4)
+        }
+        .padding(6)
+    }
+}
+
+private struct CenterPointer: View {
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(Color.white.opacity(0.85))
+                .frame(width: 1, height: 36)
+            Rectangle()
+                .fill(Color.white.opacity(0.85))
+                .frame(width: 36, height: 1)
+            Circle()
+                .stroke(Color.white.opacity(0.9), lineWidth: 1.5)
+                .frame(width: 20, height: 20)
+            Circle()
+                .fill(Color.black.opacity(0.45))
+                .frame(width: 6, height: 6)
+        }
+    }
+}
+
+private struct SamplingHintView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("ui.sample_threshold", systemImage: "scope")
+                .font(.footnote.weight(.semibold))
+            Text("ui.sampling_hint")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+        )
     }
 }
 
