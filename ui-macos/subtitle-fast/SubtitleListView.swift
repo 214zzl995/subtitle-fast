@@ -5,8 +5,20 @@ struct SubtitleListPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("ui.subtitles", systemImage: "text.bubble")
-                .font(.headline)
+            HStack {
+                Label("ui.subtitles", systemImage: "text.bubble")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    session.exportSubtitles()
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.headline.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(session.selectedFile == nil || session.subtitles.isEmpty)
+            }
 
             SubtitleListView(session: session)
                 .frame(minHeight: 240, maxHeight: .infinity)

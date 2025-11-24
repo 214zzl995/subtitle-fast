@@ -27,6 +27,8 @@ struct StatusPanel: View {
 
             MetricsGrid(metrics: session.metrics, subtitles: session.subtitles.count)
 
+            actionButtons
+
             if let message = session.errorMessage {
                 Text(message)
                     .font(.caption)
@@ -53,6 +55,102 @@ struct StatusPanel: View {
             return NSLocalizedString("ui.status_canceled", comment: "canceled")
         case .paused:
             return NSLocalizedString("ui.status_paused", comment: "paused")
+        }
+    }
+
+    private var actionButtons: some View {
+        actionButtonsRow
+            .frame(maxWidth: .infinity, alignment: .center)
+            .animation(.easeInOut(duration: 0.2), value: isCompactActions)
+    }
+
+    private var startDisabled: Bool {
+        session.selection == nil || session.selectedFile == nil
+    }
+
+    private var cancelDisabled: Bool {
+        session.selectedFile == nil
+    }
+
+    private var isCompactActions: Bool {
+        session.activeStatus == .detecting || session.activeStatus == .paused
+    }
+
+    private var actionButtonWidth: CGFloat {
+        isCompactActions ? 96 : 120
+    }
+
+    private var actionControlSize: ControlSize {
+        isCompactActions ? .small : .regular
+    }
+
+    private var actionButtonsRow: some View {
+        HStack(spacing: 10) {
+            primaryActionButton
+
+            if isCompactActions {
+                cancelButton
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private var primaryActionButton: some View {
+        Button {
+            switch session.activeStatus {
+            case .detecting:
+                session.pauseDetection()
+            case .paused:
+                session.resumeDetection()
+            default:
+                session.startDetection()
+            }
+        } label: {
+            Label(
+                primaryButtonTitle(for: session.activeStatus),
+                systemImage: primaryButtonIcon(for: session.activeStatus)
+            )
+            .font(.headline.weight(.semibold))
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(session.activeStatus == .detecting ? .yellow : .accentColor)
+        .controlSize(actionControlSize)
+        .frame(width: actionButtonWidth)
+        .disabled(startDisabled)
+    }
+
+    private var cancelButton: some View {
+        Button {
+            session.cancelDetection()
+        } label: {
+            Label("ui.cancel", systemImage: "stop.fill")
+                .font(.headline.weight(.semibold))
+        }
+        .buttonStyle(.bordered)
+        .tint(.red)
+        .controlSize(actionControlSize)
+        .frame(width: actionButtonWidth)
+        .disabled(cancelDisabled)
+    }
+
+    private func primaryButtonTitle(for status: DetectionStatus) -> LocalizedStringKey {
+        switch status {
+        case .detecting:
+            return "ui.pause"
+        case .paused:
+            return "ui.resume"
+        default:
+            return "ui.start_detection"
+        }
+    }
+
+    private func primaryButtonIcon(for status: DetectionStatus) -> String {
+        switch status {
+        case .detecting:
+            return "pause.fill"
+        default:
+            return "play.fill"
         }
     }
 }

@@ -22,52 +22,7 @@ struct ControlPanel: View {
                     Slider(value: $session.tolerance, in: 0...50, step: 1)
                 }
             }
-
-            HStack(spacing: 10) {
-                if !session.subtitles.isEmpty {
-                    Button {
-                        session.exportSubtitles()
-                    } label: {
-                        Label("ui.export", systemImage: "square.and.arrow.up")
-                    }
-                    .controlSize(.small)
-                }
-
-                Spacer()
-
-                Button {
-                    switch session.activeStatus {
-                    case .detecting:
-                        session.pauseDetection()
-                    case .paused:
-                        session.resumeDetection()
-                    default:
-                        session.startDetection()
-                    }
-                } label: {
-                    Label(
-                        primaryButtonTitle(for: session.activeStatus),
-                        systemImage: primaryButtonIcon(for: session.activeStatus)
-                    )
-                    .font(.title3.weight(.semibold))
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(session.activeStatus == .detecting ? .yellow : .accentColor)
-                .controlSize(.large)
-                .disabled(session.selection == nil || session.selectedFile == nil)
-                
-                if session.activeStatus == .detecting || session.activeStatus == .paused {
-                    Button {
-                        session.cancelDetection()
-                    } label: {
-                        Label("ui.cancel", systemImage: "stop.fill")
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                }
-            }
+            .padding(.bottom, 45)
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 10)
@@ -83,26 +38,6 @@ struct ControlPanel: View {
             Text(String(format: "%.0f", value))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
-        }
-    }
-
-    private func primaryButtonTitle(for status: DetectionStatus) -> LocalizedStringKey {
-        switch status {
-        case .detecting:
-            return "ui.pause"
-        case .paused:
-            return "ui.resume"
-        default:
-            return "ui.start_detection"
-        }
-    }
-
-    private func primaryButtonIcon(for status: DetectionStatus) -> String {
-        switch status {
-        case .detecting:
-            return "pause.fill"
-        default:
-            return "play.fill"
         }
     }
 }
