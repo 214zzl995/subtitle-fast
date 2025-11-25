@@ -40,6 +40,7 @@
 "ui.error_no_file" = "Select a video file first.";
 "ui.error_no_selection" = "Select a region on the frame.";
 "ui.error_start_failed" = "Failed to start detection. Check the input and retry.";
+"ui.error_no_subtitles_export" = "No subtitles available to export.";
 "ui.cancel" = "Cancel";
 "ui.pause" = "Pause";
 "ui.resume" = "Resume";

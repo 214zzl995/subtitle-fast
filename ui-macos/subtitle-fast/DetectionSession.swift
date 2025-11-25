@@ -740,26 +740,86 @@ final class DetectionSession: ObservableObject {
     }
 
     func exportSubtitles() {
-        guard let fileID = activeFileID else { return }
-        guard let entry = files.first(where: { $0.id == fileID }) else { return }
-        guard let outputURL = entry.outputURL, FileManager.default.fileExists(atPath: outputURL.path) else {
+
+        guard let fileID = activeFileID,
+              let entry = files.first(where: { $0.id == fileID }) else { return }
+
+        let outputURL = entry.outputURL
+        let hasOutputFile = outputURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        let hasSubtitles = !entry.subtitles.isEmpty
+
+        guard hasOutputFile || hasSubtitles else {
+            errorMessage = NSLocalizedString("ui.error_no_subtitles_export", comment: "no subtitles to export")
             return
         }
+
+        let defaultName: String = {
+            let base = entry.url.deletingPathExtension().lastPathComponent
+            return "\(base).srt"
+        }()
+
+        let serialized = hasSubtitles && !hasOutputFile ? serializeSubtitles(entry.subtitles) : nil
+        let subtitlesSnapshot = entry.subtitles
+        errorMessage = nil
+        NSApplication.shared.activate(ignoringOtherApps: true)
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "srt") ?? .plainText]
+        panel.allowedFileTypes = ["srt"]
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = outputURL.lastPathComponent
-        panel.begin { response in
-            guard response == .OK, let destination = panel.url else { return }
+        panel.nameFieldStringValue = defaultName
+
+        let completion: (URL) -> Void = { [weak self] destination in
+            guard let self else { return }
             do {
                 if FileManager.default.fileExists(atPath: destination.path) {
                     try FileManager.default.removeItem(at: destination)
                 }
-                try FileManager.default.copyItem(at: outputURL, to: destination)
+                if hasOutputFile, let output = outputURL {
+                    try FileManager.default.copyItem(at: output, to: destination)
+                } else {
+                    let srtText = serialized ?? self.serializeSubtitles(subtitlesSnapshot)
+                    if srtText.isEmpty {
+                        throw NSError(domain: "subtitle-fast.export", code: -1, userInfo: [
+                            NSLocalizedDescriptionKey: NSLocalizedString("ui.error_no_subtitles_export", comment: "")
+                        ])
+                    }
+                    try srtText.write(to: destination, atomically: true, encoding: .utf8)
+                }
             } catch {
                 self.errorMessage = error.localizedDescription
             }
         }
+
+        if let window = NSApplication.shared.keyWindow ?? NSApplication.shared.mainWindow {
+            panel.beginSheetModal(for: window) { response in
+                guard response == .OK, let url = panel.url else { return }
+                completion(url)
+            }
+        } else {
+            let response = panel.runModal()
+            guard response == .OK, let url = panel.url else { return }
+            completion(url)
+        }
+    }
+
+    private func serializeSubtitles(_ items: [SubtitleItem]) -> String {
+        items
+            .map { item -> String in
+                let start = formatSRTTime(item.timecode)
+                let end = formatSRTTime(item.endTime)
+                return "\(item.index)\n\(start) --> \(end)\n\(item.text)"
+            }
+            .joined(separator: "\n\n")
+            .appending(items.isEmpty ? "" : "\n")
+    }
+
+    private func formatSRTTime(_ time: TimeInterval) -> String {
+        let totalMillis = Int((time * 1000).rounded())
+        let hours = totalMillis / 3_600_000
+        let minutes = (totalMillis % 3_600_000) / 60_000
+        let seconds = (totalMillis % 60_000) / 1000
+        let millis = totalMillis % 1000
+        return String(format: "%02d:%02d:%02d,%03d", hours, minutes, seconds, millis)
     }
 
     private func makeOutputURL(for input: URL, id: UUID) -> URL {

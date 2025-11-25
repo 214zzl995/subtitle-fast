@@ -40,6 +40,7 @@
 "ui.error_no_file" = "请先选择视频文件。";
 "ui.error_no_selection" = "请在画面上选择字幕区域。";
 "ui.error_start_failed" = "检测启动失败，请检查输入后重试。";
+"ui.error_no_subtitles_export" = "没有可导出的字幕。";
 "ui.cancel" = "取消";
 "ui.pause" = "暂停";
 "ui.resume" = "继续";
