@@ -5,7 +5,7 @@ import AppKit
 struct ContentView: View {
     @StateObject private var session = DetectionSession()
     @State private var showingFilePicker = false
-    private let minLeftWidth: CGFloat = 540
+    private let minLeftWidth: CGFloat = 560
     private let minRightWidth: CGFloat = 240
 
     var body: some View {
@@ -37,7 +37,7 @@ struct ContentView: View {
                 )
             )
         }
-        .frame(minWidth: 1050, minHeight: 720)
+        .frame(minWidth: 1150, minHeight: 720)
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button {

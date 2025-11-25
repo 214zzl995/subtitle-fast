@@ -328,7 +328,7 @@ struct VideoCanvas: View {
         GeometryReader { proxy in
             let currentVideoRect = videoRect(in: proxy.size)
             ZStack {
-                Color(nsColor: .underPageBackgroundColor)
+                Color.black
 
                 if let player = session.player {
                     PlayerContainerView(player: player)
@@ -369,7 +369,23 @@ struct VideoCanvas: View {
                         }
                     }
                 } else {
-                    ContentUnavailableView("ui.placeholder_no_video", systemImage: "film", description: Text("ui.no_file"))
+                    Button {
+                        session.pickFile()
+                    } label: {
+                        VStack(spacing: 10) {
+                            Image(systemName: "film")
+                                .font(.system(size: 30, weight: .light))
+                            Text("ui.placeholder_no_video")
+                                .font(.headline)
+                            Text("ui.no_file")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .foregroundStyle(Color.white.opacity(0.9))
+                        .padding(20)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 if session.isSamplingThreshold, let videoRect = currentVideoRect {
@@ -400,6 +416,13 @@ struct VideoCanvas: View {
                 }
             }
             .contentShape(Rectangle())
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    if session.player == nil {
+                        session.pickFile()
+                    }
+                }
+            )
             .gesture(
                 DragGesture(minimumDistance: 2)
                     .onChanged { value in
@@ -757,68 +780,86 @@ struct PlaybackControls: View {
 
     var body: some View {
         let controlHeight: CGFloat = 70
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
 
-        ZStack {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.thinMaterial)
-
-            VStack(spacing: 6) {
-                HStack(alignment: .center, spacing: 8) {
-                    Button {
-                        session.togglePlayPause()
-                    } label: {
-                        Image(systemName: session.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.title3.weight(.semibold))
-                            .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.plain)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .overlay(Circle().stroke(Color.primary.opacity(0.08)))
-
-                    Slider(
-                        value: Binding(
-                            get: { session.currentTime },
-                            set: { session.seek(to: $0) }
-                        ),
-                        in: 0...(max(session.duration, 1))
-                    )
-                    .controlSize(.small)
+        VStack(spacing: 6) {
+            HStack(alignment: .center, spacing: 8) {
+                Button {
+                    session.togglePlayPause()
+                } label: {
+                    Image(systemName: session.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.title3.weight(.semibold))
+                        .frame(width: 28, height: 28)
                 }
+                .buttonStyle(.plain)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().stroke(Color.primary.opacity(0.08)))
 
-                HStack(alignment: .center, spacing: 10) {
-                    Text(formattedTime(session.currentTime))
-                        .font(.caption2.monospacedDigit())
-
-                    Text(frameDisplay)
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-
-                    Spacer()
-
-                    HStack(spacing: 6) {
-                        pillButton(title: "-1f") { session.stepFrame(forward: false) }
-                        pillButton(title: "+1f") { session.stepFrame(forward: true) }
-                    }
-
-                    HStack(spacing: 6) {
-                        pillButton(title: "-1s") { session.jumpBy(seconds: -1) }
-                        pillButton(title: "+1s") { session.jumpBy(seconds: 1) }
-                    }
-
-                    Text(formattedTime(session.duration))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
+                Slider(
+                    value: Binding(
+                        get: { session.currentTime },
+                        set: { session.seek(to: $0) }
+                    ),
+                    in: 0...(max(session.duration, 1))
+                )
+                .controlSize(.small)
             }
-            .padding(.top, 14)
-            .padding([.horizontal, .bottom], 8)
+
+            HStack(alignment: .center, spacing: 10) {
+                Text(formattedTime(session.currentTime))
+                    .font(.caption2.monospacedDigit())
+
+                Text(frameDisplay)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                HStack(spacing: 6) {
+                    pillButton(title: "-1f") { session.stepFrame(forward: false) }
+                    pillButton(title: "+1f") { session.stepFrame(forward: true) }
+                }
+
+                HStack(spacing: 6) {
+                    pillButton(title: "-1s") { session.jumpBy(seconds: -1) }
+                    pillButton(title: "+1s") { session.jumpBy(seconds: 1) }
+                }
+
+                Text(formattedTime(session.duration))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
         }
+        .padding(.top, 14)
+        .padding([.horizontal, .bottom], 8)
         .frame(height: controlHeight)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.primary.opacity(0.08))
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background {
+            if #available(macOS 15.0, *) {
+                ZStack {
+                    shape
+                        .fill(Color.white.opacity(0.08))
+                    shape
+                        .fill(.clear)
+                        .glassEffect(in: shape)
+                }
+            } else {
+                shape
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.08),
+                                Color.white.opacity(0.04)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+        }
+        .overlay {
+            shape.stroke(Color.white.opacity(0.08))
+        }
+        .clipShape(shape)
     }
 
     private func pillButton(title: String, action: @escaping () -> Void) -> some View {

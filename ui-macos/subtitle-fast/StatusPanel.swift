@@ -81,7 +81,7 @@ struct StatusPanel: View {
     }
 
     private var actionControlSize: ControlSize {
-        isCompactActions ? .small : .regular
+        .regular
     }
 
     private var actionButtonsRow: some View {
@@ -153,6 +153,7 @@ struct StatusPanel: View {
             return "play.fill"
         }
     }
+
 }
 
 struct MetricsGrid: View {
@@ -160,64 +161,37 @@ struct MetricsGrid: View {
     let subtitles: Int
     
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
-                GridRow {
-                    label("ui.metrics_fps", systemImage: "speedometer")
-                    Text(String(format: "%.1f", metrics.fps)).fontWeight(.semibold)
-                    Text("fps").foregroundStyle(.secondary)
-                    
-                    label("ui.metrics_detection", systemImage: "waveform.path.ecg")
-                    Text(String(format: "%.1f", metrics.det)).fontWeight(.semibold)
-                    Text("ms").foregroundStyle(.secondary)
-                }
-                GridRow {
-                    label("ui.metrics_ocr", systemImage: "text.viewfinder")
-                    Text(String(format: "%.1f", metrics.ocr)).fontWeight(.semibold)
-                    Text("ms").foregroundStyle(.secondary)
-                    
-                    label("ui.metrics_cues", systemImage: "text.bubble")
-                    Text("\(subtitles)").fontWeight(.semibold)
-                    Text(LocalizedStringKey("ui.metrics_cues_unit")).foregroundStyle(.secondary)
-                }
-                GridRow {
-                    label("ui.metrics_empty", systemImage: "eye.slash")
-                    Text("\(metrics.ocrEmpty)").fontWeight(.semibold)
-                    Text(LocalizedStringKey("ui.metrics_empty_unit")).foregroundStyle(.secondary)
-                }
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                compactRow(
-                    key: "ui.metrics_fps",
-                    value: String(format: "%.1f", metrics.fps),
-                    unit: "fps",
-                    systemImage: "speedometer"
-                )
-                compactRow(
-                    key: "ui.metrics_detection",
-                    value: String(format: "%.1f", metrics.det),
-                    unit: "ms",
-                    systemImage: "waveform.path.ecg"
-                )
-                compactRow(
-                    key: "ui.metrics_ocr",
-                    value: String(format: "%.1f", metrics.ocr),
-                    unit: "ms",
-                    systemImage: "text.viewfinder"
-                )
-                compactRow(
-                    key: "ui.metrics_cues",
-                    value: "\(subtitles)",
-                    unitKey: "ui.metrics_cues_unit",
-                    systemImage: "text.bubble"
-                )
-                compactRow(
-                    key: "ui.metrics_empty",
-                    value: "\(metrics.ocrEmpty)",
-                    unitKey: "ui.metrics_empty_unit",
-                    systemImage: "eye.slash"
-                )
-            }
+        VStack(alignment: .leading, spacing: 8) {
+            compactRow(
+                key: "ui.metrics_fps",
+                value: String(format: "%.1f", metrics.fps),
+                unit: "fps",
+                systemImage: "speedometer"
+            )
+            compactRow(
+                key: "ui.metrics_detection",
+                value: String(format: "%.1f", metrics.det),
+                unit: "ms",
+                systemImage: "waveform.path.ecg"
+            )
+            compactRow(
+                key: "ui.metrics_ocr",
+                value: String(format: "%.1f", metrics.ocr),
+                unit: "ms",
+                systemImage: "text.viewfinder"
+            )
+            compactRow(
+                key: "ui.metrics_cues",
+                value: "\(subtitles)",
+                unitKey: "ui.metrics_cues_unit",
+                systemImage: "text.bubble"
+            )
+            compactRow(
+                key: "ui.metrics_empty",
+                value: "\(metrics.ocrEmpty)",
+                unitKey: "ui.metrics_empty_unit",
+                systemImage: "eye.slash"
+            )
         }
         .font(.caption.monospacedDigit())
     }

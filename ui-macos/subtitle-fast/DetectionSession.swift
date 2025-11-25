@@ -567,9 +567,19 @@ final class DetectionSession: ObservableObject {
         guard let fileID = activeFileID,
               let handle = files.first(where: { $0.id == fileID })?.handle else { return }
         cancelHandle(handle)
+        metrics = .empty
+        progress = 0
+        subtitles = []
+        errorMessage = nil
+        lastCueCount = 0
         updateFile(id: fileID) { file in
             file.status = .canceled
             file.handle = nil
+            file.metrics = .empty
+            file.progress = 0
+            file.subtitles = []
+            file.cues = 0
+            file.errorMessage = nil
         }
     }
     
