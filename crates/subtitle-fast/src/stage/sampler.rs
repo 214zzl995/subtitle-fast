@@ -142,10 +142,7 @@ impl FrameSampler {
         });
 
         let stream = Box::pin(unfold(rx, |mut receiver| async {
-            match receiver.recv().await {
-                Some(item) => Some((item, receiver)),
-                None => None,
-            }
+            receiver.recv().await.map(|item| (item, receiver))
         }));
 
         StreamBundle::new(stream, total_frames)
@@ -239,10 +236,10 @@ impl SamplerWorker {
     }
 
     fn update_tuning(&mut self, fps: f64) {
-        if let Some(current) = self.context.estimated_fps() {
-            if (current - fps).abs() <= EPSILON {
-                return;
-            }
+        if let Some(current) = self.context.estimated_fps()
+            && (current - fps).abs() <= EPSILON
+        {
+            return;
         }
 
         let mut capacity = if fps.is_finite() && fps > 0.0 {
@@ -390,19 +387,18 @@ impl FpsEstimator {
             None => return self.estimate,
         };
 
-        if let Some(previous) = self.last {
-            if frame_index > previous.frame_index {
-                if let Some(delta) = ts.checked_sub(previous.timestamp) {
-                    let seconds = delta.as_secs_f64();
-                    if seconds > 0.0 {
-                        let frames = (frame_index - previous.frame_index) as f64;
-                        let fps = frames / seconds;
-                        self.estimate = Some(match self.estimate {
-                            Some(current) => 0.8 * current + 0.2 * fps,
-                            None => fps,
-                        });
-                    }
-                }
+        if let Some(previous) = self.last
+            && frame_index > previous.frame_index
+            && let Some(delta) = ts.checked_sub(previous.timestamp)
+        {
+            let seconds = delta.as_secs_f64();
+            if seconds > 0.0 {
+                let frames = (frame_index - previous.frame_index) as f64;
+                let fps = frames / seconds;
+                self.estimate = Some(match self.estimate {
+                    Some(current) => 0.8 * current + 0.2 * fps,
+                    None => fps,
+                });
             }
         }
 

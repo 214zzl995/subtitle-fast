@@ -50,10 +50,7 @@ impl Progress {
         });
 
         let stream = Box::pin(unfold(rx, |mut receiver| async {
-            match receiver.recv().await {
-                Some(item) => Some((item, receiver)),
-                None => None,
-            }
+            receiver.recv().await.map(|item| (item, receiver))
         }));
 
         StreamBundle::new(stream, total_frames)

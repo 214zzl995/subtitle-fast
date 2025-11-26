@@ -237,7 +237,7 @@ fn build_ocr_engine(_settings: &EffectiveSettings) -> Arc<dyn OcrEngine> {
             }
         }
     }
-    Arc::new(NoopOcrEngine::default())
+    Arc::new(NoopOcrEngine)
 }
 
 fn default_output_path(input: &Path) -> PathBuf {

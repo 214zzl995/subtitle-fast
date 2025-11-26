@@ -64,10 +64,7 @@ impl SubtitleWriter {
         });
 
         let stream = Box::pin(unfold(rx, |mut receiver| async {
-            match receiver.recv().await {
-                Some(item) => Some((item, receiver)),
-                None => None,
-            }
+            receiver.recv().await.map(|item| (item, receiver))
         }));
 
         StreamBundle::new(stream, total_frames)
@@ -190,13 +187,13 @@ impl SubtitleWriterWorker {
         let started = Instant::now();
         let srt_contents = build_srt(&merged);
 
-        if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            if let Err(err) = fs::create_dir_all(parent).await {
-                return Err(SubtitleWriterError::Io {
-                    path: output_path.clone(),
-                    source: err,
-                });
-            }
+        if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty())
+            && let Err(err) = fs::create_dir_all(parent).await
+        {
+            return Err(SubtitleWriterError::Io {
+                path: output_path.clone(),
+                source: err,
+            });
         }
 
         if let Err(err) = fs::write(&output_path, srt_contents).await {
@@ -323,18 +320,18 @@ struct MergedSubtitle {
 fn merge_cues(cues: &[SubtitleCue]) -> Vec<MergedSubtitle> {
     let mut merged = Vec::new();
     for cue in cues {
-        if let Some(last) = merged.last_mut() {
-            if should_merge(last, cue) {
-                last.start_time = last.start_time.min(cue.start_time);
-                last.end_time = last.end_time.max(cue.end_time);
-                if !last.lines.iter().any(|line| line.text == cue.text) {
-                    last.lines.push(SubtitleLine {
-                        center: cue.center,
-                        text: cue.text.clone(),
-                    });
-                }
-                continue;
+        if let Some(last) = merged.last_mut()
+            && should_merge(last, cue)
+        {
+            last.start_time = last.start_time.min(cue.start_time);
+            last.end_time = last.end_time.max(cue.end_time);
+            if !last.lines.iter().any(|line| line.text == cue.text) {
+                last.lines.push(SubtitleLine {
+                    center: cue.center,
+                    text: cue.text.clone(),
+                });
             }
+            continue;
         }
         merged.push(MergedSubtitle {
             start_time: cue.start_time,

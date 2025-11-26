@@ -16,9 +16,11 @@ async fn ffmpeg_backend_requires_asset() {
         }
     };
 
-    let mut config = Configuration::default();
-    config.backend = Backend::Ffmpeg;
-    config.input = Some(asset);
+    let config = Configuration {
+        backend: Backend::Ffmpeg,
+        input: Some(asset),
+        ..Configuration::default()
+    };
     let provider = match config.create_provider() {
         Ok(provider) => provider,
         Err(err) => {

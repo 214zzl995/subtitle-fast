@@ -132,13 +132,13 @@ fn pick_rois(dump: RoiDump) -> Result<RoiSelection, String> {
             });
         }
     }
-    if regions.is_empty() {
-        if let Some(roi) = dump.roi {
-            regions.push(RoiEntry {
-                roi: normalize_region(&roi, &dump.frame, true),
-                description: "roi".into(),
-            });
-        }
+    if regions.is_empty()
+        && let Some(roi) = dump.roi
+    {
+        regions.push(RoiEntry {
+            roi: normalize_region(&roi, &dump.frame, true),
+            description: "roi".into(),
+        });
     }
     if regions.is_empty() {
         return Err("no regions available in JSON and no 'roi' fallback".into());

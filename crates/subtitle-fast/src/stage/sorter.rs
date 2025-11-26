@@ -33,6 +33,12 @@ impl FrameSorter {
     }
 }
 
+impl Default for FrameSorter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 struct SorterState {
     upstream: Pin<Box<dyn Stream<Item = YPlaneResult<YPlaneFrame>> + Send>>,
     pool: FramePool,

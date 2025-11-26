@@ -159,10 +159,7 @@ pub fn spawn_stream_from_channel(
     let (tx, rx) = mpsc::channel(capacity);
     tokio::task::spawn_blocking(move || task(tx));
     let stream = unfold(rx, |mut receiver| async {
-        match receiver.recv().await {
-            Some(item) => Some((item, receiver)),
-            None => None,
-        }
+        receiver.recv().await.map(|item| (item, receiver))
     });
     Box::pin(stream)
 }

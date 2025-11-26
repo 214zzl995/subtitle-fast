@@ -58,10 +58,10 @@ async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, YPlaneError> 
         config.backend = backend_value;
     }
     config.input = Some(input);
-    if let Some(capacity) = settings.decoder.channel_capacity {
-        if let Some(non_zero) = NonZeroUsize::new(capacity) {
-            config.channel_capacity = Some(non_zero);
-        }
+    if let Some(capacity) = settings.decoder.channel_capacity
+        && let Some(non_zero) = NonZeroUsize::new(capacity)
+    {
+        config.channel_capacity = Some(non_zero);
     }
 
     Ok(Some(ExecutionPlan {

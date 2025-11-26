@@ -31,31 +31,26 @@ async fn main() -> io::Result<()> {
 
     let available = Configuration::available_backends();
     if available.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "no decoder backend is compiled; enable a backend feature such as backend-ffmpeg",
         ));
     }
 
     if !available.contains(&DECODER_BACKEND) {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "decoder backend '{}' is not compiled in this build",
-                DECODER_BACKEND.as_str()
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "decoder backend '{}' is not compiled in this build",
+            DECODER_BACKEND.as_str()
+        )));
     }
     let backend = DECODER_BACKEND;
 
     let took = SystemTime::now();
-    let mut config = Configuration::default();
-    config.backend = backend;
-    config.input = Some(input_path.clone());
-    config.channel_capacity = None;
-    let provider = config
-        .create_provider()
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    let config = Configuration {
+        backend,
+        input: Some(input_path.clone()),
+        channel_capacity: None,
+    };
+    let provider = config.create_provider().map_err(io::Error::other)?;
     let total_frames = provider.total_frames();
 
     write_metadata(&input_path, backend)?;
@@ -87,7 +82,7 @@ async fn main() -> io::Result<()> {
                 processed += 1;
                 if let Some(ref bar) = progress {
                     bar.inc(1);
-                } else if processed % 25 == 0 {
+                } else if processed.is_multiple_of(25) {
                     println!("dumped {processed} frames...");
                 }
                 if !should_emit_frame(
@@ -186,7 +181,7 @@ fn should_emit_frame(
         return true;
     }
     let second_bucket = frame_second_bucket(frame, processed);
-    if current_second.map_or(true, |bucket| bucket != second_bucket) {
+    if current_second.is_none_or(|bucket| bucket != second_bucket) {
         *current_second = Some(second_bucket);
         *emitted_in_second = 0;
     }

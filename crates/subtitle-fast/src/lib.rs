@@ -62,8 +62,10 @@ struct HandleState {
 static HANDLES: LazyLock<Mutex<HashMap<u64, HandleState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// # Safety
+/// Caller must provide a non-null `GuiRunConfig` pointer that remains valid for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn subtitle_fast_gui_start(config: *const GuiRunConfig) -> GuiRunResult {
+pub unsafe extern "C" fn subtitle_fast_gui_start(config: *const GuiRunConfig) -> GuiRunResult {
     let cfg = if let Some(cfg) = unsafe { config.as_ref() } {
         cfg
     } else {
@@ -128,12 +130,12 @@ pub extern "C" fn subtitle_fast_gui_cancel(handle_id: u64) -> i32 {
     if handle_id == 0 {
         return 1;
     }
-    if let Ok(mut map) = HANDLES.lock() {
-        if let Some(state) = map.remove(&handle_id) {
-            state.abort.abort();
-            stage::progress_gui::drop_progress_handle(handle_id);
-            return 0;
-        }
+    if let Ok(mut map) = HANDLES.lock()
+        && let Some(state) = map.remove(&handle_id)
+    {
+        state.abort.abort();
+        stage::progress_gui::drop_progress_handle(handle_id);
+        return 0;
     }
     2
 }
@@ -166,8 +168,10 @@ fn build_plan(cfg: &GuiRunConfig) -> Result<ExecutionPlan, YPlaneError> {
     let backend = parse_backend(cfg.decoder_backend);
     let backend_locked = backend.is_some();
 
-    let mut decoder_config = Configuration::default();
-    decoder_config.input = Some(input.clone());
+    let mut decoder_config = Configuration {
+        input: Some(input.clone()),
+        ..Configuration::default()
+    };
     if let Some(backend) = backend {
         decoder_config.backend = backend;
     }

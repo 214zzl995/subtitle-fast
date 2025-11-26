@@ -1,16 +1,8 @@
 use crate::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET, RoiConfig, SubtitleDetectorKind};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct FrameValidatorConfig {
     pub detection: SubtitleDetectionOptions,
-}
-
-impl Default for FrameValidatorConfig {
-    fn default() -> Self {
-        Self {
-            detection: SubtitleDetectionOptions::default(),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]

@@ -168,18 +168,18 @@ fn load_config(path_override: Option<&Path>) -> Result<(FileConfig, Option<PathB
         return Ok((config, Some(path)));
     }
 
-    if let Some(project_path) = project_config_path() {
-        if project_path.exists() {
-            let contents = fs::read_to_string(&project_path).map_err(|source| ConfigError::Io {
-                path: project_path.clone(),
-                source,
-            })?;
-            let config = toml::from_str(&contents).map_err(|source| ConfigError::Parse {
-                path: project_path.clone(),
-                source,
-            })?;
-            return Ok((config, Some(project_path)));
-        }
+    if let Some(project_path) = project_config_path()
+        && project_path.exists()
+    {
+        let contents = fs::read_to_string(&project_path).map_err(|source| ConfigError::Io {
+            path: project_path.clone(),
+            source,
+        })?;
+        let config = toml::from_str(&contents).map_err(|source| ConfigError::Parse {
+            path: project_path.clone(),
+            source,
+        })?;
+        return Ok((config, Some(project_path)));
     }
 
     let Some(default_path) = default_config_path() else {
@@ -302,17 +302,15 @@ fn resolve_detection_sps(
     use_file: bool,
     config_path: Option<&PathBuf>,
 ) -> Result<u32, ConfigError> {
-    if use_file {
-        if let Some(value) = file_value {
-            if value < 1 {
-                return Err(ConfigError::InvalidValue {
-                    path: config_path.cloned(),
-                    field: "detection_samples_per_second",
-                    value: value.to_string(),
-                });
-            }
-            return Ok(value);
+    if use_file && let Some(value) = file_value {
+        if value < 1 {
+            return Err(ConfigError::InvalidValue {
+                path: config_path.cloned(),
+                field: "detection_samples_per_second",
+                value: value.to_string(),
+            });
         }
+        return Ok(value);
     }
     Ok(cli_value)
 }
@@ -326,10 +324,8 @@ fn resolve_detector_u8(
     if let Some(value) = cli_value {
         return Ok(value);
     }
-    if use_file {
-        if let Some(value) = file_value {
-            return Ok(value);
-        }
+    if use_file && let Some(value) = file_value {
+        return Ok(value);
     }
     Ok(default)
 }
@@ -379,17 +375,15 @@ fn resolve_decoder_capacity(
             value: "0".into(),
         });
     }
-    if use_file {
-        if let Some(value) = file_value {
-            if value == 0 {
-                return Err(ConfigError::InvalidValue {
-                    path: config_path.cloned(),
-                    field: "decoder_channel_capacity",
-                    value: value.to_string(),
-                });
-            }
-            capacity = Some(value);
+    if use_file && let Some(value) = file_value {
+        if value == 0 {
+            return Err(ConfigError::InvalidValue {
+                path: config_path.cloned(),
+                field: "decoder_channel_capacity",
+                value: value.to_string(),
+            });
         }
+        capacity = Some(value);
     }
     Ok(capacity)
 }

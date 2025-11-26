@@ -37,11 +37,11 @@ fn backend_for_kind(kind: SubtitleDetectorKind) -> Option<&'static dyn DetectorB
         SubtitleDetectorKind::MacVision => {
             #[cfg(all(feature = "detector-vision", target_os = "macos"))]
             {
-                return Some(&VISION_BACKEND);
+                Some(&VISION_BACKEND)
             }
             #[cfg(not(all(feature = "detector-vision", target_os = "macos")))]
             {
-                return None;
+                None
             }
         }
         SubtitleDetectorKind::IntegralBand => Some(&INTEGRAL_BAND_BACKEND),

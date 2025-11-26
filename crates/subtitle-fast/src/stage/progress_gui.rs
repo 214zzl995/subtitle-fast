@@ -284,18 +284,18 @@ impl GuiProgressInner {
         let callbacks = self.callbacks;
         if let Some(on_progress) = callbacks.on_progress {
             let mut update_with_sub = *update;
-            if let Ok(mut slot) = self.last_subtitle.lock() {
-                if let Some(sub) = slot.take() {
-                    update_with_sub.subtitle_present = 1;
-                    update_with_sub.subtitle_start_ms = sub.start_ms;
-                    update_with_sub.subtitle_end_ms = sub.end_ms;
-                    update_with_sub.subtitle_text = sub.text.as_ptr();
-                    on_progress(
-                        &update_with_sub as *const GuiProgressUpdate,
-                        callbacks.user_data,
-                    );
-                    return;
-                }
+            if let Ok(mut slot) = self.last_subtitle.lock()
+                && let Some(sub) = slot.take()
+            {
+                update_with_sub.subtitle_present = 1;
+                update_with_sub.subtitle_start_ms = sub.start_ms;
+                update_with_sub.subtitle_end_ms = sub.end_ms;
+                update_with_sub.subtitle_text = sub.text.as_ptr();
+                on_progress(
+                    &update_with_sub as *const GuiProgressUpdate,
+                    callbacks.user_data,
+                );
+                return;
             }
             on_progress(
                 &update_with_sub as *const GuiProgressUpdate,
@@ -352,10 +352,7 @@ impl GuiProgress {
         });
 
         let stream = Box::pin(unfold(rx, |mut receiver| async {
-            match receiver.recv().await {
-                Some(item) => Some((item, receiver)),
-                None => None,
-            }
+            receiver.recv().await.map(|item| (item, receiver))
         }));
 
         StreamBundle::new(stream, total_frames)
@@ -408,8 +405,10 @@ pub(crate) fn progress_for_handle(handle_id: u64) -> Option<Arc<GuiProgressInner
         .and_then(|m| m.get(&handle_id).cloned())
 }
 
+/// # Safety
+/// `callbacks` must point to a valid `GuiProgressCallbacks` struct for the lifetime of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn progress_gui_init(callbacks: *const GuiProgressCallbacks) {
+pub unsafe extern "C" fn progress_gui_init(callbacks: *const GuiProgressCallbacks) {
     if callbacks.is_null() {
         return;
     }
