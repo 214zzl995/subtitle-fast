@@ -2,9 +2,14 @@
 name = "subtitle-fast"
 version = "0.1.0"
 edition = "2024"
+default-run = "subtitle-fast-cli"
 
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "subtitle-fast-cli"
+path = "src/main.rs"
 
 [features]
 default = ["detector-vision", "detector-parallel", "ocr-vision"]
