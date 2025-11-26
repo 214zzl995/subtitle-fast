@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::f32::consts::SQRT_2;
 
 pub fn resize_average(
     pixels: &[f32],
@@ -47,15 +48,14 @@ pub fn gaussian_blur_3x3(pixels: &[f32], width: usize, height: usize) -> Vec<f32
         for x in 0..width {
             let mut sum = 0.0;
             let mut weight = 0.0;
-            for ky in 0..3 {
-                for kx in 0..3 {
+            for (ky, row) in kernel.iter().enumerate() {
+                for (kx, &w) in row.iter().enumerate() {
                     let oy = y as isize + ky as isize - 1;
                     let ox = x as isize + kx as isize - 1;
                     if oy < 0 || ox < 0 || oy >= height as isize || ox >= width as isize {
                         continue;
                     }
                     let idx = oy as usize * width + ox as usize;
-                    let w = kernel[ky][kx];
                     sum += pixels[idx] * w;
                     weight += w;
                 }
@@ -159,10 +159,10 @@ pub fn distance_transform(edge_map: &[u8], width: usize, height: usize) -> Vec<f
                 best = best.min(dist[idx - width] + 1.0);
             }
             if x > 0 && y > 0 {
-                best = best.min(dist[idx - width - 1] + 1.4142135);
+                best = best.min(dist[idx - width - 1] + SQRT_2);
             }
             if x + 1 < width && y > 0 {
-                best = best.min(dist[idx - width + 1] + 1.4142135);
+                best = best.min(dist[idx - width + 1] + SQRT_2);
             }
             dist[idx] = best;
         }
@@ -179,10 +179,10 @@ pub fn distance_transform(edge_map: &[u8], width: usize, height: usize) -> Vec<f
                 best = best.min(dist[idx + width] + 1.0);
             }
             if x + 1 < width && y + 1 < height {
-                best = best.min(dist[idx + width + 1] + 1.4142135);
+                best = best.min(dist[idx + width + 1] + SQRT_2);
             }
             if x > 0 && y + 1 < height {
-                best = best.min(dist[idx + width - 1] + 1.4142135);
+                best = best.min(dist[idx + width - 1] + SQRT_2);
             }
             dist[idx] = best;
         }

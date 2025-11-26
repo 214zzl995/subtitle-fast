@@ -29,7 +29,7 @@ impl BitsetCoverComparator {
         let (x0, y0, x1, y1) = roi_bounds(frame, roi)?;
         let width = x1 - x0;
         let height = y1 - y0;
-        let words_per_row = (width + 63) / 64;
+        let words_per_row = width.div_ceil(64);
         let total_words = words_per_row.checked_mul(height)?;
         if total_words == 0 {
             return None;
@@ -243,6 +243,7 @@ fn roi_bounds(frame: &YPlaneFrame, roi: &RoiConfig) -> Option<(usize, usize, usi
     Some((x0 as usize, y0 as usize, x1 as usize, y1 as usize))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dilate_chebyshev_u64(
     src: &[u64],
     width: usize,
@@ -306,6 +307,7 @@ fn dilate_chebyshev_u64(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dilate3x3_u64_once(
     src: &[u64],
     width: usize,
@@ -461,6 +463,7 @@ fn should_parallel(total_words: usize) -> bool {
     total_words >= PARALLEL_MIN_WORDS && rayon::current_num_threads() > 1
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pack_mask_bits_fast(
     frame: &YPlaneFrame,
     x0: usize,
@@ -475,11 +478,8 @@ fn pack_mask_bits_fast(
     let mut bits = vec![0u64; words_per_row * height];
     let stride = frame.stride();
     let data = frame.data();
-    let lo = settings.target.saturating_sub(settings.delta.max(1)) as u8;
-    let hi = settings
-        .target
-        .saturating_add(settings.delta.max(1))
-        .min(255) as u8;
+    let lo = settings.target.saturating_sub(settings.delta.max(1));
+    let hi = settings.target.saturating_add(settings.delta.max(1));
 
     if use_parallel {
         bits.par_chunks_mut(words_per_row)

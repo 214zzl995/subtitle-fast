@@ -30,6 +30,10 @@ impl MaskedPatch {
     pub fn len(&self) -> usize {
         self.width * self.height
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 pub fn extract_masked_patch(
@@ -42,8 +46,8 @@ pub fn extract_masked_patch(
     if x1 <= x0 || y1 <= y0 {
         return None;
     }
-    let width = (x1 - x0) as usize;
-    let height = (y1 - y0) as usize;
+    let width = x1 - x0;
+    let height = y1 - y0;
     if width == 0 || height == 0 {
         return None;
     }
@@ -54,15 +58,11 @@ pub fn extract_masked_patch(
     let mut masked = Vec::with_capacity(width * height);
     let mut mask = Vec::with_capacity(width * height);
     let lo = settings.target.saturating_sub(settings.delta.max(1)) as f32 / 255.0;
-    let hi = settings
-        .target
-        .saturating_add(settings.delta.max(1))
-        .min(255) as f32
-        / 255.0;
+    let hi = settings.target.saturating_add(settings.delta.max(1)) as f32 / 255.0;
     for y in y0..y1 {
-        let row = y as usize * stride;
+        let row = y * stride;
         for x in x0..x1 {
-            let value = data[row + x as usize] as f32 / 255.0;
+            let value = data[row + x] as f32 / 255.0;
             original.push(value);
             if value >= lo && value <= hi {
                 masked.push(value);

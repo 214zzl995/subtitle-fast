@@ -1,6 +1,7 @@
 pub mod detector;
 pub mod ocr;
 pub mod progress;
+pub mod progress_gui;
 pub mod sampler;
 pub mod segmenter;
 pub mod sorter;
@@ -11,12 +12,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures_util::Stream;
-use tokio_stream::StreamExt;
+use tokio_stream::{StreamExt, wrappers::WatchStream};
 
 use crate::settings::{DetectionSettings, EffectiveSettings};
 use detector::Detector;
 use ocr::{OcrStageError, SubtitleOcr};
 use progress::Progress;
+use progress_gui::{GuiProgress, GuiProgressInner};
 use sampler::FrameSampler;
 use segmenter::{SegmenterError, SubtitleSegmenter};
 use sorter::FrameSorter;
@@ -47,6 +49,8 @@ pub struct PipelineConfig {
     pub detection: DetectionSettings,
     pub ocr: OcrPipelineConfig,
     pub output: OutputPipelineConfig,
+    pub(crate) progress: Option<Arc<GuiProgressInner>>,
+    pub(crate) pause: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 #[derive(Clone)]
@@ -71,6 +75,8 @@ impl PipelineConfig {
             detection: settings.detection.clone(),
             ocr: OcrPipelineConfig { engine },
             output: OutputPipelineConfig { path: output_path },
+            progress: None,
+            pause: None,
         })
     }
 }
@@ -81,8 +87,16 @@ pub async fn run_pipeline(
 ) -> Result<(), (YPlaneError, u64)> {
     let initial_total_frames = provider.total_frames();
     let initial_stream = provider.into_stream();
+    let paused_stream = if let Some(pause_rx) = pipeline.pause.as_ref() {
+        StreamBundle::new(
+            Box::pin(PauseStream::new(initial_stream, pause_rx.clone())),
+            initial_total_frames,
+        )
+    } else {
+        StreamBundle::new(initial_stream, initial_total_frames)
+    };
 
-    let sorted = FrameSorter::new().attach(StreamBundle::new(initial_stream, initial_total_frames));
+    let sorted = FrameSorter::new().attach(paused_stream);
 
     let sampled = FrameSampler::new(pipeline.detection.samples_per_second).attach(sorted);
 
@@ -93,7 +107,11 @@ pub async fn run_pipeline(
     let segmented = SubtitleSegmenter::new(&pipeline.detection).attach(detected);
     let ocred = SubtitleOcr::new(Arc::clone(&pipeline.ocr.engine)).attach(segmented);
     let written = SubtitleWriter::new(pipeline.output.path.clone()).attach(ocred);
-    let monitored = Progress::new("pipeline").attach(written);
+    let monitored = if let Some(handle) = &pipeline.progress {
+        GuiProgress::new(Arc::clone(handle)).attach(written)
+    } else {
+        Progress::new("pipeline").attach(written)
+    };
 
     let StreamBundle { stream, .. }: StreamBundle<WriterResult> = monitored;
     let mut writer_stream = stream;
@@ -114,6 +132,73 @@ pub async fn run_pipeline(
     }
 
     Ok(())
+}
+
+struct PauseStream<S> {
+    inner: S,
+    pause_updates: WatchStream<bool>,
+    paused: bool,
+}
+
+impl<S> PauseStream<S> {
+    fn new(inner: S, pause: tokio::sync::watch::Receiver<bool>) -> Self {
+        let paused = *pause.borrow();
+        Self {
+            inner,
+            paused,
+            pause_updates: WatchStream::new(pause),
+        }
+    }
+}
+
+impl<S> Stream for PauseStream<S>
+where
+    S: Stream + Unpin + Send,
+{
+    type Item = <S as Stream>::Item;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        loop {
+            // Drain any immediately available pause updates.
+            while let std::task::Poll::Ready(Some(paused)) =
+                Pin::new(&mut this.pause_updates).poll_next(cx)
+            {
+                this.paused = paused;
+            }
+
+            if this.paused {
+                // Wait for the next pause update to flip the flag.
+                match Pin::new(&mut this.pause_updates).poll_next(cx) {
+                    std::task::Poll::Ready(Some(paused)) => {
+                        this.paused = paused;
+                        continue;
+                    }
+                    std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
+                    std::task::Poll::Pending => return std::task::Poll::Pending,
+                }
+            }
+
+            // Not paused; drive the inner stream.
+            match Pin::new(&mut this.inner).poll_next(cx) {
+                std::task::Poll::Ready(item) => return std::task::Poll::Ready(item),
+                std::task::Poll::Pending => {
+                    // Allow pause updates to register before parking.
+                    if let std::task::Poll::Ready(Some(paused)) =
+                        Pin::new(&mut this.pause_updates).poll_next(cx)
+                    {
+                        this.paused = paused;
+                        continue;
+                    }
+                    return std::task::Poll::Pending;
+                }
+            }
+        }
+    }
 }
 
 fn detection_error_to_yplane(err: SubtitleDetectionError) -> YPlaneError {
@@ -152,7 +237,7 @@ fn build_ocr_engine(_settings: &EffectiveSettings) -> Arc<dyn OcrEngine> {
             }
         }
     }
-    Arc::new(NoopOcrEngine::default())
+    Arc::new(NoopOcrEngine)
 }
 
 fn default_output_path(input: &Path) -> PathBuf {

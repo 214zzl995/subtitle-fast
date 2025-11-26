@@ -239,13 +239,14 @@ fn dt_euclidean_clipped(
     let max_r = r as usize;
     let mut dx2 = [0i32; 64]; // 够用：R 一般 <= 8
     let mut xr_by_dy = [0i32; 64]; // 每个 |dy| 的水平半径
-    for i in 0..=max_r {
-        dx2[i] = (i as i32) * (i as i32);
+    for (i, value) in dx2.iter_mut().enumerate().take(max_r + 1) {
+        let i = i as i32;
+        *value = i * i;
     }
-    for ady in 0..=max_r {
+    for (ady, xr) in xr_by_dy.iter_mut().enumerate().take(max_r + 1) {
         // xr = floor(sqrt(r^2 - dy^2))
         let rem = r2 - (ady as i32) * (ady as i32);
-        xr_by_dy[ady] = if rem <= 0 {
+        *xr = if rem <= 0 {
             0
         } else {
             (rem as f32).sqrt().floor() as i32
@@ -293,12 +294,12 @@ fn dt_euclidean_clipped(
                             let row_ptr = dptr.add((y as usize) * width);
 
                             // 常量部分：dy^2
-                            let dy2 = (dy as i32) * (dy as i32);
+                            let dy2 = dy * dy;
 
                             // 从 xL 到 xR 线性扫，利用预计算 dx^2 表
                             let mut x = x_l;
                             while x <= x_r {
-                                let adx = (x - x0).abs() as usize;
+                                let adx = (x - x0).unsigned_abs() as usize;
                                 let v = dy2 + dx2[adx];
                                 let cell = row_ptr.add(x as usize);
                                 // cell = min(cell, v)，避免 bounds-check
@@ -310,7 +311,7 @@ fn dt_euclidean_clipped(
                     } else {
                         // xr == 0，只更新 x0（若在边界内）
                         if (0..w).contains(&x0) {
-                            let dy2 = (dy as i32) * (dy as i32);
+                            let dy2 = dy * dy;
                             let cell = dptr.add((y as usize) * width + (x0 as usize));
                             let old = *cell;
                             let v = dy2; // dx=0
@@ -475,9 +476,9 @@ impl SparseChamferComparator {
         let magnitude = &scratch.magnitude;
         let has_masked = mask.iter().any(|&v| v > 0);
         let threshold = if has_masked {
-            percentile70_histogram(&magnitude, Some(mask), &mut scratch.hist)
+            percentile70_histogram(magnitude, Some(mask), &mut scratch.hist)
         } else {
-            percentile70_histogram(&magnitude, None, &mut scratch.hist)
+            percentile70_histogram(magnitude, None, &mut scratch.hist)
         };
         edges.resize(magnitude.len(), 0);
         let mut count = 0usize;
@@ -502,8 +503,8 @@ impl SparseChamferComparator {
         if step == 0 {
             return Vec::new();
         }
-        let grid_w = (width + step - 1) / step;
-        let grid_h = (height + step - 1) / step;
+        let grid_w = width.div_ceil(step);
+        let grid_h = height.div_ceil(step);
         let max_points = grid_w.saturating_mul(grid_h).min(MAX_POINTS);
         let mut points = Vec::with_capacity(max_points);
         for y in (0..height).step_by(step) {

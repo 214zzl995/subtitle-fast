@@ -63,10 +63,11 @@ async fn run_backend_bench(
     input_path: &Path,
     backend: Backend,
 ) -> Result<(u64, f64), Box<dyn Error>> {
-    let mut config = Configuration::default();
-    config.backend = backend;
-    config.input = Some(input_path.to_path_buf());
-    config.channel_capacity = None;
+    let config = Configuration {
+        backend,
+        input: Some(input_path.to_path_buf()),
+        channel_capacity: None,
+    };
 
     let provider = config.create_provider()?;
     let total_frames = provider.total_frames();

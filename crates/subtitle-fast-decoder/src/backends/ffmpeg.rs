@@ -1,5 +1,3 @@
-#![cfg(feature = "backend-ffmpeg")]
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -226,8 +224,10 @@ impl FfmpegProvider {
             if stream.index() != stream_index {
                 continue;
             }
-            if let Err(err) = decoder.send_packet(&packet) {
-                if !is_retryable_error(&err) {
+            match decoder.send_packet(&packet) {
+                Ok(_) => {}
+                Err(err) if is_retryable_error(&err) => {}
+                Err(err) => {
                     return Err(YPlaneError::backend_failure(BACKEND_NAME, err.to_string()));
                 }
             }
@@ -295,7 +295,7 @@ fn frame_from_converted(
     next_fallback_index: &mut u64,
 ) -> YPlaneResult<YPlaneFrame> {
     let plane = frame.data(0);
-    let stride = frame.stride(0) as usize;
+    let stride = frame.stride(0);
     let width = frame.width();
     let height = frame.height();
     let mut buffer = Vec::with_capacity(stride * height as usize);
@@ -320,17 +320,15 @@ fn compute_frame_index(
 ) -> Option<u64> {
     let pts = frame.timestamp().or_else(|| frame.pts());
     if let Some(pts) = pts {
-        if let Some((num, den)) = frame_rate {
-            if num > 0 && den > 0 {
-                let time_base_seconds = f64::from(time_base);
-                let fps = num as f64 / den as f64;
-                let seconds = pts as f64 * time_base_seconds;
-                let index = (seconds * fps).round();
-                if index.is_finite() && index >= 0.0 {
-                    let value = index as u64;
-                    *next_fallback_index = value.saturating_add(1);
-                    return Some(value);
-                }
+        if let Some((num, den)) = frame_rate.filter(|(num, den)| *num > 0 && *den > 0) {
+            let time_base_seconds = f64::from(time_base);
+            let fps = num as f64 / den as f64;
+            let seconds = pts as f64 * time_base_seconds;
+            let index = (seconds * fps).round();
+            if index.is_finite() && index >= 0.0 {
+                let value = index as u64;
+                *next_fallback_index = value.saturating_add(1);
+                return Some(value);
             }
         }
         if pts >= 0 {

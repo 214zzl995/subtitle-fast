@@ -166,16 +166,17 @@ impl Configuration {
         match self.backend {
             Backend::Mock => {
                 if !github_ci_active() {
-                    return Err(YPlaneError::unsupported("mock"));
+                    Err(YPlaneError::unsupported("mock"))
+                } else {
+                    crate::backends::mock::boxed_mock(self.input.clone(), channel_capacity)
                 }
-                return crate::backends::mock::boxed_mock(self.input.clone(), channel_capacity);
             }
             #[cfg(feature = "backend-ffmpeg")]
             Backend::Ffmpeg => {
                 let path = self.input.clone().ok_or_else(|| {
                     YPlaneError::configuration("FFmpeg backend requires SUBFAST_INPUT")
                 })?;
-                return crate::backends::ffmpeg::boxed_ffmpeg(path, channel_capacity);
+                crate::backends::ffmpeg::boxed_ffmpeg(path, channel_capacity)
             }
             #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
             Backend::VideoToolbox => {
@@ -184,19 +185,17 @@ impl Configuration {
                         "VideoToolbox backend requires SUBFAST_INPUT to be set",
                     )
                 })?;
-                return crate::backends::videotoolbox::boxed_videotoolbox(path, channel_capacity);
+                crate::backends::videotoolbox::boxed_videotoolbox(path, channel_capacity)
             }
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             Backend::Mft => {
                 let path = self.input.clone().ok_or_else(|| {
                     YPlaneError::configuration("MFT backend requires SUBFAST_INPUT to be set")
                 })?;
-                return crate::backends::mft::boxed_mft(path, channel_capacity);
+                crate::backends::mft::boxed_mft(path, channel_capacity)
             }
             #[allow(unreachable_patterns)]
-            other => {
-                return Err(YPlaneError::unsupported(other.as_str()));
-            }
+            other => Err(YPlaneError::unsupported(other.as_str())),
         }
     }
 }

@@ -216,7 +216,7 @@ fn required_len(config: &SubtitleDetectionConfig) -> Result<usize, SubtitleDetec
     config
         .stride
         .checked_mul(config.frame_height)
-        .ok_or_else(|| SubtitleDetectionError::InsufficientData {
+        .ok_or(SubtitleDetectionError::InsufficientData {
             data_len: 0,
             required: usize::MAX,
         })
@@ -561,8 +561,7 @@ fn connected_components(mask: &[u8], width: usize, height: usize) -> Vec<Compone
         let curr_end = row_offsets[y + 1];
         for curr_idx in curr_start..curr_end {
             let curr = runs[curr_idx];
-            for prev_idx in prev_start..prev_end {
-                let prev = runs[prev_idx];
+            for (prev_idx, prev) in runs.iter().enumerate().take(prev_end).skip(prev_start) {
                 if prev.y + 1 == curr.y && prev.end > curr.start && curr.end > prev.start {
                     dsu.union(curr_idx as u32, prev_idx as u32);
                 }
@@ -698,8 +697,7 @@ fn merge_line_candidates(
 fn same_line(a: &Candidate, b: &Candidate) -> bool {
     let cy1 = a.y + a.height / 2;
     let cy2 = b.y + b.height / 2;
-    let diff = if cy1 >= cy2 { cy1 - cy2 } else { cy2 - cy1 };
-    diff <= Y_MERGE_TOL
+    cy1.abs_diff(cy2) <= Y_MERGE_TOL
 }
 
 fn merge_group(mut group: Vec<Candidate>, integral: &[u32], width: usize) -> Vec<Candidate> {

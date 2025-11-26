@@ -4,6 +4,7 @@ debug.json
 /dump
 subtitle_detection_output.*
 config.toml
+!.cargo/config.toml
 openspec
 AGENTS.md
 demo

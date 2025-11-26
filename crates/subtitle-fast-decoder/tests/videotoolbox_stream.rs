@@ -16,9 +16,11 @@ async fn videotoolbox_backend_streams_frames() {
         }
     };
 
-    let mut config = Configuration::default();
-    config.backend = Backend::VideoToolbox;
-    config.input = Some(asset);
+    let config = Configuration {
+        backend: Backend::VideoToolbox,
+        input: Some(asset),
+        ..Configuration::default()
+    };
 
     let provider = match config.create_provider() {
         Ok(provider) => provider,

@@ -179,8 +179,8 @@ fn resolution_from_len(len: usize) -> Option<(usize, usize)> {
 }
 
 fn frame_to_image(frame: &YPlaneFrame) -> RgbImage {
-    let width = frame.width() as u32;
-    let height = frame.height() as u32;
+    let width = frame.width();
+    let height = frame.height();
     let stride = frame.stride();
     let data = frame.data();
     RgbImage::from_fn(width, height, |x, y| {

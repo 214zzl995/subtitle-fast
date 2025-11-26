@@ -1,0 +1,76 @@
+name: macOS UI Build
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - ui-macos/**
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - demo/**
+      - model/**
+      - .github/workflows/**
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+    paths:
+      - ui-macos/**
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - demo/**
+      - model/**
+      - .github/workflows/**
+  workflow_dispatch:
+
+concurrency:
+  group: macos-ui-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-ui:
+    name: Build macOS GUI
+    runs-on: macos-15
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 16.1
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.1"
+
+      - name: Cache cargo registry + git + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-${{ runner.os }}-cargo-
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install FFmpeg
+        run: brew install ffmpeg
+
+      - name: Build Rust workspace (release)
+        run: cargo build --release
+
+      - name: Build macOS app
+        run: |
+          xcodebuild \
+            -project ui-macos/subtitle-fast.xcodeproj \
+            -scheme subtitle-fast \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY=""

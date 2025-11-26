@@ -1,0 +1,97 @@
+name: Rust CI
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "**/*.rs"
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - demo/**
+      - model/**
+      - config.toml
+      - config.toml.example
+      - .github/workflows/**
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+    paths:
+      - "**/*.rs"
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - demo/**
+      - model/**
+      - config.toml
+      - config.toml.example
+      - .github/workflows/**
+  workflow_dispatch:
+
+concurrency:
+  group: rust-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust fmt, clippy, and tests
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo registry + git + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-cargo-
+
+      - name: Prepare apt cache dir
+        run: |
+          sudo mkdir -p /var/cache/apt/archives
+          sudo chown -R $USER:$USER /var/cache/apt/archives
+
+      - name: Cache FFmpeg apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: rust-${{ runner.os }}-ffmpeg-apt-${{ hashFiles('.github/workflows/rust-ci.yml') }}
+          restore-keys: rust-${{ runner.os }}-ffmpeg-apt-
+
+      - name: Install FFmpeg dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libavdevice-dev \
+            libavfilter-dev \
+            libswscale-dev \
+            libswresample-dev \
+            pkg-config
+
+      - name: Prepare apt cache for saving
+        run: sudo chown -R $USER:$USER /var/cache/apt/archives
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --all-targets --no-default-features

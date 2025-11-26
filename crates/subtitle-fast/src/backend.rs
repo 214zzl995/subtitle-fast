@@ -55,18 +55,18 @@ pub async fn run(plan: ExecutionPlan) -> Result<(), YPlaneError> {
                     attempt_config.backend.as_str(),
                     provider_elapsed
                 );
-                if !backend_locked {
-                    if let Some(next_backend) = select_next_backend(&available, &tried) {
-                        let failed_backend = attempt_config.backend;
-                        eprintln!(
-                            "backend {failed} failed to initialize ({reason}); trying {next}",
-                            failed = failed_backend.as_str(),
-                            reason = err,
-                            next = next_backend.as_str()
-                        );
-                        attempt_config.backend = next_backend;
-                        continue;
-                    }
+                if !backend_locked
+                    && let Some(next_backend) = select_next_backend(&available, &tried)
+                {
+                    let failed_backend = attempt_config.backend;
+                    eprintln!(
+                        "backend {failed} failed to initialize ({reason}); trying {next}",
+                        failed = failed_backend.as_str(),
+                        reason = err,
+                        next = next_backend.as_str()
+                    );
+                    attempt_config.backend = next_backend;
+                    continue;
                 }
                 return Err(err);
             }
@@ -75,23 +75,35 @@ pub async fn run(plan: ExecutionPlan) -> Result<(), YPlaneError> {
         match stage::run_pipeline(provider, &pipeline).await {
             Ok(()) => return Ok(()),
             Err((err, processed)) => {
-                if processed == 0 && !backend_locked {
-                    if let Some(next_backend) = select_next_backend(&available, &tried) {
-                        let failed_backend = attempt_config.backend;
-                        eprintln!(
-                            "backend {failed} failed to decode ({reason}); trying {next}",
-                            failed = failed_backend.as_str(),
-                            reason = err,
-                            next = next_backend.as_str()
-                        );
-                        attempt_config.backend = next_backend;
-                        continue;
-                    }
+                if processed == 0
+                    && !backend_locked
+                    && let Some(next_backend) = select_next_backend(&available, &tried)
+                {
+                    let failed_backend = attempt_config.backend;
+                    eprintln!(
+                        "backend {failed} failed to decode ({reason}); trying {next}",
+                        failed = failed_backend.as_str(),
+                        reason = err,
+                        next = next_backend.as_str()
+                    );
+                    attempt_config.backend = next_backend;
+                    continue;
                 }
                 return Err(err);
             }
         }
     }
+}
+
+#[allow(dead_code)]
+pub async fn run_with_progress(
+    mut plan: ExecutionPlan,
+    handle_id: u64,
+    pause_rx: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), YPlaneError> {
+    plan.pipeline.progress = crate::stage::progress_gui::progress_for_handle(handle_id);
+    plan.pipeline.pause = Some(pause_rx);
+    run(plan).await
 }
 
 pub fn display_available_backends() {

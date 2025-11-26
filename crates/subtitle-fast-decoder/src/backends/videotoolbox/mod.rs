@@ -146,10 +146,10 @@ mod platform {
             let message = error.unwrap_or_else(|| "videotoolbox probe failed".to_string());
             return Err(YPlaneError::backend_failure("videotoolbox", message));
         }
-        if let Some(message) = error {
-            if !message.is_empty() {
-                return Err(YPlaneError::backend_failure("videotoolbox", message));
-            }
+        if let Some(message) = error
+            && !message.is_empty()
+        {
+            return Err(YPlaneError::backend_failure("videotoolbox", message));
         }
         if result.has_value {
             Ok(Some(result.value))
@@ -211,10 +211,10 @@ mod platform {
             let message = error.unwrap_or_else(|| "videotoolbox decode failed".to_string());
             return Err(YPlaneError::backend_failure("videotoolbox", message));
         }
-        if let Some(message) = error {
-            if !message.is_empty() {
-                return Err(YPlaneError::backend_failure("videotoolbox", message));
-            }
+        if let Some(message) = error
+            && !message.is_empty()
+        {
+            return Err(YPlaneError::backend_failure("videotoolbox", message));
         }
         Ok(())
     }

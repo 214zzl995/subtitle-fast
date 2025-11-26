@@ -30,7 +30,7 @@ struct PackedMask {
 
 impl PackedMask {
     fn new(width: usize, height: usize) -> Self {
-        let stride = (width + (BYTE_BITS - 1)) / BYTE_BITS;
+        let stride = width.div_ceil(BYTE_BITS);
         let data = vec![0u8; stride.saturating_mul(height)];
         Self {
             width,
@@ -86,7 +86,7 @@ impl PackedMask {
         }
 
         let start_mask = (!0u8) << (start % BYTE_BITS);
-        let end_mask = if end % BYTE_BITS == 0 {
+        let end_mask = if end.is_multiple_of(BYTE_BITS) {
             0xFF
         } else {
             (1u16 << (end % BYTE_BITS)) as u8 - 1
@@ -106,9 +106,7 @@ impl PackedMask {
         }
         let end_y = end_y.min(self.height);
         let start_y = start_y.min(end_y);
-        for y in start_y..end_y {
-            self.set_bit(x, y);
-        }
+        (start_y..end_y).for_each(|y| self.set_bit(x, y));
     }
 
     fn count_ones_row(&self, y: usize) -> usize {
@@ -228,10 +226,10 @@ impl ProjectionBandDetector {
         let mut row_density = vec![0f32; height];
         let mut total_density = 0f32;
         let width_f = width.max(1) as f32;
-        for y in 0..height {
+        for (y, density) in row_density.iter_mut().enumerate().take(height) {
             let ones = mask.count_ones_row(y);
-            row_density[y] = ones as f32 / width_f;
-            total_density += row_density[y];
+            *density = ones as f32 / width_f;
+            total_density += *density;
         }
         let avg_density = total_density / height.max(1) as f32;
         let density_threshold = ROW_DENSITY_THRESHOLD.min(avg_density * 0.7).max(0.02);
@@ -359,8 +357,8 @@ fn analyze_band(mask: &PackedMask, band: Range<usize>, min_area_px: usize) -> Ve
     for row in band.clone() {
         let mut row_first = None;
         let mut row_last = None;
-        let mut iter = mask.row_iter(row);
-        while let Some(x) = iter.next() {
+        let iter = mask.row_iter(row);
+        for x in iter {
             column_counts[x] = column_counts[x].saturating_add(1);
             if row_first.is_none() {
                 row_first = Some(x);
@@ -417,10 +415,12 @@ fn analyze_band(mask: &PackedMask, band: Range<usize>, min_area_px: usize) -> Ve
         if seg_width == 0 {
             continue;
         }
-        let mut seg_ones = 0usize;
-        for x in seg.start..seg.end {
-            seg_ones += column_counts[x] as usize;
-        }
+        let seg_ones: usize = column_counts
+            .iter()
+            .take(seg.end)
+            .skip(seg.start)
+            .map(|&value| value as usize)
+            .sum();
         let area = seg_width.saturating_mul(height);
         if area == 0 {
             continue;
@@ -705,11 +705,11 @@ fn connected_components(mask: &PackedMask) -> Vec<ComponentStats> {
     }
     let mut runs = Vec::new();
     let mut row_offsets = vec![0usize; height + 1];
-    for y in 0..height {
-        row_offsets[y] = runs.len();
-        let mut iter = mask.row_iter(y);
+    for (y, row_offset) in row_offsets.iter_mut().enumerate().take(height) {
+        *row_offset = runs.len();
+        let iter = mask.row_iter(y);
         let mut current: Option<RowRun> = None;
-        while let Some(x) = iter.next() {
+        for x in iter {
             match &mut current {
                 Some(run) if x == run.end => {
                     run.end += 1;
@@ -748,8 +748,7 @@ fn connected_components(mask: &PackedMask) -> Vec<ComponentStats> {
         let curr_end = row_offsets[y + 1];
         for curr_idx in curr_start..curr_end {
             let curr = runs[curr_idx];
-            for prev_idx in prev_start..prev_end {
-                let prev = runs[prev_idx];
+            for (prev_idx, prev) in runs.iter().enumerate().take(prev_end).skip(prev_start) {
                 if prev.y + 1 == curr.y && prev.end > curr.start && curr.end > prev.start {
                     dsu.union(curr_idx as u32, prev_idx as u32);
                 }
@@ -813,7 +812,7 @@ fn required_len(config: &SubtitleDetectionConfig) -> Result<usize, SubtitleDetec
     config
         .stride
         .checked_mul(config.frame_height)
-        .ok_or_else(|| SubtitleDetectionError::InsufficientData {
+        .ok_or(SubtitleDetectionError::InsufficientData {
             data_len: 0,
             required: usize::MAX,
         })

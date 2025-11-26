@@ -139,10 +139,7 @@ impl SubtitleSegmenter {
         });
 
         let stream = Box::pin(unfold(rx, |mut receiver| async {
-            match receiver.recv().await {
-                Some(item) => Some((item, receiver)),
-                None => None,
-            }
+            receiver.recv().await.map(|item| (item, receiver))
         }));
 
         StreamBundle::new(stream, total_frames)
@@ -529,17 +526,17 @@ fn sample_time(sample: &SampledFrame) -> Duration {
     if let Some(ts) = sample.frame().timestamp() {
         return ts;
     }
-    if let Some(fps) = sample.sampler_context().estimated_fps() {
-        if fps > 0.0 {
-            let secs = sample.frame_index() as f64 / fps;
-            return Duration::from_secs_f64(secs.max(0.0));
-        }
+    if let Some(fps) = sample.sampler_context().estimated_fps()
+        && fps > 0.0
+    {
+        let secs = sample.frame_index() as f64 / fps;
+        return Duration::from_secs_f64(secs.max(0.0));
     }
     Duration::from_secs(0)
 }
 
 fn window_frames(samples_per_second: u32) -> u32 {
-    std::cmp::max(1, (samples_per_second + 4) / 5)
+    std::cmp::max(1, samples_per_second.div_ceil(5))
 }
 
 fn overlaps_vertically(a: &RoiConfig, b: &RoiConfig) -> bool {
