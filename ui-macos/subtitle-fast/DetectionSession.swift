@@ -237,9 +237,12 @@ final class DetectionSession: ObservableObject {
             scopedURL = nil
         }
 
-        let asset = AVAsset(url: url)
+        let asset = AVURLAsset(url: url)
         currentAsset = asset
-        updateVideoMetadata(for: asset, fileID: entry.id)
+        Task { [weak self] in
+            guard let self else { return }
+            await self.updateVideoMetadata(for: asset, fileID: entry.id)
+        }
 
         let item = makePlayerItem(for: asset)
         let newPlayer = AVPlayer()
@@ -256,19 +259,53 @@ final class DetectionSession: ObservableObject {
 
     private func makePlayerItem(for asset: AVAsset) -> AVPlayerItem {
         let item = AVPlayerItem(asset: asset)
-        if previewMode == .luma {
-            item.videoComposition = AVVideoComposition(asset: asset) { request in
-                let image = request.sourceImage.clampedToExtent()
-                let gray = image.applyingFilter(
-                    "CIColorControls",
-                    parameters: [kCIInputSaturationKey: 0.0]
-                )
-                request.finish(with: gray, context: nil)
+        applyVideoCompositionIfNeeded(to: item, asset: asset)
+        return item
+    }
+
+    private func applyVideoCompositionIfNeeded(to item: AVPlayerItem, asset: AVAsset) {
+        guard previewMode == .luma else {
+            item.videoComposition = nil
+            return
+        }
+
+        let applier: @Sendable (AVAsynchronousCIImageFilteringRequest) -> Void = { request in
+            let image = request.sourceImage.clampedToExtent()
+            let gray = image.applyingFilter(
+                "CIColorControls",
+                parameters: [kCIInputSaturationKey: 0.0]
+            )
+            request.finish(with: gray, context: nil)
+        }
+
+        if #available(macOS 15, *) {
+            Task { [weak item] in
+                guard let composition = await loadVideoComposition(for: asset, applier: applier) else { return }
+                await MainActor.run {
+                    item?.videoComposition = composition
+                }
             }
         } else {
-            item.videoComposition = nil
+            item.videoComposition = AVVideoComposition(
+                asset: asset,
+                applyingCIFiltersWithHandler: applier
+            )
         }
-        return item
+    }
+
+    @available(macOS 15, *)
+    private func loadVideoComposition(
+        for asset: AVAsset,
+        applier: @Sendable @escaping (AVAsynchronousCIImageFilteringRequest) -> Void
+    ) async -> AVVideoComposition? {
+        await withCheckedContinuation { continuation in
+            AVVideoComposition.videoComposition(
+                with: asset,
+                applyingCIFiltersWithHandler: applier
+            ) { composition, _ in
+                continuation.resume(returning: composition)
+            }
+        }
     }
 
     private func setupTimeObserver() {
@@ -282,49 +319,69 @@ final class DetectionSession: ObservableObject {
             Task { @MainActor in
                 self.currentTime = time.seconds
                 self.isPlaying = self.player?.timeControlStatus == .playing
-                if self.duration == 0 {
-                    self.duration = self.player?.currentItem?.asset.duration.seconds ?? 0
-                    if let id = self.activeFileID {
-                        self.updateFile(id: id) { $0.duration = self.duration }
+                if self.duration == 0, let asset = self.player?.currentItem?.asset {
+                    if let loadedDuration = try? await asset.load(.duration) {
+                        let seconds = loadedDuration.seconds
+                        self.duration = seconds.isFinite ? seconds : 0
+                        if let id = self.activeFileID {
+                            self.updateFile(id: id) { $0.duration = self.duration }
+                        }
                     }
                 }
             }
         }
     }
 
-    private func updateVideoMetadata(for asset: AVAsset, fileID: UUID) {
-        if let track = asset.tracks(withMediaType: .video).first {
-            let transformed = track.naturalSize.applying(track.preferredTransform)
-            let size = CGSize(width: abs(transformed.width), height: abs(transformed.height))
-            videoSize = size
-            let fps = resolvedFrameRate(from: track)
-            videoFrameRate = fps
-            updateFile(id: fileID) {
-                $0.size = size
-                $0.frameRate = fps
+    private func updateVideoMetadata(for asset: AVAsset, fileID: UUID) async {
+        do {
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            if let track = tracks.first {
+                let naturalSize = try await track.load(.naturalSize)
+                let transform = try await track.load(.preferredTransform)
+                let transformed = naturalSize.applying(transform)
+                let size = CGSize(width: abs(transformed.width), height: abs(transformed.height))
+                videoSize = size
+                let fps = try await resolvedFrameRate(from: track)
+                videoFrameRate = fps
+                updateFile(id: fileID) {
+                    $0.size = size
+                    $0.frameRate = fps
+                }
+            } else {
+                videoSize = nil
+                videoFrameRate = nil
+                updateFile(id: fileID) {
+                    $0.size = nil
+                    $0.frameRate = nil
+                }
             }
-        } else {
+
+            let durationTime = try await asset.load(.duration)
+            let length = durationTime.seconds
+            if length.isFinite {
+                duration = length
+                updateFile(id: fileID) { $0.duration = length }
+            } else {
+                duration = 0
+            }
+        } catch {
             videoSize = nil
             videoFrameRate = nil
+            duration = 0
             updateFile(id: fileID) {
                 $0.size = nil
                 $0.frameRate = nil
+                $0.duration = 0
             }
-        }
-        let length = asset.duration.seconds
-        if length.isFinite {
-            duration = length
-            updateFile(id: fileID) { $0.duration = length }
-        } else {
-            duration = 0
         }
     }
 
-    private func resolvedFrameRate(from track: AVAssetTrack) -> Double? {
-        if track.nominalFrameRate > 0 {
-            return Double(track.nominalFrameRate)
+    private func resolvedFrameRate(from track: AVAssetTrack) async throws -> Double? {
+        let nominal = try await track.load(.nominalFrameRate)
+        if nominal > 0 {
+            return Double(nominal)
         }
-        let minDuration = track.minFrameDuration
+        let minDuration = try await track.load(.minFrameDuration)
         if minDuration.isNumeric && minDuration.value != 0 {
             return Double(minDuration.timescale) / Double(minDuration.value)
         }
@@ -388,24 +445,25 @@ final class DetectionSession: ObservableObject {
         seek(to: target)
     }
 
-    func snapshotCurrentFrame(lumaOnly: Bool) -> CGImage? {
+    func snapshotCurrentFrame(lumaOnly: Bool) async -> CGImage? {
         guard let asset = currentAsset else { return nil }
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceAfter = .zero
         generator.requestedTimeToleranceBefore = .zero
         let time = player?.currentTime() ?? .zero
-        do {
-            let image = try generator.copyCGImage(at: time, actualTime: nil)
-            guard lumaOnly else { return image }
-            let ciImage = CIImage(cgImage: image).applyingFilter(
-                "CIColorControls",
-                parameters: [kCIInputSaturationKey: 0.0]
-            )
-            return ciContext.createCGImage(ciImage, from: ciImage.extent) ?? image
-        } catch {
-            return nil
+        let image = await withCheckedContinuation { continuation in
+            generator.generateCGImageAsynchronously(for: time) { image, _, _ in
+                continuation.resume(returning: image)
+            }
         }
+        guard let image else { return nil }
+        guard lumaOnly else { return image }
+        let ciImage = CIImage(cgImage: image).applyingFilter(
+            "CIColorControls",
+            parameters: [kCIInputSaturationKey: 0.0]
+        )
+        return ciContext.createCGImage(ciImage, from: ciImage.extent) ?? image
     }
 
     private func updateFile(id: UUID, mutate: (inout TrackedFile) -> Void) {
@@ -764,7 +822,6 @@ final class DetectionSession: ObservableObject {
         NSApplication.shared.activate(ignoringOtherApps: true)
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "srt") ?? .plainText]
-        panel.allowedFileTypes = ["srt"]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = defaultName
 

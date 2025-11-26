@@ -72,8 +72,8 @@ struct ColorMenuButton: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .opacity(disabled ? 0.35 : 1)
-        .onChange(of: disabled) { value in
-            if value {
+        .onChange(of: disabled) { _, isDisabled in
+            if isDisabled {
                 isOpen = false
             }
         }

@@ -1,4 +1,11 @@
-import AppKit
+import CoreGraphics
+
+struct HighlightTintComponents {
+    let r: UInt8
+    let g: UInt8
+    let b: UInt8
+    let alpha: UInt8
+}
 
 enum HighlightMaskRenderer {
     static func makeMask(
@@ -6,7 +13,7 @@ enum HighlightMaskRenderer {
         selection: CGRect,
         threshold: Double,
         tolerance: Double,
-        tint: NSColor
+        tint: HighlightTintComponents
     ) -> CGImage? {
         let frameSize = CGSize(width: CGFloat(frame.width), height: CGFloat(frame.height))
         let bounded = selection
@@ -39,12 +46,10 @@ enum HighlightMaskRenderer {
 
         context.draw(cropped, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-        guard let sRGBTint = tint.usingColorSpace(.sRGB) else { return nil }
-        let alpha: Double = 0.8
-        let alphaByte = UInt8(clamping: Int(alpha * 255))
-        let tintR = UInt8(clamping: Int(sRGBTint.redComponent * 255 * alpha))
-        let tintG = UInt8(clamping: Int(sRGBTint.greenComponent * 255 * alpha))
-        let tintB = UInt8(clamping: Int(sRGBTint.blueComponent * 255 * alpha))
+        let alphaByte = tint.alpha
+        let tintR = tint.r
+        let tintG = tint.g
+        let tintB = tint.b
 
         let minThreshold = max(0, threshold - tolerance)
         let maxThreshold = min(255, threshold + tolerance)

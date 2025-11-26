@@ -144,8 +144,10 @@ struct VideoCanvas: View {
             }
             .onChange(of: session.isSamplingThreshold) { _, isSampling in
                 if isSampling {
-                    samplingFrame = session.snapshotCurrentFrame(lumaOnly: false)
-                    resetSamplingHover()
+                    Task { @MainActor in
+                        samplingFrame = await session.snapshotCurrentFrame(lumaOnly: false)
+                        resetSamplingHover()
+                    }
                 } else {
                     samplingFrame = nil
                     resetSamplingHover()
@@ -274,38 +276,53 @@ struct VideoCanvas: View {
             highlightImage = nil
         }
         guard !isComputingHighlight else { return }
-        guard let frame = session.snapshotCurrentFrame(lumaOnly: session.previewMode == .luma) else {
-            highlightImage = nil
-            return
-        }
-
-        let imageSize = CGSize(width: CGFloat(frame.width), height: CGFloat(frame.height))
-        let regionInPixels = selection.denormalized(in: imageSize)
-        let clamped = regionInPixels.intersection(CGRect(origin: .zero, size: imageSize))
-        guard clamped.width >= 1, clamped.height >= 1 else {
-            highlightImage = nil
-            return
-        }
-
         isComputingHighlight = true
+
         let threshold = session.threshold
         let tolerance = session.tolerance
         let tint = session.highlightTint
+        let lumaOnly = session.previewMode == .luma
+        guard let tintComponents = makeTintComponents(from: tint) else {
+            isComputingHighlight = false
+            highlightImage = nil
+            return
+        }
 
-        DispatchQueue.global(qos: .userInitiated).async {
-            let mask = HighlightMaskRenderer.makeMask(
-                frame: frame,
-                selection: clamped,
-                threshold: threshold,
-                tolerance: tolerance,
-                tint: tint
-            )
-            DispatchQueue.main.async {
-                self.isComputingHighlight = false
-                if self.session.isHighlightActive, self.session.selection != nil {
-                    self.highlightImage = mask
-                } else {
+        Task {
+            guard let frame = await session.snapshotCurrentFrame(lumaOnly: lumaOnly) else {
+                await MainActor.run {
+                    self.isComputingHighlight = false
                     self.highlightImage = nil
+                }
+                return
+            }
+
+            let imageSize = CGSize(width: CGFloat(frame.width), height: CGFloat(frame.height))
+            let regionInPixels = selection.denormalized(in: imageSize)
+            let clamped = regionInPixels.intersection(CGRect(origin: .zero, size: imageSize))
+            guard clamped.width >= 1, clamped.height >= 1 else {
+                await MainActor.run {
+                    self.isComputingHighlight = false
+                    self.highlightImage = nil
+                }
+                return
+            }
+
+            DispatchQueue.global(qos: .userInitiated).async {
+                let mask = HighlightMaskRenderer.makeMask(
+                    frame: frame,
+                    selection: clamped,
+                    threshold: threshold,
+                    tolerance: tolerance,
+                    tint: tintComponents
+                )
+                DispatchQueue.main.async {
+                    self.isComputingHighlight = false
+                    if self.session.isHighlightActive, self.session.selection != nil {
+                        self.highlightImage = mask
+                    } else {
+                        self.highlightImage = nil
+                    }
                 }
             }
         }
@@ -356,9 +373,23 @@ struct VideoCanvas: View {
 
     private func ensureSamplingFrame() -> CGImage? {
         if let frame = samplingFrame { return frame }
-        guard let snapshot = session.snapshotCurrentFrame(lumaOnly: false) else { return nil }
-        samplingFrame = snapshot
-        return snapshot
+        Task { @MainActor in
+            if samplingFrame == nil {
+                samplingFrame = await session.snapshotCurrentFrame(lumaOnly: false)
+            }
+        }
+        return nil
+    }
+
+    private func makeTintComponents(from color: NSColor) -> HighlightTintComponents? {
+        guard let sRGB = color.usingColorSpace(.sRGB) else { return nil }
+        let alpha: Double = 0.8
+        return HighlightTintComponents(
+            r: UInt8(clamping: Int(sRGB.redComponent * 255 * alpha)),
+            g: UInt8(clamping: Int(sRGB.greenComponent * 255 * alpha)),
+            b: UInt8(clamping: Int(sRGB.blueComponent * 255 * alpha)),
+            alpha: UInt8(clamping: Int(alpha * 255))
+        )
     }
 
     private func pixelPoint(for location: CGPoint, in videoRect: CGRect, frame: CGImage) -> CGPoint {
