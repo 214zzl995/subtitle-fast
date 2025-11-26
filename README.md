@@ -2,6 +2,8 @@
 
 subtitle-fast is a Rust workspace that turns H.264 video files into subtitle tracks through an async pipeline of decoders, detectors, and OCR backends. Crate-level docs cover the deeper heuristics: [`subtitle-fast`](crates/subtitle-fast/README.md), [`subtitle-fast-decoder`](crates/subtitle-fast-decoder/README.md), [`subtitle-fast-validator`](crates/subtitle-fast-validator/README.md), [`subtitle-fast-comparator`](crates/subtitle-fast-comparator/README.md), and [`subtitle-fast-ocr`](crates/subtitle-fast-ocr/README.md).
 
+- [中文文档](README-zh.md)
+
 License: [MIT](LICENSE)
 
 ## Quick start
@@ -54,20 +56,19 @@ delta = 12
 # channel_capacity = 32
 ```
 
-CLI flags like `--detector-target`, `--detector-delta`, `--backend`, `--ocr-backend`, and `--dump-dir` override the file settings.
+CLI flags like `--detector-target`, `--detector-delta`, `--backend`, and `--ocr-backend` override the file settings.
 
 ## Pipeline overview
 
 1. Select a decoder and stream Y-plane frames ([decoder](crates/subtitle-fast-decoder/README.md)).
 2. Sample frames and score subtitle bands ([validator](crates/subtitle-fast-validator/README.md)).
 3. Compare regions across frames to spot line starts/ends ([comparator](crates/subtitle-fast-comparator/README.md)).
-4. Run OCR on confirmed regions ([ocr](crates/subtitle-fast-ocr/README.md)) and emit `.srt` plus optional JSON/image dumps.
+4. Run OCR on confirmed regions ([ocr](crates/subtitle-fast-ocr/README.md)) and emit `.srt` cues.
 
 Each stage consumes an async stream and preserves backpressure so decoding slows naturally when OCR becomes the bottleneck.
 
 ## Debugging and testing
 
-- Enable dumps with `--dump-dir`/`--dump-format` to save annotated frames and per-segment JSON for tuning detector/OCR behaviour.
 - Smoke test the pipeline with a short clip: `cargo run --release -- --backend mock --output subtitles.srt path/to/video.mp4`.
 - Decoder integration tests require a sample clip and the matching feature, e.g.:
 
