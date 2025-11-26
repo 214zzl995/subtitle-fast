@@ -81,13 +81,7 @@ struct PlaybackControls: View {
         .frame(height: controlHeight)
         .background {
             if #available(macOS 15.0, *) {
-                ZStack {
-                    shape
-                        .fill(Color.white.opacity(0.08))
-                    shape
-                        .fill(.clear)
-                        .glassEffect(in: shape)
-                }
+                shape.fill(.ultraThinMaterial)
             } else {
                 shape
                     .fill(
