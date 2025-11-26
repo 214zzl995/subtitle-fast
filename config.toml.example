@@ -9,5 +9,5 @@ delta = 12
 # comparator = "bitset-cover"
 
 [decoder]
-# backend = "ffmpeg"
+# backend = "dxva" # Windows D3D11/DXVA; use "ffmpeg" or "mft" as fallbacks
 # channel_capacity = 32

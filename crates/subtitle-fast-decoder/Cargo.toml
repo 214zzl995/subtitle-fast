@@ -5,13 +5,14 @@ edition = "2024"
 build = "build.rs"
 
 [features]
-default = ["backend-ffmpeg", "backend-videotoolbox", "backend-mft"]
+default = ["backend-ffmpeg", "backend-videotoolbox", "backend-mft", "backend-dxva"]
 backend-ffmpeg = ["dep:ffmpeg-next"]
 backend-videotoolbox = [
     "dep:mp4",
     "dep:rayon",
 ]
 backend-mft = []
+backend-dxva = []
 
 [dependencies]
 futures-core = "0.3"

@@ -7,8 +7,8 @@ decoder, receive an async stream of frames, and can switch backends when the pre
 
 1. **Build a configuration** – callers either use defaults or read from environment variables/CLI options to decide which
    backend to try, which input to open, and how many frames to buffer.
-2. **Instantiate a backend** – the crate exposes factory helpers that negotiate with FFmpeg, VideoToolbox, Windows Media
-   Foundation, or a lightweight mock backend compiled for CI.
+2. **Instantiate a backend** – the crate exposes factory helpers that negotiate with FFmpeg, VideoToolbox, D3D11/DXVA on
+   Windows, Windows Media Foundation, or a lightweight mock backend compiled for CI.
 3. **Stream frames** – once a backend is active it produces `YPlaneFrame` values containing luma data, dimensions, stride,
    timestamps, and (when available) frame indices. Frames are delivered through an async stream that respects backpressure.
 
@@ -21,6 +21,7 @@ compiled backend before surfacing the error.
 | ------- | ----------- |
 | `backend-ffmpeg` | Uses `ffmpeg-next` to decode H.264 in a portable manner. |
 | `backend-videotoolbox` | Enables hardware-accelerated decoding on macOS. |
+| `backend-dxva` | Uses D3D11/DXVA video decoding on Windows for GPU-backed NV12 output. |
 | `backend-mft` | Enables Windows Media Foundation decoding (Windows only). |
 
 When no feature is enabled, only the lightweight mock backend is compiled. GitHub CI automatically enables the mock backend
@@ -30,7 +31,7 @@ so tests can exercise downstream logic without native dependencies.
 
 - Env vars: `SUBFAST_BACKEND`, `SUBFAST_INPUT`, and `SUBFAST_CHANNEL_CAPACITY` feed into `Configuration::from_env`.
 - Default backend: the first compiled backend is chosen in priority order (mock on CI; VideoToolbox then FFmpeg on macOS;
-  MFT then FFmpeg on Windows/other).
+  DXVA then MFT then FFmpeg on Windows; FFmpeg elsewhere).
 - Channel capacity: `channel_capacity` limits the internal frame queue and governs backpressure.
 
 ## Error handling

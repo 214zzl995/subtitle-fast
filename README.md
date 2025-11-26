@@ -8,7 +8,7 @@ License: [MIT](LICENSE)
 
 ## Quick start
 
-- Prerequisites: Rust (stable), and the native pieces you plan to use (FFmpeg libs for `backend-ffmpeg`, built-in VideoToolbox on macOS, Media Foundation on Windows, and Apple Vision frameworks for `ocr-vision`).
+- Prerequisites: Rust (stable), and the native pieces you plan to use (FFmpeg libs for `backend-ffmpeg`, built-in VideoToolbox on macOS, D3D11/DXVA-capable drivers on Windows, Media Foundation for the fallback MFT backend, and Apple Vision frameworks for `ocr-vision`).
 - Minimal run (uses the compiled decoder backends and Vision OCR on macOS):
 
 ```bash
@@ -28,10 +28,11 @@ cargo run --release --no-default-features \
 **Decoders** (enabled by default in `subtitle-fast-decoder`)
 - `backend-ffmpeg` (FFmpeg; portable).
 - `backend-videotoolbox` (macOS hardware decode).
+- `backend-dxva` (Windows D3D11/DXVA hardware decode).
 - `backend-mft` (Windows Media Foundation).
 - `mock` is always available and useful for CI or dry runs (`--backend mock`).
 
-The CLI picks the first compiled backend in priority order (mock on CI; VideoToolbox then FFmpeg on macOS; MFT then FFmpeg elsewhere) and falls back if a backend fails, preserving backpressure when downstream stages slow down.
+The CLI picks the first compiled backend in priority order (mock on CI; VideoToolbox then FFmpeg on macOS; DXVA then MFT then FFmpeg on Windows; FFmpeg elsewhere) and falls back if a backend fails, preserving backpressure when downstream stages slow down.
 
 **OCR**
 - `ocr-vision` enables Apple Vision on macOS (`--ocr-backend vision` or `auto` when available).
@@ -52,7 +53,7 @@ delta = 12
 # comparator = "bitset-cover"
 
 [decoder]
-# backend = "ffmpeg"
+# backend = "dxva"
 # channel_capacity = 32
 ```
 

@@ -4,7 +4,7 @@ subtitle-fast 是一个 Rust 工作区，用异步流水线把 H.264 视频转�
 
 ## 快速开始
 
-- 前置依赖：Rust 稳定版；对应平台的原生组件（FFmpeg 库用于 `backend-ffmpeg`，macOS 自带 VideoToolbox，Windows 的 Media Foundation，Apple Vision 框架用于 `ocr-vision`）。
+- 前置依赖：Rust 稳定版；对应平台的原生组件（FFmpeg 库用于 `backend-ffmpeg`，macOS 自带 VideoToolbox，Windows 需 D3D11/DXVA 驱动，Media Foundation 作为回退，Apple Vision 框架用于 `ocr-vision`）。
 - 直接运行（默认启用已编译的解码和 OCR 能力）：
 
 ```bash
@@ -21,11 +21,11 @@ cargo run --release --no-default-features \
 
 ## 后端与特性
 
-- 解码：`backend-ffmpeg`（通用）、`backend-videotoolbox`（macOS 硬解）、`backend-mft`（Windows）、`mock`（始终可用，`--backend mock`）。
+- 解码：`backend-ffmpeg`（通用）、`backend-videotoolbox`（macOS 硬解）、`backend-dxva`（Windows D3D11/DXVA 硬解）、`backend-mft`（Windows 回退）、`mock`（始终可用，`--backend mock`）。
 - OCR：`ocr-vision` 启用 Apple Vision（macOS）；未启用时可用 noop 引擎做流水线/性能测试。
 - 检测：`detector-vision`（macOS）和 `detector-parallel`（跨平台）。非 macOS 时关闭 `detector-vision`。
 
-CLI 会按优先级选择首个已编译的解码后端（CI 先 mock；macOS 先 VideoToolbox 后 FFmpeg；其他平台先 MFT 后 FFmpeg），失败则自动回退，并在下游变慢时保持背压。
+CLI 会按优先级选择首个已编译的解码后端（CI 先 mock；macOS 先 VideoToolbox 后 FFmpeg；Windows 先 DXVA 再 MFT 再 FFmpeg；其他平台 FFmpeg），失败则自动回退，并在下游变慢时保持背压。
 
 ## 配置
 
@@ -39,7 +39,7 @@ delta = 12
 # comparator = "bitset-cover"
 
 [decoder]
-# backend = "ffmpeg"
+# backend = "dxva"
 # channel_capacity = 32
 ```
 

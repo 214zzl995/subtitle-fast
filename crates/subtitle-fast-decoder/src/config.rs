@@ -16,6 +16,8 @@ pub enum Backend {
     Ffmpeg,
     #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
     VideoToolbox,
+    #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
+    Dxva,
     #[cfg(all(feature = "backend-mft", target_os = "windows"))]
     Mft,
 }
@@ -30,6 +32,8 @@ impl FromStr for Backend {
             "ffmpeg" => Ok(Backend::Ffmpeg),
             #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
             "videotoolbox" => Ok(Backend::VideoToolbox),
+            #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
+            "dxva" => Ok(Backend::Dxva),
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             "mft" => Ok(Backend::Mft),
             other => Err(YPlaneError::configuration(format!(
@@ -47,6 +51,8 @@ impl Backend {
             Backend::Ffmpeg => "ffmpeg",
             #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
             Backend::VideoToolbox => "videotoolbox",
+            #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
+            Backend::Dxva => "dxva",
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             Backend::Mft => "mft",
             #[allow(unreachable_patterns)]
@@ -86,6 +92,10 @@ fn append_platform_backends(_backends: &mut Vec<Backend>) {
 
 #[cfg(not(target_os = "macos"))]
 fn append_platform_backends(backends: &mut Vec<Backend>) {
+    #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
+    {
+        backends.push(Backend::Dxva);
+    }
     #[cfg(all(feature = "backend-mft", target_os = "windows"))]
     {
         backends.push(Backend::Mft);
@@ -186,6 +196,15 @@ impl Configuration {
                     )
                 })?;
                 crate::backends::videotoolbox::boxed_videotoolbox(path, channel_capacity)
+            }
+            #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
+            Backend::Dxva => {
+                let path = self.input.clone().ok_or_else(|| {
+                    YPlaneError::configuration(
+                        "DXVA backend requires SUBFAST_INPUT to be set",
+                    )
+                })?;
+                crate::backends::dxva::boxed_dxva(path, channel_capacity)
             }
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             Backend::Mft => {

@@ -3,6 +3,9 @@ pub mod mock;
 #[cfg(feature = "backend-ffmpeg")]
 pub mod ffmpeg;
 
+#[cfg(all(target_os = "windows", feature = "backend-dxva"))]
+pub mod dxva;
+
 #[cfg(all(target_os = "windows", feature = "backend-mft"))]
 pub mod mft;
 

@@ -40,7 +40,7 @@ These diagnostics are invaluable when tuning detection thresholds or validating 
 ## Feature flags and platforms
 
 - Decoder backends are toggled through features on `subtitle-fast-decoder` (`backend-ffmpeg`, `backend-videotoolbox`,
-  `backend-mft`, or the always-available mock backend).
+  `backend-dxva`, `backend-mft`, or the always-available mock backend).
 - OCR support depends on the target: macOS builds can enable Apple Vision (`ocr-vision`).
 - Debug helpers are available on all platforms and require no extra features.
 
