@@ -1,109 +1,81 @@
 # subtitle-fast
 
-subtitle-fast is a Rust workspace for turning video files into subtitle tracks. The workspace is built from five crates
-that are combined by the CLI binary:
-
-- [`subtitle-fast`](crates/subtitle-fast/README.md) – drives the async pipeline and owns CLI configuration.
-- [`subtitle-fast-comparator`](crates/subtitle-fast-comparator/README.md) – compares successive subtitle regions to
-  decide when lines begin or end.
-- [`subtitle-fast-decoder`](crates/subtitle-fast-decoder/README.md) – selects a decoding backend and exposes frames as a
-  luma (Y) plane stream.
-- [`subtitle-fast-validator`](crates/subtitle-fast-validator/README.md) – judges which frames contain subtitle bands and
-  reports candidate regions.
-- [`subtitle-fast-ocr`](crates/subtitle-fast-ocr/README.md) – converts cropped subtitle regions into text.
+subtitle-fast is a Rust workspace that turns H.264 video files into subtitle tracks through an async pipeline of decoders, detectors, and OCR backends. Crate-level docs cover the deeper heuristics: [`subtitle-fast`](crates/subtitle-fast/README.md), [`subtitle-fast-decoder`](crates/subtitle-fast-decoder/README.md), [`subtitle-fast-validator`](crates/subtitle-fast-validator/README.md), [`subtitle-fast-comparator`](crates/subtitle-fast-comparator/README.md), and [`subtitle-fast-ocr`](crates/subtitle-fast-ocr/README.md).
 
 License: [MIT](LICENSE)
 
-Together these crates let the CLI stream frames, detect subtitle bands, push them through OCR, and emit `.srt` files plus
-optional debug material.
+## Quick start
 
-## End-to-end data flow
-
-Running the CLI walks through a fixed set of stages:
-
-1. **Decoder selection** – the CLI constructs a decoder configuration from CLI flags, config files, and environment
-   variables, then instantiates the first available backend (FFmpeg, VideoToolbox, Windows MFT, or a mock fallback). The
-   decoder yields raw Y-plane frames with timestamps.
-2. **Frame preparation** – frames are sorted into presentation order and sampled at a configurable rate so later stages
-   only inspect the minimum number of frames required for stable detection.
-3. **Subtitle detection + comparison** – sampled frames flow into the validator crate, which scores each frame and keeps
-   the best regions. The comparator crate then checks whether the current region matches previous ones so the CLI can
-   decide when a subtitle line starts or ends.
-4. **OCR + authoring** – confirmed regions are expanded, recognised by the configured OCR backend, and
-   emitted as `.srt` cues (with optional JSON metadata and annotated images for debugging).
-
-Each stage consumes an async stream of frames or regions and forwards a new stream downstream. Backpressure is preserved,
-so the decoder naturally slows down when OCR becomes the bottleneck.
-
-## Detection approach and limitations
-
-The validator crate focuses on a luma-band heuristic: it inspects a configurable strip near the bottom of each frame,
-looks for clusters of pixels whose brightness matches subtitle text, merges neighbouring components into lines, and keeps
-the most stable regions. The CLI then tracks those regions across consecutive frames to determine when subtitles appear or
-disappear.
-
-Although this luma-band backend can deliver extremely high throughput, it remains experimental. Subtitle styles differ
-widely across sources, and the same parameters that excel on one show may fail to stabilise thin fonts, stylised karaoke,
-or unconventional layouts. Expect to revisit detector tuning for new content, and pair it with OCR or alternative
-detectors when consistency matters more than raw speed.
-
-This strategy works well for broadcast-style subtitles but there is one notable gap today: if the video already contains a
-graphic that strongly resembles a subtitle and a genuine subtitle band later appears within that same area, the detector
-may treat the entire span as part of the static graphic. In that case the real subtitle band can be lost. Improving this
-behaviour would require a stronger separation between persistent overlays and newly arrived lines.
-
-## Configuration and models
-
-Configuration is merged from CLI flags (highest priority), an optional `--config` path, a `config.toml` in the current
-directory, and finally `config.toml` under the platform config directory (e.g. `~/.config/subtitle-fast/config.toml` on
-Unix). Paths are normalised, defaults are applied, and the resulting plan records where frames should be dumped, which OCR
-backend to use, and how aggressive detection should be.
-
-Detector tuning intentionally sticks to the two historical knobs: `--detector-target` and `--detector-delta` (or the
-`target` / `delta` keys under `[detection]` in `config.toml`). Every other heuristic now relies on the detector's internal
-defaults so behaviour stays predictable across runs.
-
-OCR model paths can be provided as local paths or HTTP(S)/`file://` URLs. Remote models are cached locally the first time
-they are used so subsequent runs start quickly.
-
-## Debugging aids
-
-When debug outputs are enabled (either via CLI or config), the pipeline can:
-
-- Persist sampled frames with detection overlays to disk for later visual inspection.
-- Dump per-frame and per-segment JSON files containing bounding boxes, intermediate scores, and the indices considered
-  when constructing each subtitle.
-
-These dumps are invaluable when tuning detector parameters or verifying OCR output.
-
-## Building and running
+- Prerequisites: Rust (stable), and the native pieces you plan to use (FFmpeg libs for `backend-ffmpeg`, built-in VideoToolbox on macOS, Media Foundation on Windows, and Apple Vision frameworks for `ocr-vision`).
+- Minimal run (uses the compiled decoder backends and Vision OCR on macOS):
 
 ```bash
-# Build with release optimisations and run the CLI. Provide an input path as the final argument.
 cargo run --release -- --output subtitles.srt path/to/video.mp4
 ```
 
-Key CLI flags include:
-
-- `--backend` – lock decoding to a specific backend (`mock`, `ffmpeg`, `videotoolbox`, `mft`).
-- `--detection-samples-per-second` – tune the temporal sampling budget.
-- `--comparator` – choose the subtitle comparator (`bitset-cover` default, or `sparse-chamfer` for comparison).
-- `--ocr-backend` plus `--ocr-language` flags – steer OCR behaviour.
-- `--dump-dir` and `--dump-format` – emit annotated frames for visual inspection.
-
-Platform-specific decoding backends and OCR engines are controlled through Cargo features exposed by each crate. The
-workspace enables a "mock" backend automatically for CI environments and can be compiled with FFmpeg, VideoToolbox, or
-Windows MFT support when those features are toggled.
-
-## Testing
-
-The decoder crate hosts integration tests that rely on backend-specific assets:
+- On platforms without macOS SDKs, disable mac-only defaults and keep the portable detector:
 
 ```bash
-# Example: run FFmpeg-backed tests once SUBFAST_TEST_ASSET is set to a valid H.264 clip
+cargo run --release --no-default-features \
+  --features detector-parallel \
+  -- --backend ffmpeg --output subtitles.srt path/to/video.mp4
+```
+
+## Backends and features
+
+**Decoders** (enabled by default in `subtitle-fast-decoder`)
+- `backend-ffmpeg` (FFmpeg; portable).
+- `backend-videotoolbox` (macOS hardware decode).
+- `backend-mft` (Windows Media Foundation).
+- `mock` is always available and useful for CI or dry runs (`--backend mock`).
+
+The CLI picks the first compiled backend in priority order (mock on CI; VideoToolbox then FFmpeg on macOS; MFT then FFmpeg elsewhere) and falls back if a backend fails, preserving backpressure when downstream stages slow down.
+
+**OCR**
+- `ocr-vision` enables Apple Vision on macOS (`--ocr-backend vision` or `auto` when available).
+- Without Vision, the noop OCR engine keeps the pipeline running for benchmarking (`--ocr-backend noop`).
+
+**Detection helpers**
+- `detector-vision` (macOS) and `detector-parallel` (cross-platform) are available on the validator crate; disable mac-only flags on other targets.
+
+## Configuration
+
+Configuration precedence: CLI flags > `--config <path>` > `./config.toml` > platform config dir (e.g. `~/.config/subtitle-fast/config.toml`). Copy `config.toml.example` as a starting point.
+
+```toml
+[detection]
+samples_per_second = 7
+target = 230
+delta = 12
+# comparator = "bitset-cover"
+
+[decoder]
+# backend = "ffmpeg"
+# channel_capacity = 32
+```
+
+CLI flags like `--detector-target`, `--detector-delta`, `--backend`, `--ocr-backend`, and `--dump-dir` override the file settings.
+
+## Pipeline overview
+
+1. Select a decoder and stream Y-plane frames ([decoder](crates/subtitle-fast-decoder/README.md)).
+2. Sample frames and score subtitle bands ([validator](crates/subtitle-fast-validator/README.md)).
+3. Compare regions across frames to spot line starts/ends ([comparator](crates/subtitle-fast-comparator/README.md)).
+4. Run OCR on confirmed regions ([ocr](crates/subtitle-fast-ocr/README.md)) and emit `.srt` plus optional JSON/image dumps.
+
+Each stage consumes an async stream and preserves backpressure so decoding slows naturally when OCR becomes the bottleneck.
+
+## Debugging and testing
+
+- Enable dumps with `--dump-dir`/`--dump-format` to save annotated frames and per-segment JSON for tuning detector/OCR behaviour.
+- Smoke test the pipeline with a short clip: `cargo run --release -- --backend mock --output subtitles.srt path/to/video.mp4`.
+- Decoder integration tests require a sample clip and the matching feature, e.g.:
+
+```bash
 SUBFAST_TEST_ASSET=/path/to/video.mp4 \
 cargo test -p subtitle-fast-decoder --features backend-ffmpeg
 ```
 
-The CLI pipeline itself can be smoke-tested against short samples by invoking `cargo run --release` with the desired
-feature flags and CLI options.
+## Performance snapshot
+
+- A 2h01m 1080p H.264 (High, yuv420p, 29.97 fps, ~5.0 Mbps video with AAC 48 kHz stereo ~255 kb/s; overall ~5.26 Mbps) sample completes in roughly 1m40s on a Mac mini M4 using `cargo run --release` with default features (VideoToolbox + Vision available), issuing about 3,622 OCR requests over the run.
