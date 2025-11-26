@@ -11,321 +11,158 @@
 #include <mfobjects.h>
 #include <mfreadwrite.h>
 #include <mferror.h>
-#include <mftransform.h>
 #include <propvarutil.h>
 #include <combaseapi.h>
-#include <d3d11.h>
-#include <d3d11_1.h>
-#include <dxgi.h>
+#include <wrl/client.h>
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <memory>
 #include <string>
-#include <utility>
 
 namespace
 {
+    using Microsoft::WRL::ComPtr;
 
-    template <typename T>
-    void safe_release(T **value)
+    std::string hresult(const char *label, HRESULT hr)
     {
-        if (value && *value)
-        {
-            (*value)->Release();
-            *value = nullptr;
-        }
-    }
-
-    std::string format_hresult(const char *label, HRESULT hr)
-    {
-        char buffer[128];
-        std::snprintf(
-            buffer,
-            sizeof(buffer),
-            "%s failed: 0x%08lx",
-            label,
-            static_cast<unsigned long>(hr));
-        return std::string(buffer);
+        char buffer[80];
+        std::snprintf(buffer, sizeof(buffer), "%s failed: 0x%08lx", label, static_cast<unsigned long>(hr));
+        return buffer;
     }
 
     struct ScopedCoInitialize
     {
-        HRESULT result;
-
-        ScopedCoInitialize() : result(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) {}
-
-        ~ScopedCoInitialize()
-        {
-            if (SUCCEEDED(result))
-            {
-                CoUninitialize();
-            }
-        }
-
-        bool ok() const
-        {
-            return SUCCEEDED(result) || result == RPC_E_CHANGED_MODE;
-        }
-
-        std::string error_message() const
-        {
-            return format_hresult("CoInitializeEx", result);
-        }
+        HRESULT result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        ~ScopedCoInitialize() { if (SUCCEEDED(result)) CoUninitialize(); }
+        bool ok() const { return SUCCEEDED(result) || result == RPC_E_CHANGED_MODE; }
+        std::string error() const { return hresult("CoInitializeEx", result); }
     };
 
     struct ScopedMediaFoundation
     {
-        HRESULT result;
-
-        ScopedMediaFoundation() : result(MFStartup(MF_VERSION, MFSTARTUP_FULL)) {}
-
-        ~ScopedMediaFoundation()
-        {
-            if (SUCCEEDED(result))
-            {
-                MFShutdown();
-            }
-        }
-
-        bool ok() const
-        {
-            return SUCCEEDED(result);
-        }
-
-        std::string error_message() const
-        {
-            return format_hresult("MFStartup", result);
-        }
+        HRESULT result = MFStartup(MF_VERSION, MFSTARTUP_FULL);
+        ~ScopedMediaFoundation() { if (SUCCEEDED(result)) MFShutdown(); }
+        bool ok() const { return SUCCEEDED(result); }
+        std::string error() const { return hresult("MFStartup", result); }
     };
 
     std::wstring utf8_to_wide(const char *utf8, std::string &error)
     {
-        if (!utf8)
-        {
-            error = "input path is null";
-            return std::wstring();
-        }
+        if (!utf8) { error = "input path is null"; return {}; }
         int required = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, nullptr, 0);
-        if (required <= 0)
-        {
-            error = "failed to convert UTF-8 path to UTF-16";
-            return std::wstring();
-        }
-        std::wstring wide;
-        wide.resize(static_cast<size_t>(required - 1));
-        if (required > 1)
-        {
-            int written = MultiByteToWideChar(
-                CP_UTF8,
-                0,
-                utf8,
-                -1,
-                wide.data(),
-                required);
-            if (written != required)
-            {
-                error = "failed to convert UTF-8 path to UTF-16";
-                return std::wstring();
-            }
-        }
+        if (required <= 1) { error = "failed to convert UTF-8 path to UTF-16"; return {}; }
+        std::wstring wide(static_cast<size_t>(required - 1), L'\0');
+        if (MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide.data(), required) != required)
+        { error = "failed to convert UTF-8 path to UTF-16"; wide.clear(); }
         return wide;
     }
 
     char *duplicate_string(const std::string &value)
     {
-        size_t size = value.size() + 1;
-        char *buffer = static_cast<char *>(CoTaskMemAlloc(size));
-        if (!buffer)
-        {
-            return nullptr;
-        }
-        std::memcpy(buffer, value.c_str(), size);
+        char *buffer = static_cast<char *>(CoTaskMemAlloc(value.size() + 1));
+        if (buffer) { std::memcpy(buffer, value.c_str(), value.size() + 1); }
         return buffer;
     }
 
     void set_error(char **out, const std::string &message)
     {
-        if (!out)
-        {
-            return;
-        }
-        *out = duplicate_string(message);
+        if (out) { *out = duplicate_string(message); }
     }
 
     struct FrameLock
     {
-        IMFMediaBuffer *buffer = nullptr;
-        IMF2DBuffer *buffer2d = nullptr;
+        ComPtr<IMFMediaBuffer> buffer;
+        ComPtr<IMF2DBuffer> buffer2d;
         BYTE *data = nullptr;
         DWORD contiguous_length = 0;
         LONG stride = 0;
-        bool locked2d = false;
-        bool locked_raw = false;
 
-        ~FrameLock()
-        {
-            unlock();
-        }
+        ~FrameLock() { unlock(); }
 
         HRESULT lock(IMFMediaBuffer *source_buffer, UINT32 width)
         {
             buffer = source_buffer;
-            if (!buffer)
-            {
-                return E_POINTER;
-            }
-            buffer->AddRef();
-            HRESULT hr = buffer->QueryInterface(
-                __uuidof(IMF2DBuffer),
-                reinterpret_cast<void **>(&buffer2d));
-            if (SUCCEEDED(hr) && buffer2d)
-            {
-                hr = buffer2d->Lock2D(&data, &stride);
-                if (SUCCEEDED(hr))
-                {
-                    locked2d = true;
-                    contiguous_length = 0;
-                    return S_OK;
-                }
-                safe_release(&buffer2d);
-            }
-            BYTE *raw = nullptr;
-            DWORD max_length = 0;
-            DWORD current_length = 0;
-            hr = buffer->Lock(&raw, &max_length, &current_length);
-            if (FAILED(hr))
-            {
-                return hr;
-            }
+            if (!buffer) { return E_POINTER; }
+            HRESULT hr = buffer.As(&buffer2d);
+            if (SUCCEEDED(hr) && buffer2d && SUCCEEDED(buffer2d->Lock2D(&data, &stride))) { return S_OK; }
+            buffer2d.Reset();
+            BYTE *raw = nullptr; DWORD max_length = 0;
+            hr = buffer->Lock(&raw, &max_length, &contiguous_length);
+            if (FAILED(hr)) { return hr; }
             data = raw;
-            contiguous_length = current_length;
             stride = static_cast<LONG>(width);
-            locked_raw = true;
             return S_OK;
         }
 
         void unlock()
         {
-            if (locked2d && buffer2d)
-            {
-                buffer2d->Unlock2D();
-            }
-            else if (locked_raw && buffer)
-            {
-                buffer->Unlock();
-            }
-            safe_release(&buffer2d);
-            if (buffer)
-            {
-                buffer->Release();
-                buffer = nullptr;
-            }
+            if (!data) { return; }
+            if (buffer2d) { buffer2d->Unlock2D(); }
+            else if (buffer) { buffer->Unlock(); }
+            buffer2d.Reset();
+            buffer.Reset();
             data = nullptr;
             contiguous_length = 0;
             stride = 0;
-            locked2d = false;
-            locked_raw = false;
         }
     };
 
-    struct D3D11Environment
+    HRESULT set_format(IMFSourceReader *reader, const GUID &subtype, UINT32 *out_width, UINT32 *out_height, std::string &error)
     {
-        ID3D11Device *device = nullptr;
-        ID3D11DeviceContext *context = nullptr;
-#if defined(__ID3D11Multithread_INTERFACE_DEFINED__)
-        ID3D11Multithread *multithread = nullptr;
-#endif
-        IMFDXGIDeviceManager *manager = nullptr;
-        UINT reset_token = 0;
+        ComPtr<IMFMediaType> type;
+        HRESULT hr = MFCreateMediaType(&type);
+        if (FAILED(hr)) { error = hresult("MFCreateMediaType", hr); return hr; }
+        type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+        type->SetGUID(MF_MT_SUBTYPE, subtype);
+        hr = reader->SetCurrentMediaType(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), nullptr, type.Get());
+        if (FAILED(hr)) { error = hresult("SetCurrentMediaType", hr); return hr; }
 
-        ~D3D11Environment()
+        ComPtr<IMFMediaType> current;
+        hr = reader->GetCurrentMediaType(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), &current);
+        if (FAILED(hr)) { error = hresult("GetCurrentMediaType", hr); return hr; }
+
+        UINT32 width = 0, height = 0;
+        hr = MFGetAttributeSize(current.Get(), MF_MT_FRAME_SIZE, &width, &height);
+        if (FAILED(hr)) { error = hresult("MFGetAttributeSize", hr); return hr; }
+
+        if (out_width) { *out_width = width; }
+        if (out_height) { *out_height = height; }
+        return S_OK;
+    }
+
+    ComPtr<IMFSourceReader> open_reader(const std::wstring &wide_path, bool enable_video_processing, UINT32 *out_width, UINT32 *out_height, std::string &error)
+    {
+        ComPtr<IMFAttributes> attributes;
+        if (enable_video_processing && FAILED(MFCreateAttributes(&attributes, 1))) { attributes.Reset(); }
+        if (attributes) { attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE); }
+
+        ComPtr<IMFSourceReader> reader;
+        HRESULT hr = MFCreateSourceReaderFromURL(wide_path.c_str(), attributes.Get(), &reader);
+        if (FAILED(hr) && hr == E_INVALIDARG) { hr = MFCreateSourceReaderFromURL(wide_path.c_str(), nullptr, &reader); }
+        if (FAILED(hr)) { error = hresult("MFCreateSourceReaderFromURL", hr); return {}; }
+
+        hr = reader->SetStreamSelection(static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS), FALSE);
+        if (FAILED(hr)) { error = hresult("SetStreamSelection", hr); return {}; }
+        hr = reader->SetStreamSelection(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), TRUE);
+        if (FAILED(hr)) { error = hresult("SetStreamSelection(video)", hr); return {}; }
+
+        std::string format_error;
+        if (FAILED(set_format(reader.Get(), MFVideoFormat_L8, out_width, out_height, format_error)) &&
+            FAILED(set_format(reader.Get(), MFVideoFormat_NV12, out_width, out_height, format_error)))
         {
-            reset();
+            error = std::move(format_error);
+            reader.Reset();
         }
+        return reader;
+    }
 
-        void reset()
-        {
-            safe_release(&manager);
-#if defined(__ID3D11Multithread_INTERFACE_DEFINED__)
-            safe_release(&multithread);
-#endif
-            safe_release(&context);
-            safe_release(&device);
-            reset_token = 0;
-        }
-
-        bool initialize(std::string &error)
-        {
-            reset();
-
-            static const D3D_FEATURE_LEVEL features[] = {
-                D3D_FEATURE_LEVEL_11_1,
-                D3D_FEATURE_LEVEL_11_0,
-                D3D_FEATURE_LEVEL_10_1,
-                D3D_FEATURE_LEVEL_10_0,
-            };
-            static const D3D_DRIVER_TYPE drivers[] = {
-                D3D_DRIVER_TYPE_HARDWARE,
-                D3D_DRIVER_TYPE_WARP,
-                D3D_DRIVER_TYPE_REFERENCE,
-            };
-
-            HRESULT hr = E_FAIL;
-            for (D3D_DRIVER_TYPE driver : drivers)
-            {
-                hr = D3D11CreateDevice(
-                    nullptr,
-                    driver,
-                    nullptr,
-                    D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                    features,
-                    static_cast<UINT>(std::size(features)),
-                    D3D11_SDK_VERSION,
-                    &device,
-                    nullptr,
-                    &context);
-                if (SUCCEEDED(hr))
-                {
-                    break;
-                }
-            }
-            if (FAILED(hr))
-            {
-                error = format_hresult("D3D11CreateDevice", hr);
-                reset();
-                return false;
-            }
-
-#if defined(__ID3D11Multithread_INTERFACE_DEFINED__)
-            hr = device->QueryInterface(__uuidof(ID3D11Multithread), reinterpret_cast<void **>(&multithread));
-            if (SUCCEEDED(hr) && multithread)
-            {
-                multithread->SetMultithreadProtected(TRUE);
-            }
-#endif
-
-            hr = MFCreateDXGIDeviceManager(&reset_token, &manager);
-            if (FAILED(hr))
-            {
-                error = format_hresult("MFCreateDXGIDeviceManager", hr);
-                reset();
-                return false;
-            }
-
-            hr = manager->ResetDevice(device, reset_token);
-            if (FAILED(hr))
-            {
-                error = format_hresult("IMFDXGIDeviceManager::ResetDevice", hr);
-                reset();
-                return false;
-            }
-
-            return true;
-        }
-    };
+    ComPtr<IMFSourceReader> open_best(const std::wstring &path, UINT32 *w, UINT32 *h, std::string &error)
+    {
+        ComPtr<IMFSourceReader> reader = open_reader(path, true, w, h, error);
+        return reader ? reader : open_reader(path, false, w, h, error);
+    }
 
 } // namespace
 
@@ -354,13 +191,8 @@ extern "C"
 
     bool mft_probe_total_frames(const char *path, CMftProbeResult *result)
     {
-        if (!result)
-        {
-            return false;
-        }
-        result->has_value = false;
-        result->value = 0;
-        result->error = nullptr;
+        if (!result) { return false; }
+        *result = {false, 0, nullptr};
 
         std::string conversion_error;
         std::wstring wide_path = utf8_to_wide(path, conversion_error);
@@ -373,80 +205,30 @@ extern "C"
         ScopedCoInitialize coinitialize;
         if (!coinitialize.ok())
         {
-            set_error(&result->error, coinitialize.error_message());
+            set_error(&result->error, coinitialize.error());
             return false;
         }
 
         ScopedMediaFoundation media_foundation;
         if (!media_foundation.ok())
         {
-            set_error(&result->error, media_foundation.error_message());
+            set_error(&result->error, media_foundation.error());
             return false;
         }
 
-        D3D11Environment d3d;
-        std::string d3d_error;
-        if (!d3d.initialize(d3d_error))
+        std::string reader_error;
+        ComPtr<IMFSourceReader> reader = open_best(wide_path, nullptr, nullptr, reader_error);
+        if (!reader)
         {
-            set_error(&result->error, d3d_error);
+            set_error(&result->error, reader_error);
             return false;
         }
 
-        IMFAttributes *attributes = nullptr;
-        HRESULT hr = MFCreateAttributes(&attributes, 2);
+        ComPtr<IMFMediaType> media_type;
+        HRESULT hr = reader->GetCurrentMediaType(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), &media_type);
         if (FAILED(hr))
         {
-            set_error(&result->error, format_hresult("MFCreateAttributes", hr));
-            safe_release(&attributes);
-            return false;
-        }
-        attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
-        hr = attributes->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, d3d.manager);
-        if (FAILED(hr))
-        {
-            set_error(&result->error, format_hresult("SetUnknown(D3D_MANAGER)", hr));
-            safe_release(&attributes);
-            return false;
-        }
-
-        IMFSourceReader *reader = nullptr;
-        hr = MFCreateSourceReaderFromURL(wide_path.c_str(), attributes, &reader);
-        if (FAILED(hr) && hr == E_INVALIDARG)
-        {
-            // Some systems reject D3D manager attributes; retry without them.
-            hr = MFCreateSourceReaderFromURL(wide_path.c_str(), nullptr, &reader);
-        }
-        safe_release(&attributes);
-        if (FAILED(hr))
-        {
-            set_error(&result->error, format_hresult("MFCreateSourceReaderFromURL", hr));
-            safe_release(&reader);
-            return false;
-        }
-
-        hr = reader->SetStreamSelection(static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS), FALSE);
-        if (FAILED(hr))
-        {
-            set_error(&result->error, format_hresult("SetStreamSelection", hr));
-            safe_release(&reader);
-            return false;
-        }
-        hr = reader->SetStreamSelection(
-            static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),
-            TRUE);
-        if (FAILED(hr))
-        {
-            set_error(&result->error, format_hresult("SetStreamSelection(video)", hr));
-            safe_release(&reader);
-            return false;
-        }
-
-        IMFMediaType *media_type = nullptr;
-        hr = reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &media_type);
-        if (FAILED(hr))
-        {
-            set_error(&result->error, format_hresult("GetCurrentMediaType", hr));
-            safe_release(&reader);
+            set_error(&result->error, hresult("GetCurrentMediaType", hr));
             return false;
         }
 
@@ -466,7 +248,7 @@ extern "C"
         UINT32 frame_rate_num = 0;
         UINT32 frame_rate_den = 0;
         hr = MFGetAttributeRatio(
-            media_type,
+            media_type.Get(),
             MF_MT_FRAME_RATE,
             &frame_rate_num,
             &frame_rate_den);
@@ -474,8 +256,7 @@ extern "C"
         if (duration > 0 && SUCCEEDED(hr) && frame_rate_den != 0)
         {
             double seconds = static_cast<double>(duration) / 10000000.0;
-            double fps = static_cast<double>(frame_rate_num) /
-                         static_cast<double>(frame_rate_den);
+            double fps = static_cast<double>(frame_rate_num) / static_cast<double>(frame_rate_den);
             if (fps > 0.0)
             {
                 uint64_t estimated = static_cast<uint64_t>(std::llround(seconds * fps));
@@ -483,9 +264,6 @@ extern "C"
                 result->value = estimated;
             }
         }
-
-        safe_release(&media_type);
-        safe_release(&reader);
         return true;
     }
 
@@ -495,10 +273,7 @@ extern "C"
         void *context,
         char **out_error)
     {
-        if (out_error)
-        {
-            *out_error = nullptr;
-        }
+        if (out_error) { *out_error = nullptr; }
         if (!callback)
         {
             set_error(out_error, "callback is null");
@@ -516,187 +291,63 @@ extern "C"
         ScopedCoInitialize coinitialize;
         if (!coinitialize.ok())
         {
-            set_error(out_error, coinitialize.error_message());
+            set_error(out_error, coinitialize.error());
             return false;
         }
 
         ScopedMediaFoundation media_foundation;
         if (!media_foundation.ok())
         {
-            set_error(out_error, media_foundation.error_message());
+            set_error(out_error, media_foundation.error());
             return false;
         }
 
-        D3D11Environment d3d;
-        std::string d3d_error;
-        if (!d3d.initialize(d3d_error))
+        std::string reader_error;
+        UINT32 width = 0, height = 0;
+        ComPtr<IMFSourceReader> reader = open_best(wide_path, &width, &height, reader_error);
+        if (!reader)
         {
-            set_error(out_error, d3d_error);
+            set_error(out_error, reader_error);
             return false;
         }
 
-        IMFAttributes *attributes = nullptr;
-        HRESULT hr = MFCreateAttributes(&attributes, 3);
-        if (FAILED(hr))
-        {
-            set_error(out_error, format_hresult("MFCreateAttributes", hr));
-            safe_release(&attributes);
-            return false;
-        }
-        attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
-        attributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
-        hr = attributes->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, d3d.manager);
-        if (FAILED(hr))
-        {
-            set_error(out_error, format_hresult("SetUnknown(D3D_MANAGER)", hr));
-            safe_release(&attributes);
-            return false;
-        }
-
-        IMFSourceReader *reader = nullptr;
-        hr = MFCreateSourceReaderFromURL(wide_path.c_str(), attributes, &reader);
-        if (FAILED(hr) && hr == E_INVALIDARG)
-        {
-            // Some systems reject D3D manager attributes; retry without them.
-            hr = MFCreateSourceReaderFromURL(wide_path.c_str(), nullptr, &reader);
-        }
-        safe_release(&attributes);
-        if (FAILED(hr))
-        {
-            set_error(out_error, format_hresult("MFCreateSourceReaderFromURL", hr));
-            safe_release(&reader);
-            return false;
-        }
-
-        hr = reader->SetStreamSelection(static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS), FALSE);
-        if (FAILED(hr))
-        {
-            set_error(out_error, format_hresult("SetStreamSelection", hr));
-            safe_release(&reader);
-            return false;
-        }
-        hr = reader->SetStreamSelection(
-            static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),
-            TRUE);
-        if (FAILED(hr))
-        {
-            set_error(out_error, format_hresult("SetStreamSelection(video)", hr));
-            safe_release(&reader);
-            return false;
-        }
-
-        IMFMediaType *output_type = nullptr;
-        hr = MFCreateMediaType(&output_type);
-        if (FAILED(hr))
-        {
-            set_error(out_error, format_hresult("MFCreateMediaType", hr));
-            safe_release(&reader);
-            return false;
-        }
-        output_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-        output_type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-        hr = reader->SetCurrentMediaType(
-            static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),
-            nullptr,
-            output_type);
-        safe_release(&output_type);
-        if (FAILED(hr))
-        {
-            set_error(out_error, format_hresult("SetCurrentMediaType", hr));
-            safe_release(&reader);
-            return false;
-        }
-
-        IMFMediaType *current_type = nullptr;
-        hr = reader->GetCurrentMediaType(
-            static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),
-            &current_type);
-        if (FAILED(hr))
-        {
-            set_error(out_error, format_hresult("GetCurrentMediaType", hr));
-            safe_release(&reader);
-            return false;
-        }
-        UINT32 width = 0;
-        UINT32 height = 0;
-        hr = MFGetAttributeSize(current_type, MF_MT_FRAME_SIZE, &width, &height);
-        safe_release(&current_type);
-        if (FAILED(hr))
-        {
-            set_error(out_error, format_hresult("MFGetAttributeSize", hr));
-            safe_release(&reader);
-            return false;
-        }
-
-        bool keep_running = true;
-        uint64_t frame_index = 0;
-
-        while (keep_running)
+        for (uint64_t frame_index = 0;; frame_index++)
         {
             DWORD stream_index = 0;
             DWORD flags = 0;
             LONGLONG timestamp = 0;
-            IMFSample *sample = nullptr;
-            hr = reader->ReadSample(
-                static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),
-                0,
-                &stream_index,
-                &flags,
-                &timestamp,
-                &sample);
+            ComPtr<IMFSample> sample;
+            HRESULT hr = reader->ReadSample(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, &stream_index, &flags, &timestamp, &sample);
             if (FAILED(hr))
             {
-                set_error(out_error, format_hresult("ReadSample", hr));
-                safe_release(&sample);
-                safe_release(&reader);
+                set_error(out_error, hresult("ReadSample", hr));
                 return false;
             }
             if (flags & MF_SOURCE_READERF_ENDOFSTREAM)
             {
-                safe_release(&sample);
                 break;
             }
-            if (flags & MF_SOURCE_READERF_STREAMTICK)
-            {
-                safe_release(&sample);
-                continue;
-            }
-            if (!sample)
-            {
-                continue;
-            }
+            if ((flags & MF_SOURCE_READERF_STREAMTICK) || !sample) { continue; }
 
-            IMFMediaBuffer *buffer = nullptr;
+            ComPtr<IMFMediaBuffer> buffer;
             hr = sample->ConvertToContiguousBuffer(&buffer);
-            if (FAILED(hr))
+            if (FAILED(hr) || !buffer)
             {
-                set_error(out_error, format_hresult("ConvertToContiguousBuffer", hr));
-                safe_release(&sample);
-                safe_release(&buffer);
-                safe_release(&reader);
+                set_error(out_error, hresult("ConvertToContiguousBuffer", hr));
                 return false;
             }
 
             FrameLock lock;
-            hr = lock.lock(buffer, width);
+            hr = lock.lock(buffer.Get(), width);
             if (FAILED(hr) || !lock.data)
             {
-                set_error(out_error, format_hresult("IMFMediaBuffer::Lock", hr));
-                lock.unlock();
-                safe_release(&buffer);
-                safe_release(&sample);
-                safe_release(&reader);
+                set_error(out_error, hresult("IMFMediaBuffer::Lock", hr));
                 return false;
             }
 
-            size_t stride = lock.stride >= 0
-                                ? static_cast<size_t>(lock.stride)
-                                : static_cast<size_t>(-lock.stride);
-            size_t plane_height = static_cast<size_t>(height);
-            size_t expected = stride * plane_height;
-            size_t available = lock.locked_raw
-                                   ? static_cast<size_t>(lock.contiguous_length)
-                                   : expected;
+            size_t stride = static_cast<size_t>(lock.stride >= 0 ? lock.stride : -lock.stride);
+            size_t expected = stride * static_cast<size_t>(height);
+            size_t available = lock.buffer2d ? expected : static_cast<size_t>(lock.contiguous_length);
             size_t plane_bytes = expected <= available ? expected : available;
 
             CMftFrame frame{};
@@ -710,15 +361,9 @@ extern "C"
                                           : -1.0;
             frame.frame_index = frame_index;
 
-            keep_running = callback(&frame, context);
-            frame_index += 1;
-
-            lock.unlock();
-            safe_release(&buffer);
-            safe_release(&sample);
+            if (!callback(&frame, context)) { break; }
         }
 
-        safe_release(&reader);
         return true;
     }
 
