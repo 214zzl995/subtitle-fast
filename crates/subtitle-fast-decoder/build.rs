@@ -79,6 +79,10 @@ fn link_windows_media_deps() {
         ] {
             println!("cargo:rustc-link-lib={lib}");
         }
+
+        if env::var("CARGO_FEATURE_BACKEND_FFMPEG").is_ok() {
+            println!("cargo:rustc-link-lib=strmiids");
+        }
     });
 }
 
