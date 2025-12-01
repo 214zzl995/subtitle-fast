@@ -5,14 +5,12 @@ edition = "2024"
 build = "build.rs"
 
 [features]
-default = [
-    "backend-ffmpeg",
-    "backend-videotoolbox",
-    "backend-mft",
-    "backend-dxva",
-]
+default = ["backend-ffmpeg", "backend-videotoolbox", "backend-mft", "backend-dxva"]
 backend-ffmpeg = ["dep:ffmpeg-next"]
-backend-videotoolbox = ["dep:mp4", "dep:rayon"]
+backend-videotoolbox = [
+    "dep:mp4",
+    "dep:rayon",
+]
 backend-mft = []
 backend-dxva = []
 
@@ -20,20 +18,10 @@ backend-dxva = []
 futures-core = "0.3"
 futures-util = "0.3"
 thiserror = "2"
-tokio = { version = "1", features = [
-    "macros",
-    "rt-multi-thread",
-    "sync",
-    "time",
-] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-stream = "0.1"
 
-ffmpeg-next = { version = "8", optional = true, default-features = false, features = [
-    "build",
-    "codec",
-    "format",
-    "filter",
-] }
+ffmpeg-next = { version = "8", optional = true }
 mp4 = { version = "0.14", optional = true }
 rayon = { version = "1.10", optional = true }
 

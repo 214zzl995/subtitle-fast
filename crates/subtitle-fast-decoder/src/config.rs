@@ -200,7 +200,9 @@ impl Configuration {
             #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
             Backend::Dxva => {
                 let path = self.input.clone().ok_or_else(|| {
-                    YPlaneError::configuration("DXVA backend requires SUBFAST_INPUT to be set")
+                    YPlaneError::configuration(
+                        "DXVA backend requires SUBFAST_INPUT to be set",
+                    )
                 })?;
                 crate::backends::dxva::boxed_dxva(path, channel_capacity)
             }
