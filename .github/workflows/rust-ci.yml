@@ -59,24 +59,18 @@ jobs:
           sudo mkdir -p /var/cache/apt/archives
           sudo chown -R $USER:$USER /var/cache/apt/archives
 
-      - name: Cache FFmpeg apt packages
+      - name: Cache apt packages
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
-          key: rust-${{ runner.os }}-ffmpeg-apt-${{ hashFiles('.github/workflows/rust-ci.yml') }}
-          restore-keys: rust-${{ runner.os }}-ffmpeg-apt-
+          key: rust-${{ runner.os }}-apt-${{ hashFiles('.github/workflows/rust-ci.yml') }}
+          restore-keys: rust-${{ runner.os }}-apt-
 
-      - name: Install FFmpeg dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libavcodec-dev \
-            libavformat-dev \
-            libavutil-dev \
-            libavdevice-dev \
-            libavfilter-dev \
-            libswscale-dev \
-            libswresample-dev \
+            nasm \
             pkg-config
 
       - name: Prepare apt cache for saving
@@ -86,6 +80,12 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+
+      - name: Build trimmed FFmpeg bundle
+        run: ./scripts/build-ffmpeg-min.sh
+
+      - name: Build with static FFmpeg (debug)
+        run: cargo build -p subtitle-fast
 
       - name: Format check
         run: cargo fmt --all -- --check

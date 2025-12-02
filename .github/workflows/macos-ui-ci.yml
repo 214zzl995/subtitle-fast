@@ -60,8 +60,11 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Install FFmpeg
-        run: brew install ffmpeg
+      - name: Install build dependencies
+        run: brew install nasm pkg-config
+
+      - name: Build trimmed FFmpeg bundle
+        run: ./scripts/build-ffmpeg-min.sh
 
       - name: Build Rust workspace (release)
         run: cargo build --release

@@ -10,6 +10,8 @@ BACKGROUND_IMAGE="${BACKGROUND_IMAGE:-$ROOT/ui-macos/scripts/dmg-background.png}
 VOLNAME_BASE="SubtitleFast"
 KEEP_STAGE=0
 VARIANTS=()
+FFMPEG_BACKEND=1
+NO_FFMPEG_FEATURES="subtitle-fast/detector-vision,subtitle-fast/detector-parallel,subtitle-fast/ocr-vision,subtitle-fast-decoder/backend-videotoolbox"
 
 usage() {
     cat <<'EOF'
@@ -20,6 +22,7 @@ Options:
   --all                            Build DMGs for both arm64 and x86_64.
   --universal                      Build a universal (arm64 + x86_64) DMG.
   --background <path>              Optional background image to embed in the DMG.
+  --no-ffmpeg                      Build without the ffmpeg backend (uses other defaults).
   --keep-stage                     Keep staging directories instead of deleting them.
   -h, --help                       Show this message.
 
@@ -38,6 +41,15 @@ require_cmd() {
     fi
 }
 
+prepare_search_paths() {
+    # Ensure Xcode linker search paths exist to avoid warnings on single-arch builds.
+    mkdir -p \
+        "$ROOT/target/release" \
+        "$ROOT/target/aarch64-apple-darwin/release" \
+        "$ROOT/target/x86_64-apple-darwin/release" \
+        "$ROOT/target/universal/release"
+}
+
 target_triple() {
     case "$1" in
         arm64) echo "aarch64-apple-darwin" ;;
@@ -51,7 +63,13 @@ build_rust_arch() {
     local target
     target=$(target_triple "$arch")
     log "Building Rust library ($arch)"
-    cargo build --release --target "$target" -p subtitle-fast >&2
+    local cargo_args=(--release --target "$target")
+    if [[ "$FFMPEG_BACKEND" -eq 0 ]]; then
+        cargo_args+=(--no-default-features -p subtitle-fast -p subtitle-fast-decoder --features "$NO_FFMPEG_FEATURES")
+    else
+        cargo_args+=(-p subtitle-fast)
+    fi
+    cargo build "${cargo_args[@]}" >&2
     echo "$ROOT/target/$target/release/libsubtitle_fast.dylib"
 }
 
@@ -82,6 +100,7 @@ build_macos_app() {
     done
 
     log "Building macOS app (Release, ${archs[*]})"
+    prepare_search_paths
     xcodebuild \
         -project "$PROJECT" \
         -scheme "$SCHEME" \
@@ -250,6 +269,10 @@ parse_args() {
                 ;;
             --keep-stage)
                 KEEP_STAGE=1
+                shift
+                ;;
+            --no-ffmpeg)
+                FFMPEG_BACKEND=0
                 shift
                 ;;
             -h|--help)

@@ -32,6 +32,9 @@ ffmpeg-next = { version = "8", optional = true, default-features = false, featur
     "codec",
     "format",
     "filter",
+    "software-scaling",
+    "software-resampling",
+    "static",
 ] }
 mp4 = { version = "0.14", optional = true }
 rayon = { version = "1.10", optional = true }
