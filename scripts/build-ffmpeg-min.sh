@@ -10,7 +10,7 @@
 #   FFMPEG_ARCH      - arch used when FFMPEG_TOOLCHAIN=msvc (default: x86_64)
 #   FFMPEG_TARGET_OS - target os when FFMPEG_TOOLCHAIN=msvc (default: win64)
 #   MAKE             - make executable to run (default: make; for MSVC use a GNU make available in PATH)
-#   EXTRA_CFLAGS     - override extra cflags (default: -fPIC -O3, or /O2 for MSVC)
+#   EXTRA_CFLAGS     - override extra cflags (default: -fPIC -O3, or -O2 for MSVC)
 #   EXTRA_LDFLAGS    - override extra ldflags (default: -fPIC, or empty for MSVC)
 set -euo pipefail
 
@@ -60,7 +60,7 @@ EXTRA_LDFLAGS_DEFAULT="-fPIC"
 if [[ "${FFMPEG_TOOLCHAIN}" == "msvc" ]]; then
     THREAD_FLAG="--enable-w32threads"
     CONFIGURE_TOOLCHAIN=(--toolchain=msvc --arch="${FFMPEG_ARCH}" --target-os="${FFMPEG_TARGET_OS}")
-    EXTRA_CFLAGS_DEFAULT="/O2"
+    EXTRA_CFLAGS_DEFAULT="-O2"
     EXTRA_LDFLAGS_DEFAULT=""
 fi
 
