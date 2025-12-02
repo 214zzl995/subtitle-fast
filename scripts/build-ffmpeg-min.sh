@@ -2,10 +2,16 @@
 # Build a trimmed static FFmpeg matching the decoder pipeline (H.264 decode + minimal demuxers/filters).
 # Outputs headers/libs under target/ffmpeg-min by default so FFMPEG_DIR in .cargo/config.toml can point there.
 # Env overrides:
-#   FFMPEG_VERSION   - FFmpeg release tag without leading "n" (default: 8.0.2)
+#   FFMPEG_VERSION   - FFmpeg release tag without leading "n" (default: 8.0.1)
 #   PREFIX           - install prefix (default: target/ffmpeg-min)
 #   BUILD_DIR        - work directory for sources/build (default: target/ffmpeg-build)
 #   JOBS             - parallel make jobs (default: detected cores)
+#   FFMPEG_TOOLCHAIN - set to "msvc" to build with MSVC/Win64 (default: autodetected native toolchain)
+#   FFMPEG_ARCH      - arch used when FFMPEG_TOOLCHAIN=msvc (default: x86_64)
+#   FFMPEG_TARGET_OS - target os when FFMPEG_TOOLCHAIN=msvc (default: win64)
+#   MAKE             - make executable to run (default: make; for MSVC use a GNU make available in PATH)
+#   EXTRA_CFLAGS     - override extra cflags (default: -fPIC -O3, or /O2 for MSVC)
+#   EXTRA_LDFLAGS    - override extra ldflags (default: -fPIC, or empty for MSVC)
 set -euo pipefail
 
 require() {
@@ -30,14 +36,36 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 require curl
 require tar
-require gzip
-require make
-require pkg-config
+MAKE_BIN="${MAKE:-make}"
+require "${MAKE_BIN}"
+
+FFMPEG_TOOLCHAIN="${FFMPEG_TOOLCHAIN:-}"
+FFMPEG_ARCH="${FFMPEG_ARCH:-x86_64}"
+FFMPEG_TARGET_OS="${FFMPEG_TARGET_OS:-win64}"
+
+if [[ "${FFMPEG_TOOLCHAIN}" == "msvc" ]]; then
+    require cl
+fi
 
 FFMPEG_VERSION="${FFMPEG_VERSION:-8.0.1}"
 PREFIX="${PREFIX:-${ROOT_DIR}/target/ffmpeg-min}"
 BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/target/ffmpeg-build}"
 JOBS="${JOBS:-$(detect_jobs)}"
+
+THREAD_FLAG="--enable-pthreads"
+CONFIGURE_TOOLCHAIN=()
+EXTRA_CFLAGS_DEFAULT="-fPIC -O3"
+EXTRA_LDFLAGS_DEFAULT="-fPIC"
+
+if [[ "${FFMPEG_TOOLCHAIN}" == "msvc" ]]; then
+    THREAD_FLAG="--enable-w32threads"
+    CONFIGURE_TOOLCHAIN=(--toolchain=msvc --arch="${FFMPEG_ARCH}" --target-os="${FFMPEG_TARGET_OS}")
+    EXTRA_CFLAGS_DEFAULT="/O2"
+    EXTRA_LDFLAGS_DEFAULT=""
+fi
+
+EXTRA_CFLAGS="${EXTRA_CFLAGS:-${EXTRA_CFLAGS_DEFAULT}}"
+EXTRA_LDFLAGS="${EXTRA_LDFLAGS:-${EXTRA_LDFLAGS_DEFAULT}}"
 
 TARBALL="${BUILD_DIR}/ffmpeg-${FFMPEG_VERSION}.tar.gz"
 SOURCE_DIR="${BUILD_DIR}/FFmpeg-n${FFMPEG_VERSION}"
@@ -64,43 +92,53 @@ rm -rf "${PREFIX}"
 mkdir -p "${PREFIX}"
 pushd "${SOURCE_DIR}" >/dev/null
 
-./configure \
-    --prefix="${PREFIX}" \
-    --pkg-config-flags="--static" \
-    --enable-static \
-    --disable-shared \
-    --enable-pic \
-    --enable-small \
-    --disable-programs \
-    --disable-doc \
-    --disable-debug \
-    --disable-network \
-    --disable-autodetect \
-    --disable-everything \
-    --enable-protocol=file \
-    --enable-demuxer=mov \
-    --enable-demuxer=matroska \
-    --enable-demuxer=mpegts \
-    --enable-parser=h264 \
-    --enable-decoder=h264 \
-    --enable-swresample \
-    --enable-swscale \
-    --enable-avcodec \
-    --enable-avformat \
-    --enable-avfilter \
-    --enable-avutil \
-    --enable-filter=buffer \
-    --enable-filter=buffersink \
-    --enable-filter=format \
-    --enable-filter=scale \
-    --enable-pthreads \
-    --extra-cflags="-fPIC -O3" \
-    --extra-ldflags="-fPIC"
+CONFIGURE_ARGS=(
+    --prefix="${PREFIX}"
+    --pkg-config-flags="--static"
+    --enable-static
+    --disable-shared
+    --enable-pic
+    --enable-small
+    --disable-programs
+    --disable-doc
+    --disable-debug
+    --disable-network
+    --disable-autodetect
+    --disable-everything
+    --enable-protocol=file
+    --enable-demuxer=mov
+    --enable-demuxer=matroska
+    --enable-demuxer=mpegts
+    --enable-parser=h264
+    --enable-decoder=h264
+    --enable-swresample
+    --enable-swscale
+    --enable-avcodec
+    --enable-avformat
+    --enable-avfilter
+    --enable-avutil
+    --enable-filter=buffer
+    --enable-filter=buffersink
+    --enable-filter=format
+    --enable-filter=scale
+    "${THREAD_FLAG}"
+    --extra-cflags="${EXTRA_CFLAGS}"
+)
+
+if [[ -n "${EXTRA_LDFLAGS}" ]]; then
+    CONFIGURE_ARGS+=(--extra-ldflags="${EXTRA_LDFLAGS}")
+fi
+
+if [[ ${#CONFIGURE_TOOLCHAIN[@]} -gt 0 ]]; then
+    CONFIGURE_ARGS+=("${CONFIGURE_TOOLCHAIN[@]}")
+fi
+
+./configure "${CONFIGURE_ARGS[@]}"
 
 echo "==> Building (jobs=${JOBS})"
-make -j "${JOBS}"
+"${MAKE_BIN}" -j "${JOBS}"
 echo "==> Installing to ${PREFIX}"
-make install
+"${MAKE_BIN}" install
 popd >/dev/null
 
 cat <<EOF
