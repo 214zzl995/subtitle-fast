@@ -1089,7 +1089,6 @@ dependencies = [
  "cc",
  "image",
  "indicatif 0.17.11",
- "rayon",
  "serde",
  "serde_json",
  "subtitle-fast-decoder",

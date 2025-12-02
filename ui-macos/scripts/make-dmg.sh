@@ -11,7 +11,7 @@ VOLNAME_BASE="SubtitleFast"
 KEEP_STAGE=0
 VARIANTS=()
 FFMPEG_BACKEND=1
-NO_FFMPEG_FEATURES="subtitle-fast/detector-vision,subtitle-fast/detector-parallel,subtitle-fast/ocr-vision,subtitle-fast-decoder/backend-videotoolbox"
+NO_FFMPEG_FEATURES="subtitle-fast/detector-vision,subtitle-fast/ocr-vision,subtitle-fast-decoder/backend-videotoolbox"
 
 usage() {
     cat <<'EOF'

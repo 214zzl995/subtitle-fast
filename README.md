@@ -15,11 +15,10 @@ License: [MIT](LICENSE)
 cargo run --release -- --output subtitles.srt path/to/video.mp4
 ```
 
-- On platforms without macOS SDKs, disable mac-only defaults and keep the portable detector:
+- On platforms without macOS SDKs, disable the mac-only defaults:
 
 ```bash
 cargo run --release --no-default-features \
-  --features detector-parallel \
   -- --backend ffmpeg --output subtitles.srt path/to/video.mp4
 ```
 
@@ -39,7 +38,7 @@ The CLI picks the first compiled backend in priority order (mock on CI; VideoToo
 - Without Vision, the noop OCR engine keeps the pipeline running for benchmarking (`--ocr-backend noop`).
 
 **Detection helpers**
-- `detector-vision` (macOS) and `detector-parallel` (cross-platform) are available on the validator crate; disable mac-only flags on other targets.
+- `detector-vision` (macOS) is available on the validator crate; disable mac-only flags on other targets.
 
 ## Configuration
 

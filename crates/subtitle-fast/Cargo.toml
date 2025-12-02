@@ -12,9 +12,8 @@ name = "subtitle-fast-cli"
 path = "src/main.rs"
 
 [features]
-default = ["detector-vision", "detector-parallel", "ocr-vision"]
+default = ["detector-vision", "ocr-vision"]
 detector-vision = ["subtitle-fast-validator/detector-vision"]
-detector-parallel = ["subtitle-fast-validator/detector-parallel"]
 ocr-vision = ["subtitle-fast-ocr/engine-vision"]
 
 [dependencies]

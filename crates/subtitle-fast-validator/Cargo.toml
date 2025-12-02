@@ -7,14 +7,12 @@ build = "build.rs"
 [features]
 default = ["detector-vision"]
 detector-vision = []
-detector-parallel = ["dep:rayon"]
 
 [dependencies]
 subtitle-fast-decoder = { path = "../subtitle-fast-decoder", default-features = false }
 tokio = { version = "1", features = ["rt", "sync"] }
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
-rayon = { version = "1.10", optional = true }
 
 [build-dependencies]
 cc = "1"
