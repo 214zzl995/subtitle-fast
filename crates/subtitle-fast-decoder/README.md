@@ -27,6 +27,12 @@ compiled backend before surfacing the error.
 When no feature is enabled, only the lightweight mock backend is compiled. GitHub CI automatically enables the mock backend
 so tests can exercise downstream logic without native dependencies.
 
+### Static FFmpeg bundle (optional)
+- Run `scripts/build-ffmpeg-min.sh` to download and build a trimmed FFmpeg (H.264 decoder + `mov`/`matroska`/`mpegts` demuxers, `buffer`/`buffersink`/`format`/`scale` filters) as static libraries under `target/ffmpeg-min`. Override with `FFMPEG_VERSION`, `PREFIX`, or `BUILD_DIR` as needed.
+- `.cargo/config.toml` sets `FFMPEG_DIR=target/ffmpeg-min` (and `PKG_CONFIG_PATH` to the matching pkg-config dir) so `ffmpeg-sys-next` links the trimmed bundle when you build with `--features backend-ffmpeg,ffmpeg-static`.
+- If you prefer your own FFmpeg build, point `FFMPEG_DIR` (and `PKG_CONFIG_PATH`) to it before building to bypass the script output.
+- Prereqs: `curl`, `make`, `pkg-config`, and an assembler (`nasm` or `yasm`) available in `PATH`.
+
 ## Configuration knobs
 
 - Env vars: `SUBFAST_BACKEND`, `SUBFAST_INPUT`, and `SUBFAST_CHANNEL_CAPACITY` feed into `Configuration::from_env`.
