@@ -67,7 +67,7 @@ jobs:
         run: ./scripts/build-ffmpeg-min.sh
 
       - name: Build Rust workspace (release)
-        run: cargo build --release --features ffmpeg-static
+        run: cargo build --release
 
       - name: Build macOS app
         run: |

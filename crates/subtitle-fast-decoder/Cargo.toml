@@ -12,12 +12,6 @@ default = [
     "backend-dxva",
 ]
 backend-ffmpeg = ["dep:ffmpeg-next"]
-ffmpeg-static = [
-    "backend-ffmpeg",
-    "ffmpeg-next/static",
-    "ffmpeg-next/software-scaling",
-    "ffmpeg-next/software-resampling",
-]
 backend-videotoolbox = ["dep:mp4", "dep:rayon"]
 backend-mft = []
 backend-dxva = []
@@ -39,6 +33,8 @@ ffmpeg-next = { version = "8", optional = true, default-features = false, featur
     "format",
     "filter",
     "software-scaling",
+    "software-resampling",
+    "static",
 ] }
 mp4 = { version = "0.14", optional = true }
 rayon = { version = "1.10", optional = true }

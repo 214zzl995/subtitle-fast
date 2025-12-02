@@ -85,7 +85,7 @@ jobs:
         run: ./scripts/build-ffmpeg-min.sh
 
       - name: Build with static FFmpeg (debug)
-        run: cargo build -p subtitle-fast --features ffmpeg-static
+        run: cargo build -p subtitle-fast
 
       - name: Format check
         run: cargo fmt --all -- --check

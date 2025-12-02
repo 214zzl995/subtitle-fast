@@ -29,8 +29,8 @@ so tests can exercise downstream logic without native dependencies.
 
 ### Static FFmpeg bundle (optional)
 - Run `scripts/build-ffmpeg-min.sh` (Bash script) to download and build a trimmed FFmpeg (H.264 decoder + `mov`/`matroska`/`mpegts` demuxers, `buffer`/`buffersink`/`format`/`scale` filters) as static libraries under `target/ffmpeg-min`. Override with `FFMPEG_VERSION`, `PREFIX`, or `BUILD_DIR` as needed.
-- Windows (MSVC): open a Visual Studio Developer Command Prompt, start Git Bash from there so `cl` is on PATH, ensure GNU `make` (e.g., `mingw32-make`) plus `curl` and `nasm`/`yasm` are available, then run `FFMPEG_TOOLCHAIN=msvc MAKE=mingw32-make ./scripts/build-ffmpeg-min.sh` followed by `cargo build --release --features backend-ffmpeg,ffmpeg-static`.
-- `.cargo/config.toml` sets `FFMPEG_DIR=target/ffmpeg-min` (and `PKG_CONFIG_PATH` to the matching pkg-config dir) so `ffmpeg-sys-next` links the trimmed bundle when you build with `--features backend-ffmpeg,ffmpeg-static`.
+- Windows: build via MSYS2/MinGW (or similar) and run `./scripts/build-ffmpeg-min.sh`, then `cargo build --release --features backend-ffmpeg`.
+- `.cargo/config.toml` sets `FFMPEG_DIR=target/ffmpeg-min` (and `PKG_CONFIG_PATH` to the matching pkg-config dir) so `ffmpeg-sys-next` links the trimmed bundle automatically when you build with the FFmpeg backend enabled.
 - If you prefer your own FFmpeg build, point `FFMPEG_DIR` (and `PKG_CONFIG_PATH`) to it before building to bypass the script output.
 - Prereqs: `curl`, `make`, and an assembler (`nasm` or `yasm`) available in `PATH`; `pkg-config` is helpful but not required when using `FFMPEG_DIR`.
 

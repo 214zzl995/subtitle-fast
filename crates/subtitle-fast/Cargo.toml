@@ -16,7 +16,6 @@ default = ["detector-vision", "detector-parallel", "ocr-vision"]
 detector-vision = ["subtitle-fast-validator/detector-vision"]
 detector-parallel = ["subtitle-fast-validator/detector-parallel"]
 ocr-vision = ["subtitle-fast-ocr/engine-vision"]
-ffmpeg-static = ["subtitle-fast-decoder/ffmpeg-static"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

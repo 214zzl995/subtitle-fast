@@ -147,5 +147,5 @@ Set env (already in .cargo/config.toml by default):
   FFMPEG_DIR=${PREFIX}
   PKG_CONFIG_PATH=${PREFIX}/lib/pkgconfig:\${PKG_CONFIG_PATH:-}
 Then build with:
-  cargo build -p subtitle-fast-decoder --features backend-ffmpeg,ffmpeg-static
+  cargo build -p subtitle-fast-decoder
 EOF
