@@ -28,6 +28,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut results = Vec::new();
 
+    println!(
+        "Running decoder benchmark over input {:?} for backends: {:?}",
+        input_path,
+        backends.iter().map(|b| b.as_str()).collect::<Vec<&str>>()
+    );
+
     for backend in backends {
         println!(
             "\nRunning decoder benchmark for backend='{}'...",
