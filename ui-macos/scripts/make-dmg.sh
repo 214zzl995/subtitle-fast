@@ -38,6 +38,15 @@ require_cmd() {
     fi
 }
 
+prepare_search_paths() {
+    # Ensure Xcode linker search paths exist to avoid warnings on single-arch builds.
+    mkdir -p \
+        "$ROOT/target/release" \
+        "$ROOT/target/aarch64-apple-darwin/release" \
+        "$ROOT/target/x86_64-apple-darwin/release" \
+        "$ROOT/target/universal/release"
+}
+
 target_triple() {
     case "$1" in
         arm64) echo "aarch64-apple-darwin" ;;
@@ -82,6 +91,7 @@ build_macos_app() {
     done
 
     log "Building macOS app (Release, ${archs[*]})"
+    prepare_search_paths
     xcodebuild \
         -project "$PROJECT" \
         -scheme "$SCHEME" \
