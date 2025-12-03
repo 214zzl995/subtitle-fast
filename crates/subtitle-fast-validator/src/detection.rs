@@ -4,7 +4,7 @@ use crate::subtitle_detection::{
     SubtitleDetectionResult, SubtitleDetector, SubtitleDetectorKind, build_detector,
 };
 use std::time::Duration;
-use subtitle_fast_decoder::YPlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 use tokio::sync::Mutex;
 
 static REGION_MARGIN_PX: u32 = 5;

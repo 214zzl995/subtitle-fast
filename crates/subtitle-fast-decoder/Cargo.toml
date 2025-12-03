@@ -17,9 +17,9 @@ backend-mft = []
 backend-dxva = []
 
 [dependencies]
+subtitle-fast-types = { path = "../subtitle-fast-types" }
 futures-core = "0.3"
 futures-util = "0.3"
-thiserror = "2"
 tokio = { version = "1", features = [
     "macros",
     "rt-multi-thread",

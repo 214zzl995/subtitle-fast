@@ -7,10 +7,8 @@ use tokio::sync::mpsc;
 use super::StreamBundle;
 use super::sampler::{SampledFrame, SamplerResult};
 use crate::settings::DetectionSettings;
-use subtitle_fast_decoder::YPlaneError;
-use subtitle_fast_validator::subtitle_detection::{
-    SubtitleDetectionError, SubtitleDetectionResult,
-};
+use subtitle_fast_types::{SubtitleDetectionResult, YPlaneError};
+use subtitle_fast_validator::subtitle_detection::SubtitleDetectionError;
 use subtitle_fast_validator::{FrameValidator, FrameValidatorConfig, SubtitleDetectionOptions};
 
 const DETECTOR_CHANNEL_CAPACITY: usize = 2;

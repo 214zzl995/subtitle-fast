@@ -1,8 +1,7 @@
 use std::cell::UnsafeCell;
 
 use rayon::prelude::*;
-use subtitle_fast_decoder::YPlaneFrame;
-use subtitle_fast_validator::subtitle_detection::RoiConfig;
+use subtitle_fast_types::{RoiConfig, YPlaneFrame};
 
 use crate::comparators::SubtitleComparator;
 use crate::pipeline::{ComparisonReport, FeatureBlob, PreprocessSettings, ReportMetric};

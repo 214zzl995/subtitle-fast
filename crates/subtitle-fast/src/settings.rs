@@ -7,7 +7,8 @@ use std::str::FromStr;
 use directories::ProjectDirs;
 use serde::Deserialize;
 use subtitle_fast_comparator::ComparatorKind;
-use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET, RoiConfig};
+use subtitle_fast_types::RoiConfig;
+use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET};
 
 use crate::cli::{CliArgs, CliSources};
 

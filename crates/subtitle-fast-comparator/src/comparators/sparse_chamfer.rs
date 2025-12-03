@@ -2,8 +2,7 @@ use rayon::prelude::*;
 use std::cell::RefCell;
 use std::mem;
 
-use subtitle_fast_decoder::YPlaneFrame;
-use subtitle_fast_validator::subtitle_detection::RoiConfig;
+use subtitle_fast_types::{RoiConfig, YPlaneFrame};
 
 use crate::comparators::SubtitleComparator;
 use crate::pipeline::ops::sobel_magnitude_into;

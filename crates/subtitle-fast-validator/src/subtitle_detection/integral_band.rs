@@ -10,7 +10,7 @@ use super::{
     SubtitleDetectionConfig, SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector,
     log_region_debug,
 };
-use subtitle_fast_decoder::YPlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 
 const RLSA_H_GAP: usize = 200;
 const RLSA_V_GAP: usize = 20;

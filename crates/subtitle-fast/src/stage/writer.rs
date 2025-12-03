@@ -10,7 +10,7 @@ use super::StreamBundle;
 use super::detector::DetectionSample;
 use super::ocr::{OcrEvent, OcrStageError, OcrStageResult, OcrTimings};
 use super::segmenter::SegmentTimings;
-use subtitle_fast_ocr::OcrResponse;
+use subtitle_fast_types::OcrResponse;
 
 const WRITER_CHANNEL_CAPACITY: usize = 4;
 

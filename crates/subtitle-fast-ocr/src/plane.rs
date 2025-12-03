@@ -1,7 +1,7 @@
 use std::fmt;
 use std::ops::Deref;
 
-use subtitle_fast_decoder::YPlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 
 use crate::error::OcrError;
 

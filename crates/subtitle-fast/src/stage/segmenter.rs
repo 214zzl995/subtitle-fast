@@ -11,8 +11,7 @@ use crate::settings::DetectionSettings;
 use subtitle_fast_comparator::{
     ComparatorFactory, ComparatorKind, ComparatorSettings, FeatureBlob, SubtitleComparator,
 };
-use subtitle_fast_decoder::YPlaneFrame;
-use subtitle_fast_validator::subtitle_detection::{DetectionRegion, RoiConfig};
+use subtitle_fast_types::{DetectionRegion, RoiConfig, YPlaneFrame};
 
 const SEGMENTER_CHANNEL_CAPACITY: usize = 4;
 

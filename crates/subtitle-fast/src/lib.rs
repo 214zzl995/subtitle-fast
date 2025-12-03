@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 use futures_util::future::{AbortHandle, Abortable};
-use subtitle_fast_decoder::{Backend, Configuration, YPlaneError};
-use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET, RoiConfig};
+use subtitle_fast_decoder::{Backend, Configuration};
+use subtitle_fast_types::{RoiConfig, YPlaneError};
+use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET};
 use tokio::sync::watch;
 
 pub mod backend;

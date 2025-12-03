@@ -8,7 +8,7 @@ use super::{
     SubtitleDetectionConfig, SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector,
     log_region_debug,
 };
-use subtitle_fast_decoder::YPlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 
 const ROW_DENSITY_THRESHOLD: f32 = 0.08;
 const MIN_BAND_HEIGHT: usize = 8;

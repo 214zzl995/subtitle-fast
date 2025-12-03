@@ -6,7 +6,7 @@ use std::thread;
 use image::{Rgb, RgbImage};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde_json::json;
-use subtitle_fast_decoder::YPlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 #[cfg(all(feature = "detector-vision", target_os = "macos"))]
 use subtitle_fast_validator::subtitle_detection::VisionTextDetector;
 use subtitle_fast_validator::subtitle_detection::projection_band::ProjectionBandDetector;

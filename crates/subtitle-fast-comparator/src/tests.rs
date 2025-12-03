@@ -1,5 +1,4 @@
-use subtitle_fast_decoder::YPlaneFrame;
-use subtitle_fast_validator::subtitle_detection::RoiConfig;
+use subtitle_fast_types::{RoiConfig, YPlaneFrame};
 
 use crate::pipeline::PreprocessSettings;
 use crate::{BitsetCoverComparator, SparseChamferComparator, SubtitleComparator};

@@ -8,8 +8,7 @@ use subtitle_fast_comparator::pipeline::{
     ops::percentile, ops::percentile_in_place, ops::sobel_magnitude,
     preprocess::extract_masked_patch,
 };
-use subtitle_fast_decoder::YPlaneFrame;
-use subtitle_fast_validator::subtitle_detection::RoiConfig;
+use subtitle_fast_types::{RoiConfig, YPlaneFrame};
 
 pub const DEFAULT_TARGET: u8 = 235;
 pub const DEFAULT_DELTA: u8 = 12;

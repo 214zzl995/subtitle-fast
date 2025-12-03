@@ -1,6 +1,8 @@
 [workspace]
 members = [
-    "crates/subtitle-fast", "crates/subtitle-fast-comparator",
+    "crates/subtitle-fast-types",
+    "crates/subtitle-fast",
+    "crates/subtitle-fast-comparator",
     "crates/subtitle-fast-decoder",
     "crates/subtitle-fast-ocr",
     "crates/subtitle-fast-validator",

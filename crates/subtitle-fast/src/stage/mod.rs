@@ -22,10 +22,11 @@ use progress_gui::{GuiProgress, GuiProgressInner};
 use sampler::FrameSampler;
 use segmenter::{SegmenterError, SubtitleSegmenter};
 use sorter::FrameSorter;
-use subtitle_fast_decoder::{DynYPlaneProvider, YPlaneError};
+use subtitle_fast_decoder::DynYPlaneProvider;
 #[cfg(all(feature = "ocr-vision", target_os = "macos"))]
 use subtitle_fast_ocr::VisionOcrEngine;
 use subtitle_fast_ocr::{NoopOcrEngine, OcrEngine};
+use subtitle_fast_types::YPlaneError;
 use subtitle_fast_validator::subtitle_detection::SubtitleDetectionError;
 use writer::{SubtitleWriter, SubtitleWriterError, WriterResult};
 

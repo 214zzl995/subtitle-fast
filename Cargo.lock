@@ -1037,6 +1037,7 @@ dependencies = [
  "subtitle-fast-comparator",
  "subtitle-fast-decoder",
  "subtitle-fast-ocr",
+ "subtitle-fast-types",
  "subtitle-fast-validator",
  "tempfile",
  "tokio",
@@ -1052,8 +1053,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
- "subtitle-fast-decoder",
- "subtitle-fast-validator",
+ "subtitle-fast-types",
 ]
 
 [[package]]
@@ -1068,7 +1068,7 @@ dependencies = [
  "mp4",
  "png 0.18.0",
  "rayon",
- "thiserror 2.0.17",
+ "subtitle-fast-types",
  "tokio",
  "tokio-stream",
 ]
@@ -1078,7 +1078,15 @@ name = "subtitle-fast-ocr"
 version = "0.1.0"
 dependencies = [
  "cc",
- "subtitle-fast-decoder",
+ "subtitle-fast-types",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "subtitle-fast-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "thiserror 2.0.17",
 ]
 
@@ -1091,7 +1099,7 @@ dependencies = [
  "indicatif 0.17.11",
  "serde",
  "serde_json",
- "subtitle-fast-decoder",
+ "subtitle-fast-types",
  "thiserror 1.0.69",
  "tokio",
 ]

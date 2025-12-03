@@ -5,8 +5,7 @@ pub use bitset_cover::BitsetCoverComparator;
 pub use sparse_chamfer::SparseChamferComparator;
 
 use crate::pipeline::{ComparisonReport, FeatureBlob};
-use subtitle_fast_decoder::YPlaneFrame;
-use subtitle_fast_validator::subtitle_detection::RoiConfig;
+use subtitle_fast_types::{RoiConfig, YPlaneFrame};
 
 /// Trait implemented by all subtitle comparators.
 pub trait SubtitleComparator: Send + Sync {

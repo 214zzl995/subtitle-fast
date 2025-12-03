@@ -26,6 +26,7 @@ serde = { version = "1", features = ["derive"] }
 subtitle-fast-decoder = { path = "../subtitle-fast-decoder" }
 subtitle-fast-validator = { path = "../subtitle-fast-validator", default-features = false }
 subtitle-fast-ocr = { path = "../subtitle-fast-ocr" }
+subtitle-fast-types = { path = "../subtitle-fast-types" }
 tokio = { version = "1", features = [
     "fs",
     "macros",

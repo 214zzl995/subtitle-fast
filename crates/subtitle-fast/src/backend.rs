@@ -1,6 +1,7 @@
 use std::time::Instant;
 
-use subtitle_fast_decoder::{Backend, Configuration, YPlaneError};
+use subtitle_fast_decoder::{Backend, Configuration};
+use subtitle_fast_types::YPlaneError;
 
 use crate::stage;
 

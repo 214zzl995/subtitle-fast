@@ -6,7 +6,7 @@ use futures_util::{StreamExt, stream::unfold};
 use tokio::sync::mpsc;
 
 use super::StreamBundle;
-use subtitle_fast_decoder::{YPlaneError, YPlaneFrame, YPlaneResult};
+use subtitle_fast_types::{YPlaneError, YPlaneFrame, YPlaneResult};
 
 const SAMPLER_CHANNEL_CAPACITY: usize = 1;
 const DEFAULT_POOL_CAPACITY: usize = 24;

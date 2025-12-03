@@ -1,7 +1,8 @@
-use serde::Serialize;
 use std::env;
-use subtitle_fast_decoder::YPlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 use thiserror::Error;
+
+pub use subtitle_fast_types::{DetectionRegion, RoiConfig, SubtitleDetectionResult};
 
 pub mod integral_band;
 pub mod projection_band;
@@ -46,40 +47,6 @@ fn backend_for_kind(kind: SubtitleDetectorKind) -> Option<&'static dyn DetectorB
         }
         SubtitleDetectorKind::IntegralBand => Some(&INTEGRAL_BAND_BACKEND),
         SubtitleDetectorKind::ProjectionBand => Some(&PROJECTION_BAND_BACKEND),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct RoiConfig {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DetectionRegion {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-    pub score: f32,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SubtitleDetectionResult {
-    pub has_subtitle: bool,
-    pub max_score: f32,
-    pub regions: Vec<DetectionRegion>,
-}
-
-impl SubtitleDetectionResult {
-    pub fn empty() -> Self {
-        Self {
-            has_subtitle: false,
-            max_score: 0.0,
-            regions: Vec::new(),
-        }
     }
 }
 

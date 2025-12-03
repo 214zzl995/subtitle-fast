@@ -10,9 +10,8 @@ use super::detector::DetectionSample;
 use super::segmenter::{
     SegmentTimings, SegmenterError, SegmenterEvent, SegmenterResult, SubtitleInterval,
 };
-use subtitle_fast_decoder::YPlaneFrame;
-use subtitle_fast_ocr::{LumaPlane, OcrEngine, OcrError, OcrRegion, OcrRequest, OcrResponse};
-use subtitle_fast_validator::subtitle_detection::RoiConfig;
+use subtitle_fast_ocr::{LumaPlane, OcrEngine, OcrError, OcrRequest};
+use subtitle_fast_types::{OcrRegion, OcrResponse, RoiConfig, YPlaneFrame};
 
 const OCR_CHANNEL_CAPACITY: usize = 4;
 const OCR_WORKER_CHANNEL_CAPACITY: usize = 2;
@@ -306,8 +305,7 @@ fn region_bounds(region: &OcrRegion, frame: &YPlaneFrame) -> Option<RegionBounds
 #[cfg(test)]
 mod tests {
     use super::roi_to_region;
-    use subtitle_fast_decoder::YPlaneFrame;
-    use subtitle_fast_validator::subtitle_detection::RoiConfig;
+    use subtitle_fast_types::{RoiConfig, YPlaneFrame};
 
     #[test]
     fn roi_to_region_clamps_to_bounds() {

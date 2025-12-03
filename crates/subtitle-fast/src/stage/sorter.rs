@@ -4,7 +4,7 @@ use std::pin::Pin;
 use futures_util::{Stream, StreamExt};
 
 use super::StreamBundle;
-use subtitle_fast_decoder::{YPlaneFrame, YPlaneResult};
+use subtitle_fast_types::{YPlaneFrame, YPlaneResult};
 
 pub struct FrameSorter;
 

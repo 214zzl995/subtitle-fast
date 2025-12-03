@@ -5,7 +5,7 @@ use crate::detection::SubtitleDetectionPipeline;
 use crate::subtitle_detection::RoiConfig;
 use crate::subtitle_detection::SubtitleDetectionError;
 use crate::subtitle_detection::SubtitleDetectionResult;
-use subtitle_fast_decoder::YPlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 
 #[derive(Clone)]
 /// Validates sampled subtitle frames and optional detection pipelines.

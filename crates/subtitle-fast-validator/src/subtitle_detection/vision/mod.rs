@@ -5,7 +5,7 @@ use super::{
     DetectionRegion, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
     SubtitleDetectionResult, SubtitleDetector,
 };
-use subtitle_fast_decoder::YPlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 
 #[derive(Debug, Clone)]
 pub struct VisionTextDetector {
