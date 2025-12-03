@@ -33,7 +33,6 @@ struct GuiProgressUpdate {
     var fps: Double
     var det_ms: Double
     var seg_ms: Double
-    var pf_ms: Double
     var ocr_ms: Double
     var writer_ms: Double
     var cues: UInt64

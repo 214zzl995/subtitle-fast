@@ -44,7 +44,6 @@ impl<T> StreamBundle<T> {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct PipelineConfig {
     pub detection: DetectionSettings,

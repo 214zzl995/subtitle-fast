@@ -68,9 +68,6 @@ struct ProgressMonitor {
     segment_frames: u64,
     segment_total: Duration,
     ocr_intervals: u64,
-    ocr_prefilter_runs: u64,
-    ocr_prefilter_skips: u64,
-    ocr_prefilter_total: Duration,
     ocr_total: Duration,
     writer_cues: u64,
     writer_empty_ocr: u64,
@@ -105,9 +102,6 @@ impl ProgressMonitor {
             segment_frames: 0,
             segment_total: Duration::ZERO,
             ocr_intervals: 0,
-            ocr_prefilter_runs: 0,
-            ocr_prefilter_skips: 0,
-            ocr_prefilter_total: Duration::ZERO,
             ocr_total: Duration::ZERO,
             writer_cues: 0,
             writer_empty_ocr: 0,
@@ -169,15 +163,6 @@ impl ProgressMonitor {
             return;
         };
         self.ocr_intervals = self.ocr_intervals.saturating_add(timings.intervals);
-        self.ocr_prefilter_runs = self
-            .ocr_prefilter_runs
-            .saturating_add(timings.prefilter_runs);
-        self.ocr_prefilter_skips = self
-            .ocr_prefilter_skips
-            .saturating_add(timings.prefilter_skips);
-        self.ocr_prefilter_total = self
-            .ocr_prefilter_total
-            .saturating_add(timings.prefilter_duration);
         self.ocr_total = self.ocr_total.saturating_add(timings.total);
     }
 
@@ -232,14 +217,13 @@ impl ProgressMonitor {
                 .unwrap_or_else(|| "-- ms".to_string());
             let seg = average_ms(self.segment_total, self.segment_frames);
             let ocr = average_ms(self.ocr_total, self.ocr_intervals);
-            let pf = average_ms(self.ocr_prefilter_total, self.ocr_prefilter_runs);
             let writer = average_ms(self.writer_total, self.writer_cues);
             let counts_line = format!(
                 "[{COL_COUNT}counts{COL_RESET}] cues {} • ocr-empty {}",
                 self.writer_cues, self.writer_empty_ocr
             );
             let avg_line = format!(
-                "[{COL_AVG}   avg{COL_RESET}] det {det} • seg {seg} • pf {pf} • ocr {ocr} • wr {writer}"
+                "[{COL_AVG}   avg{COL_RESET}] det {det} • seg {seg} • ocr {ocr} • wr {writer}"
             );
             let summary = format!("{processed_line}\n{output_line}\n{avg_line}\n{counts_line}");
             self.bar.finish_with_message(summary);
@@ -275,12 +259,11 @@ impl ProgressMonitor {
             .unwrap_or_else(|| "-- ms".to_string());
         let seg = average_ms(self.segment_total, self.segment_frames);
         let ocr = average_ms(self.ocr_total, self.ocr_intervals);
-        let pf = average_ms(self.ocr_prefilter_total, self.ocr_prefilter_runs);
         let cues = self.writer_cues;
         let writer = average_ms(self.writer_total, self.writer_cues);
 
         let avg_line = format!(
-            "[{COL_AVG}   avg{COL_RESET}] fps {rate:>5.1} • det {det} • seg {seg} • pf {pf} • ocr {ocr} • wr {writer}"
+            "[{COL_AVG}   avg{COL_RESET}] fps {rate:>5.1} • det {det} • seg {seg} • ocr {ocr} • wr {writer}"
         );
         let counts_line = format!(
             "[{COL_COUNT}counts{COL_RESET}] cues {cues} • ocr-empty {}",

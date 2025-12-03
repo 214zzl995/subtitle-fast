@@ -16,23 +16,15 @@ use subtitle_fast_types::{DetectionRegion, RoiConfig, YPlaneFrame};
 const SEGMENTER_CHANNEL_CAPACITY: usize = 4;
 
 pub struct SubtitleInterval {
-    #[allow(dead_code)]
     pub start_time: Duration,
-    #[allow(dead_code)]
     pub end_time: Duration,
-    #[allow(dead_code)]
     pub start_frame: u64,
-    #[allow(dead_code)]
-    pub end_frame: u64,
-    #[allow(dead_code)]
     pub roi: RoiConfig,
-    #[allow(dead_code)]
     pub first_yplane: Arc<YPlaneFrame>,
 }
 
 pub struct SegmenterEvent {
     pub sample: Option<DetectionSample>,
-    #[allow(dead_code)]
     pub intervals: Vec<SubtitleInterval>,
     pub segment_timings: Option<SegmentTimings>,
 }
@@ -388,17 +380,16 @@ impl SegmenterWorker {
         active: ActiveSubtitle,
         timings: &mut SegmentTimings,
     ) -> SubtitleInterval {
-        let (end_frame, end_time) = if let Some(history) = &self.last_history {
+        let end_time = if let Some(history) = &self.last_history {
             self.refine_end(&active, history, timings)
         } else {
-            (active.last_frame, active.last_time)
+            active.last_time
         };
 
         SubtitleInterval {
             start_time: active.start_time,
             end_time,
             start_frame: active.start_frame,
-            end_frame,
             roi: active.roi,
             first_yplane: active.template_yplane,
         }
@@ -409,7 +400,7 @@ impl SegmenterWorker {
         active: &ActiveSubtitle,
         history: &FrameHistory,
         timings: &mut SegmentTimings,
-    ) -> (u64, Duration) {
+    ) -> Duration {
         let mut best_frame = active.last_frame;
         let mut best_time = active.last_time;
         for record in history.records() {
@@ -455,7 +446,7 @@ impl SegmenterWorker {
             }
         }
 
-        let end_time = if let Some(next_ts) = next_timestamp {
+        if let Some(next_ts) = next_timestamp {
             next_ts
         } else if let Some(prev) = prev_timestamp {
             if let Some(delta) = best_time.checked_sub(prev) {
@@ -465,9 +456,7 @@ impl SegmenterWorker {
             }
         } else {
             best_time
-        };
-
-        (best_frame, end_time)
+        }
     }
 
     fn flush_active_segments(&mut self, timings: &mut SegmentTimings) -> Vec<SubtitleInterval> {

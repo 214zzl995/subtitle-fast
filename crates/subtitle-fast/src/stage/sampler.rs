@@ -39,7 +39,6 @@ impl SamplerContext {
         }
     }
 
-    #[allow(dead_code)]
     pub fn estimated_fps(&self) -> Option<f64> {
         self.estimated_fps
     }
@@ -67,7 +66,6 @@ impl SampledFrame {
         }
     }
 
-    #[allow(dead_code)]
     pub fn frame(&self) -> &YPlaneFrame {
         self.frame.as_ref()
     }
@@ -76,22 +74,14 @@ impl SampledFrame {
         Arc::clone(&self.frame)
     }
 
-    #[allow(dead_code)]
     pub fn frame_index(&self) -> u64 {
         self.frame_index
     }
 
-    #[allow(dead_code)]
-    pub fn into_frame(self) -> Arc<YPlaneFrame> {
-        self.frame
-    }
-
-    #[allow(dead_code)]
     pub fn history(&self) -> &FrameHistory {
         &self.history
     }
 
-    #[allow(dead_code)]
     pub fn sampler_context(&self) -> &SamplerContext {
         &self.context
     }
@@ -417,7 +407,6 @@ struct FpsObservation {
     timestamp: Duration,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 struct PoolEntry {
     frame_index: u64,
@@ -439,7 +428,6 @@ impl PoolEntry {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct FrameHistory {
     entries: Arc<Vec<HistoryRecord>>,
@@ -452,23 +440,11 @@ impl FrameHistory {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    #[allow(dead_code)]
     pub fn records(&self) -> &[HistoryRecord] {
         self.entries.as_ref().as_slice()
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct HistoryRecord {
     pub frame_index: u64,
@@ -477,12 +453,10 @@ pub struct HistoryRecord {
 }
 
 impl HistoryRecord {
-    #[allow(dead_code)]
     pub fn frame(&self) -> &YPlaneFrame {
         &self.frame
     }
 
-    #[allow(dead_code)]
     pub fn frame_handle(&self) -> Arc<YPlaneFrame> {
         Arc::clone(&self.frame)
     }

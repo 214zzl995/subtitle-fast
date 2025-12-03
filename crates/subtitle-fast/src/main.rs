@@ -1,8 +1,4 @@
-mod backend;
-mod cli;
-mod settings;
-mod stage;
-
+use subtitle_fast::{backend, cli, settings, stage};
 use backend::ExecutionPlan;
 use clap::CommandFactory;
 use cli::{CliArgs, CliSources, parse_cli};

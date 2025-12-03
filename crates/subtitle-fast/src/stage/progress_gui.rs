@@ -37,7 +37,6 @@ pub struct GuiProgressUpdate {
     pub fps: f64,
     pub det_ms: f64,
     pub seg_ms: f64,
-    pub pf_ms: f64,
     pub ocr_ms: f64,
     pub writer_ms: f64,
     pub cues: u64,
@@ -55,12 +54,10 @@ pub struct GuiProgressError {
     pub message: *const c_char,
 }
 
-#[allow(dead_code)]
 pub struct GuiProgressHandle {
     inner: Arc<GuiProgressInner>,
 }
 
-#[allow(dead_code)]
 impl GuiProgressHandle {
     pub(crate) fn new(
         handle_id: u64,
@@ -87,8 +84,6 @@ struct GuiProgressState {
     segment_frames: u64,
     segment_total: Duration,
     ocr_intervals: u64,
-    ocr_prefilter_runs: u64,
-    ocr_prefilter_total: Duration,
     ocr_total: Duration,
     writer_cues: u64,
     writer_empty_ocr: u64,
@@ -109,7 +104,6 @@ struct GuiSubtitleEvent {
 }
 
 impl GuiProgressInner {
-    #[allow(dead_code)]
     fn new(handle_id: u64, callbacks: GuiProgressCallbacks, total_frames: Option<u64>) -> Self {
         let state = GuiProgressState {
             handle_id,
@@ -121,8 +115,6 @@ impl GuiProgressInner {
             segment_frames: 0,
             segment_total: Duration::ZERO,
             ocr_intervals: 0,
-            ocr_prefilter_runs: 0,
-            ocr_prefilter_total: Duration::ZERO,
             ocr_total: Duration::ZERO,
             writer_cues: 0,
             writer_empty_ocr: 0,
@@ -226,12 +218,6 @@ impl GuiProgressInner {
             return;
         };
         state.ocr_intervals = state.ocr_intervals.saturating_add(timings.intervals);
-        state.ocr_prefilter_runs = state
-            .ocr_prefilter_runs
-            .saturating_add(timings.prefilter_runs);
-        state.ocr_prefilter_total = state
-            .ocr_prefilter_total
-            .saturating_add(timings.prefilter_duration);
         state.ocr_total = state.ocr_total.saturating_add(timings.total);
     }
 
@@ -262,7 +248,6 @@ impl GuiProgressInner {
             },
             det_ms: state.avg_detection_ms.unwrap_or(0.0),
             seg_ms: average_ms(state.segment_total, state.segment_frames),
-            pf_ms: average_ms(state.ocr_prefilter_total, state.ocr_prefilter_runs),
             ocr_ms: average_ms(state.ocr_total, state.ocr_intervals),
             writer_ms: average_ms(state.writer_total, state.writer_cues),
             cues: state.writer_cues,
@@ -369,7 +354,6 @@ pub(crate) fn install_callbacks(callbacks: GuiProgressCallbacks) {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn callbacks() -> Option<GuiProgressCallbacks> {
     GLOBAL_CALLBACKS
         .lock()
@@ -377,7 +361,6 @@ pub(crate) fn callbacks() -> Option<GuiProgressCallbacks> {
         .and_then(|c| c.as_ref().copied())
 }
 
-#[allow(dead_code)]
 pub(crate) fn create_progress_handle(
     handle_id: u64,
     total_frames: Option<u64>,
@@ -390,14 +373,12 @@ pub(crate) fn create_progress_handle(
     Some(handle)
 }
 
-#[allow(dead_code)]
 pub(crate) fn drop_progress_handle(handle_id: u64) {
     if let Ok(mut map) = HANDLE_MAP.lock() {
         map.remove(&handle_id);
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn progress_for_handle(handle_id: u64) -> Option<Arc<GuiProgressInner>> {
     HANDLE_MAP
         .lock()
