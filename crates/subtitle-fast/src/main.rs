@@ -1,10 +1,10 @@
-use subtitle_fast::{backend, cli, settings, stage};
 use backend::ExecutionPlan;
 use clap::CommandFactory;
 use cli::{CliArgs, CliSources, parse_cli};
 use settings::{ConfigError, resolve_settings};
 use stage::PipelineConfig;
 use std::num::NonZeroUsize;
+use subtitle_fast::{backend, cli, settings, stage};
 use subtitle_fast_types::YPlaneError;
 
 #[tokio::main(flavor = "multi_thread")]
