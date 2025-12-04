@@ -8,7 +8,7 @@ use crate::pipeline::{ComparisonReport, FeatureBlob, PreprocessSettings, ReportM
 
 const TAG: &str = "bitset-cover";
 const TOLERANCE_PX: usize = 2;
-const MISS_THRESHOLD: f32 = 0.035;
+const MISS_THRESHOLD: f32 = 0.1;
 const PARALLEL_MIN_WORDS: usize = 1024;
 
 thread_local! {
