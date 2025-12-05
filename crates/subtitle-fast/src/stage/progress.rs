@@ -120,7 +120,8 @@ impl ProgressMonitor {
                 }
                 self.observe_segment_time(event.segment_timings);
                 self.observe_ocr_time(event.ocr_timings);
-                self.observe_writer_time(event.writer_timings);
+                let completed = matches!(event.status, WriterStatus::Completed { .. });
+                self.observe_writer_time(event.writer_timings, completed);
                 if let WriterStatus::Completed { path, cues } = &event.status {
                     self.completed_output = Some((path.clone(), *cues));
                 }
@@ -168,14 +169,19 @@ impl ProgressMonitor {
         self.ocr_total = self.ocr_total.saturating_add(timings.total);
     }
 
-    fn observe_writer_time(&mut self, timings: Option<WriterTimings>) {
+    fn observe_writer_time(&mut self, timings: Option<WriterTimings>, completed: bool) {
         let Some(timings) = timings else {
             return;
         };
-        if timings.cues > 0 {
+        if completed {
+            self.writer_cues = timings.cues;
+            self.writer_merged = timings.merged;
+        } else if timings.cues > 0 {
             self.writer_cues = self.writer_cues.saturating_add(timings.cues);
         }
-        self.writer_merged = self.writer_merged.saturating_add(timings.merged);
+        if !completed {
+            self.writer_merged = self.writer_merged.saturating_add(timings.merged);
+        }
         self.writer_empty_ocr = self.writer_empty_ocr.saturating_add(timings.ocr_empty);
         self.writer_total = self.writer_total.saturating_add(timings.total);
     }

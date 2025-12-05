@@ -122,6 +122,7 @@ struct SubtitleCue {
 struct SubtitleWriterWorker {
     output_path: PathBuf,
     cues: Vec<SubtitleCue>,
+    merged: u64,
 }
 
 impl SubtitleWriterWorker {
@@ -129,6 +130,7 @@ impl SubtitleWriterWorker {
         Self {
             output_path,
             cues: Vec::new(),
+            merged: 0,
         }
     }
 
@@ -161,9 +163,13 @@ impl SubtitleWriterWorker {
             });
         }
 
+        let total_merged = merged_count(&self.cues);
+        let merged_delta = total_merged.saturating_sub(self.merged);
+        self.merged = total_merged;
+
         let timings = WriterTimings {
             cues: buffered,
-            merged: 0,
+            merged: merged_delta,
             ocr_empty,
             total: started.elapsed(),
         };
@@ -182,6 +188,7 @@ impl SubtitleWriterWorker {
         let SubtitleWriterWorker {
             output_path,
             mut cues,
+            ..
         } = self;
 
         sort_cues(&mut cues);
@@ -348,6 +355,16 @@ fn merge_cues(cues: &[SubtitleCue]) -> Vec<MergedSubtitle> {
         });
     }
     merged
+}
+
+fn merged_count(cues: &[SubtitleCue]) -> u64 {
+    if cues.len() < 2 {
+        return 0;
+    }
+    let mut copy = cues.to_vec();
+    sort_cues(&mut copy);
+    let merged = merge_cues(&copy);
+    copy.len().saturating_sub(merged.len()) as u64
 }
 
 const MERGE_GAP: Duration = Duration::from_millis(120);

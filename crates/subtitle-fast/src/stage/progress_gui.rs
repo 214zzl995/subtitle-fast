@@ -154,7 +154,8 @@ impl GuiProgressInner {
             }
             Self::observe_segment_time(&mut state, event.segment_timings);
             Self::observe_ocr_time(&mut state, event.ocr_timings);
-            Self::observe_writer_time(&mut state, event.writer_timings);
+            let completed = matches!(event.status, WriterStatus::Completed { .. });
+            Self::observe_writer_time(&mut state, event.writer_timings, completed);
             if let Some(subtitle) = event.last_subtitle.as_ref() {
                 let limited = subtitle
                     .text
@@ -173,7 +174,6 @@ impl GuiProgressInner {
                 }
             }
 
-            let completed = matches!(event.status, WriterStatus::Completed { .. });
             let update = Self::snapshot(&state, completed);
             drop(state);
             self.emit_progress(&update);
@@ -224,14 +224,23 @@ impl GuiProgressInner {
         state.ocr_total = state.ocr_total.saturating_add(timings.total);
     }
 
-    fn observe_writer_time(state: &mut GuiProgressState, timings: Option<WriterTimings>) {
+    fn observe_writer_time(
+        state: &mut GuiProgressState,
+        timings: Option<WriterTimings>,
+        completed: bool,
+    ) {
         let Some(timings) = timings else {
             return;
         };
-        if timings.cues > 0 {
+        if completed {
+            state.writer_cues = timings.cues;
+            state.writer_merged = timings.merged;
+        } else if timings.cues > 0 {
             state.writer_cues = state.writer_cues.saturating_add(timings.cues);
         }
-        state.writer_merged = state.writer_merged.saturating_add(timings.merged);
+        if !completed {
+            state.writer_merged = state.writer_merged.saturating_add(timings.merged);
+        }
         state.writer_empty_ocr = state.writer_empty_ocr.saturating_add(timings.ocr_empty);
         state.writer_total = state.writer_total.saturating_add(timings.total);
     }

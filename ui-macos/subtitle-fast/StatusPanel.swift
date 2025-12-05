@@ -215,8 +215,12 @@ struct MetricsGrid: View {
         systemImage: String
     ) -> some View {
         HStack(spacing: 6) {
-            Label(LocalizedStringKey(key), systemImage: systemImage)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .frame(width: 18, alignment: .center)
+                Text(LocalizedStringKey(key))
+            }
+            .foregroundStyle(.secondary)
             Spacer()
             Text(value)
                 .fontWeight(.semibold)
