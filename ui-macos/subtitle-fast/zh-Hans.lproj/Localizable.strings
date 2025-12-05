@@ -29,8 +29,10 @@
 "ui.metrics_detection" = "检测";
 "ui.metrics_ocr" = "OCR";
 "ui.metrics_cues" = "字幕数";
+"ui.metrics_merged" = "合并数";
 "ui.metrics_empty" = "空白 OCR";
 "ui.metrics_cues_unit" = "条";
+"ui.metrics_merged_unit" = "条";
 "ui.metrics_empty_unit" = "帧";
 "ui.subtitles" = "字幕列表";
 "ui.detecting" = "检测中…";

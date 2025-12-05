@@ -40,6 +40,7 @@ pub struct GuiProgressUpdate {
     pub ocr_ms: f64,
     pub writer_ms: f64,
     pub cues: u64,
+    pub merged: u64,
     pub ocr_empty: u64,
     pub progress: f64,
     pub completed: bool,
@@ -86,6 +87,7 @@ struct GuiProgressState {
     ocr_intervals: u64,
     ocr_total: Duration,
     writer_cues: u64,
+    writer_merged: u64,
     writer_empty_ocr: u64,
     writer_total: Duration,
 }
@@ -117,6 +119,7 @@ impl GuiProgressInner {
             ocr_intervals: 0,
             ocr_total: Duration::ZERO,
             writer_cues: 0,
+            writer_merged: 0,
             writer_empty_ocr: 0,
             writer_total: Duration::ZERO,
         };
@@ -228,6 +231,7 @@ impl GuiProgressInner {
         if timings.cues > 0 {
             state.writer_cues = state.writer_cues.saturating_add(timings.cues);
         }
+        state.writer_merged = state.writer_merged.saturating_add(timings.merged);
         state.writer_empty_ocr = state.writer_empty_ocr.saturating_add(timings.ocr_empty);
         state.writer_total = state.writer_total.saturating_add(timings.total);
     }
@@ -251,6 +255,7 @@ impl GuiProgressInner {
             ocr_ms: average_ms(state.ocr_total, state.ocr_intervals),
             writer_ms: average_ms(state.writer_total, state.writer_cues),
             cues: state.writer_cues,
+            merged: state.writer_merged,
             ocr_empty: state.writer_empty_ocr,
             progress: if total_frames > 0 {
                 (latest as f64) / (total_frames as f64)

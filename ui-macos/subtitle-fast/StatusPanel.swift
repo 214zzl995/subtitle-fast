@@ -187,6 +187,12 @@ struct MetricsGrid: View {
                 systemImage: "text.bubble"
             )
             compactRow(
+                key: "ui.metrics_merged",
+                value: "\(metrics.merged)",
+                unitKey: "ui.metrics_merged_unit",
+                systemImage: "arrow.triangle.merge"
+            )
+            compactRow(
                 key: "ui.metrics_empty",
                 value: "\(metrics.ocrEmpty)",
                 unitKey: "ui.metrics_empty_unit",

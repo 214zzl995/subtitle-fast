@@ -29,8 +29,10 @@
 "ui.metrics_detection" = "Detection";
 "ui.metrics_ocr" = "OCR";
 "ui.metrics_cues" = "Cues";
+"ui.metrics_merged" = "Merged";
 "ui.metrics_empty" = "Empty OCR";
 "ui.metrics_cues_unit" = "cues";
+"ui.metrics_merged_unit" = "merged";
 "ui.metrics_empty_unit" = "frames";
 "ui.subtitles" = "Subtitles";
 "ui.detecting" = "Detecting…";

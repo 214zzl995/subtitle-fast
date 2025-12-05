@@ -36,6 +36,7 @@ struct GuiProgressUpdate {
     var ocr_ms: Double
     var writer_ms: Double
     var cues: UInt64
+    var merged: UInt64
     var ocr_empty: UInt64
     var progress: Double
     var completed: Bool

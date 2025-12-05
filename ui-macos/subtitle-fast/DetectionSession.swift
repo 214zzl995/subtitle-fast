@@ -20,9 +20,10 @@ struct DetectionMetrics {
     var det: Double
     var ocr: Double
     var cues: Int
+    var merged: Int
     var ocrEmpty: Int
 
-    static let empty = DetectionMetrics(fps: 0, det: 0, ocr: 0, cues: 0, ocrEmpty: 0)
+    static let empty = DetectionMetrics(fps: 0, det: 0, ocr: 0, cues: 0, merged: 0, ocrEmpty: 0)
 }
 
 enum DetectionStatus {
@@ -716,6 +717,7 @@ final class DetectionSession: ObservableObject {
             det: update.det_ms,
             ocr: update.ocr_ms,
             cues: Int(update.cues),
+            merged: Int(update.merged),
             ocrEmpty: Int(update.ocr_empty)
         )
         let newProgress = max(0, min(1, update.progress))

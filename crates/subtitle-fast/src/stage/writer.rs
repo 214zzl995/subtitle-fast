@@ -90,6 +90,7 @@ pub struct GuiSubtitleInfo {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WriterTimings {
     pub cues: u64,
+    pub merged: u64,
     pub ocr_empty: u64,
     pub total: Duration,
 }
@@ -162,6 +163,7 @@ impl SubtitleWriterWorker {
 
         let timings = WriterTimings {
             cues: buffered,
+            merged: 0,
             ocr_empty,
             total: started.elapsed(),
         };
@@ -183,6 +185,7 @@ impl SubtitleWriterWorker {
         } = self;
 
         sort_cues(&mut cues);
+        let source_cues = cues.len();
         let merged = merge_cues(&cues);
         let started = Instant::now();
         let srt_contents = build_srt(&merged);
@@ -205,8 +208,10 @@ impl SubtitleWriterWorker {
 
         let elapsed = started.elapsed();
         let cue_count = merged.len();
+        let merged_count = source_cues.saturating_sub(cue_count);
         let timings = WriterTimings {
             cues: cue_count as u64,
+            merged: merged_count as u64,
             ocr_empty: 0,
             total: elapsed,
         };
