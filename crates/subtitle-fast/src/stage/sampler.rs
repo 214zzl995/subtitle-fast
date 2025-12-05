@@ -434,7 +434,7 @@ pub struct FrameHistory {
 }
 
 impl FrameHistory {
-    fn new(entries: Vec<HistoryRecord>) -> Self {
+    pub fn new(entries: Vec<HistoryRecord>) -> Self {
         Self {
             entries: Arc::new(entries),
         }

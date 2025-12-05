@@ -153,6 +153,7 @@ struct ActiveSubtitle {
     roi: RoiConfig,
     template_yplane: Arc<YPlaneFrame>,
     template_features: FeatureBlob,
+    anchor_features: Option<FeatureBlob>,
     start_time: Duration,
     start_frame: u64,
     last_time: Duration,
@@ -164,6 +165,7 @@ struct PendingSubtitle {
     roi: RoiConfig,
     template_yplane: Arc<YPlaneFrame>,
     template_features: FeatureBlob,
+    anchor_features: Option<FeatureBlob>,
     first_time: Duration,
     first_frame: u64,
     history: FrameHistory,
@@ -274,6 +276,7 @@ impl SegmenterWorker {
                     roi,
                     template_yplane: Arc::clone(&frame.yplane),
                     template_features: features,
+                    anchor_features: None,
                     first_time: frame.time,
                     first_frame: frame.frame_index,
                     history: frame.history.clone(),
@@ -318,12 +321,13 @@ impl SegmenterWorker {
         pending: PendingSubtitle,
         timings: &mut SegmentTimings,
     ) -> ActiveSubtitle {
-        let (start_frame, start_time, template_yplane, template_features) =
+        let (start_frame, start_time, template_yplane, template_features, anchor_features) =
             self.refine_start(&pending, timings);
         ActiveSubtitle {
             roi: pending.roi,
             template_yplane,
             template_features,
+            anchor_features,
             start_time,
             start_frame,
             last_time: pending.first_time,
@@ -336,13 +340,21 @@ impl SegmenterWorker {
         &self,
         pending: &PendingSubtitle,
         timings: &mut SegmentTimings,
-    ) -> (u64, Duration, Arc<YPlaneFrame>, FeatureBlob) {
+    ) -> (
+        u64,
+        Duration,
+        Arc<YPlaneFrame>,
+        FeatureBlob,
+        Option<FeatureBlob>,
+    ) {
         let mut best_frame = pending.first_frame;
         let mut best_time = pending.first_time;
         let mut best_yplane = Arc::clone(&pending.template_yplane);
         let mut best_features = pending.template_features.clone();
+        let mut search_anchor = pending.anchor_features.clone();
+        let mut anchor_for_state = pending.anchor_features.clone();
 
-        for record in pending.history.records() {
+        for record in pending.history.records().iter().rev() {
             if record.frame_index >= pending.first_frame {
                 continue;
             }
@@ -355,24 +367,34 @@ impl SegmenterWorker {
             ) else {
                 continue;
             };
+            let reference = comparison_anchor(&search_anchor, &pending.template_features);
             let report = timed_compare(
                 timings,
                 self.comparator.as_ref(),
-                &pending.template_features,
+                reference,
                 &candidate_features,
             );
             if report.same_segment {
+                search_anchor = Some(candidate_features.clone());
+                if anchor_for_state.is_none() {
+                    anchor_for_state = Some(candidate_features.clone());
+                }
                 best_frame = frame_index;
                 if let Some(ts) = record.frame().timestamp() {
                     best_time = ts;
                 }
                 best_yplane = record.frame_handle();
                 best_features = candidate_features;
-                break;
             }
         }
 
-        (best_frame, best_time, best_yplane, best_features)
+        (
+            best_frame,
+            best_time,
+            best_yplane,
+            best_features,
+            anchor_for_state,
+        )
     }
 
     fn close_active(
@@ -403,6 +425,7 @@ impl SegmenterWorker {
     ) -> Duration {
         let mut best_frame = active.last_frame;
         let mut best_time = active.last_time;
+        let mut search_anchor = active.anchor_features.clone();
         for record in history.records() {
             if record.frame_index <= active.last_frame {
                 continue;
@@ -415,13 +438,15 @@ impl SegmenterWorker {
             ) else {
                 continue;
             };
+            let reference = comparison_anchor(&search_anchor, &active.template_features);
             let report = timed_compare(
                 timings,
                 self.comparator.as_ref(),
-                &active.template_features,
+                reference,
                 &candidate_features,
             );
             if report.same_segment {
+                search_anchor = Some(candidate_features.clone());
                 best_frame = record.frame_index;
                 if let Some(ts) = record.frame().timestamp() {
                     best_time = ts;
@@ -467,6 +492,13 @@ impl SegmenterWorker {
         self.pending.clear();
         intervals
     }
+}
+
+fn comparison_anchor<'a>(
+    anchor: &'a Option<FeatureBlob>,
+    template: &'a FeatureBlob,
+) -> &'a FeatureBlob {
+    anchor.as_ref().unwrap_or(template)
 }
 
 fn timed_extract(
@@ -553,11 +585,13 @@ fn match_active(
         let Some(candidate) = roi_features.get(idx).and_then(|f| f.clone()) else {
             continue;
         };
-        let report = timed_compare(timings, comparator, &active.template_features, &candidate);
+        let reference = comparison_anchor(&active.anchor_features, &active.template_features);
+        let report = timed_compare(timings, comparator, reference, &candidate);
         if report.same_segment {
             active.roi = region.roi;
             active.last_time = frame.time;
             active.last_frame = frame.frame_index;
+            active.anchor_features = Some(candidate);
             if let Some(slot) = roi_used.get_mut(idx) {
                 *slot = true;
             }
@@ -585,8 +619,10 @@ fn match_pending(
         let Some(candidate) = roi_features.get(idx).and_then(|f| f.clone()) else {
             continue;
         };
-        let report = timed_compare(timings, comparator, &pending.template_features, &candidate);
+        let reference = comparison_anchor(&pending.anchor_features, &pending.template_features);
+        let report = timed_compare(timings, comparator, reference, &candidate);
         if report.same_segment {
+            pending.anchor_features = Some(candidate);
             if let Some(slot) = roi_used.get_mut(idx) {
                 *slot = true;
             }
@@ -598,7 +634,27 @@ fn match_pending(
 
 #[cfg(test)]
 mod tests {
-    use super::window_frames;
+    use super::*;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use subtitle_fast_comparator::pipeline::ComparisonReport;
+
+    struct TagComparator;
+
+    impl SubtitleComparator for TagComparator {
+        fn name(&self) -> &'static str {
+            "tag-comparator"
+        }
+
+        fn extract(&self, _frame: &YPlaneFrame, _roi: &RoiConfig) -> Option<FeatureBlob> {
+            Some(FeatureBlob::new("tag", ()))
+        }
+
+        fn compare(&self, reference: &FeatureBlob, candidate: &FeatureBlob) -> ComparisonReport {
+            let same = reference.tag() == candidate.tag();
+            ComparisonReport::new(if same { 1.0 } else { 0.0 }, same)
+        }
+    }
 
     #[test]
     fn window_frames_approximates_200ms() {
@@ -607,5 +663,116 @@ mod tests {
         assert_eq!(window_frames(5), 1);
         assert_eq!(window_frames(10), 2);
         assert_eq!(window_frames(25), 5);
+    }
+
+    #[test]
+    fn match_active_prefers_anchor_and_updates_it() {
+        let comparator = TagComparator;
+        let template_features = FeatureBlob::new("one", ());
+        let anchor_features = Some(FeatureBlob::new("two", ()));
+        let roi = RoiConfig {
+            x: 0.0,
+            y: 0.1,
+            width: 0.5,
+            height: 0.2,
+        };
+        let template_yplane = Arc::new(
+            YPlaneFrame::from_owned(1, 1, 1, Some(Duration::from_secs(0)), vec![0])
+                .expect("yplane"),
+        );
+        let mut active = ActiveSubtitle {
+            roi,
+            template_yplane: Arc::clone(&template_yplane),
+            template_features,
+            anchor_features,
+            start_time: Duration::from_secs(0),
+            start_frame: 0,
+            last_time: Duration::from_secs(0),
+            last_frame: 0,
+            consecutive_missing: 0,
+        };
+        let frame = SubtitleFrame {
+            time: Duration::from_secs(1),
+            frame_index: 1,
+            yplane: Arc::clone(&template_yplane),
+            history: FrameHistory::new(Vec::new()),
+            regions: vec![SubtitleRegion { roi }],
+        };
+        let roi_features = vec![Some(FeatureBlob::new("two", ()))];
+        let mut roi_used = vec![false];
+        let mut timings = SegmentTimings::default();
+
+        let matched = match_active(
+            &comparator,
+            &mut active,
+            &frame,
+            &roi_features,
+            &mut roi_used,
+            &mut timings,
+        );
+
+        assert!(matched, "anchor reference should accept matching tags");
+        assert!(roi_used[0], "matched ROI should be marked used");
+        assert_eq!(active.last_frame, 1);
+        assert_eq!(
+            active.anchor_features.as_ref().expect("anchor set").tag(),
+            "two"
+        );
+    }
+
+    #[test]
+    fn match_pending_falls_back_to_template_until_anchor_exists() {
+        let comparator = TagComparator;
+        let template_features = FeatureBlob::new("pending", ());
+        let roi = RoiConfig {
+            x: 0.0,
+            y: 0.2,
+            width: 0.5,
+            height: 0.2,
+        };
+        let template_yplane = Arc::new(
+            YPlaneFrame::from_owned(1, 1, 1, Some(Duration::from_secs(0)), vec![0])
+                .expect("yplane"),
+        );
+        let mut pending = PendingSubtitle {
+            roi,
+            template_yplane: Arc::clone(&template_yplane),
+            template_features,
+            anchor_features: None,
+            first_time: Duration::from_secs(0),
+            first_frame: 0,
+            history: FrameHistory::new(Vec::new()),
+            hit_count: 0,
+        };
+        let frame = SubtitleFrame {
+            time: Duration::from_secs(1),
+            frame_index: 1,
+            yplane: Arc::clone(&template_yplane),
+            history: FrameHistory::new(Vec::new()),
+            regions: vec![SubtitleRegion { roi }],
+        };
+        let roi_features = vec![Some(FeatureBlob::new("pending", ()))];
+        let mut roi_used = vec![false];
+        let mut timings = SegmentTimings::default();
+
+        let matched = match_pending(
+            &comparator,
+            &mut pending,
+            &frame,
+            &roi_features,
+            &mut roi_used,
+            &mut timings,
+        );
+
+        assert!(matched, "template fallback should allow first anchor");
+        assert!(roi_used[0], "matched ROI should be marked used");
+        assert_eq!(
+            pending
+                .anchor_features
+                .as_ref()
+                .expect("anchor set from match")
+                .tag(),
+            "pending"
+        );
     }
 }
