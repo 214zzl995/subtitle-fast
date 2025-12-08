@@ -36,13 +36,14 @@ samples_per_second = 7
 target = 230
 delta = 12
 # comparator = "bitset-cover"
+# roi = { x = 0.0, y = 0.75, width = 1.0, height = 0.25 } # 0-1 归一化；留空或零尺寸即全屏
 
 [decoder]
 # backend = "dxva"
 # channel_capacity = 32
 ```
 
-常用覆盖：`--detector-target`、`--detector-delta`、`--backend`、`--ocr-backend`。
+常用覆盖：`--detector-target`、`--detector-delta`、`--roi x,y,width,height`、`--backend`、`--ocr-backend`。ROI 归一化到 0-1，省略或设为零尺寸时默认全屏检测。
 
 ## 流水线概览
 
