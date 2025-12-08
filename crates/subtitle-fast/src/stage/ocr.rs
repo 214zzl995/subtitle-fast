@@ -14,7 +14,7 @@ use subtitle_fast_types::{OcrRegion, OcrResponse, RoiConfig, YPlaneFrame};
 
 const OCR_CHANNEL_CAPACITY: usize = 4;
 
-type RegionBounds = (usize, usize, usize, usize);
+pub(crate) type RegionBounds = (usize, usize, usize, usize);
 pub type OcrStageResult = Result<OcrEvent, OcrStageError>;
 
 pub struct SubtitleOcr {
@@ -185,7 +185,7 @@ fn roi_to_region(roi: &RoiConfig, frame: &YPlaneFrame) -> OcrRegion {
     }
 }
 
-fn region_bounds(region: &OcrRegion, frame: &YPlaneFrame) -> Option<RegionBounds> {
+pub(crate) fn region_bounds(region: &OcrRegion, frame: &YPlaneFrame) -> Option<RegionBounds> {
     let frame_w = frame.width() as usize;
     let frame_h = frame.height() as usize;
     if frame_w == 0 || frame_h == 0 {

@@ -1,18 +1,26 @@
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::BufWriter;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::{StreamExt, stream::unfold};
+use png::{BitDepth, ColorType, Encoder};
 use tokio::fs;
 use tokio::sync::mpsc;
+use tokio::task;
 
 use super::StreamBundle;
 use super::detector::DetectionSample;
 use super::lifecycle::RegionTimings;
-use super::ocr::{OcrEvent, OcrStageError, OcrStageResult, OcrTimings};
-use subtitle_fast_types::OcrResponse;
+use super::ocr::{
+    OcrEvent, OcrStageError, OcrStageResult, OcrTimings, OcredSubtitle, RegionBounds, region_bounds,
+};
+use subtitle_fast_types::{OcrResponse, YPlaneFrame};
 
 const WRITER_CHANNEL_CAPACITY: usize = 4;
+const EMPTY_OCR_DIR: &str = "ocr-empty";
 
 pub type WriterResult = Result<WriterEvent, SubtitleWriterError>;
 
@@ -123,6 +131,8 @@ struct SubtitleWriterWorker {
     output_path: PathBuf,
     cues: Vec<SubtitleCue>,
     merged: u64,
+    empty_dir: PathBuf,
+    empty_saved: u64,
 }
 
 impl SubtitleWriterWorker {
@@ -131,6 +141,8 @@ impl SubtitleWriterWorker {
             output_path,
             cues: Vec::new(),
             merged: 0,
+            empty_dir: PathBuf::from(EMPTY_OCR_DIR),
+            empty_saved: 0,
         }
     }
 
@@ -144,6 +156,7 @@ impl SubtitleWriterWorker {
             let text = response_to_text(&subtitle.response);
             if text.is_empty() {
                 ocr_empty = ocr_empty.saturating_add(1);
+                self.export_empty_ocr(&subtitle);
                 continue;
             }
             let center = subtitle.region.y + subtitle.region.height * 0.5;
@@ -182,6 +195,28 @@ impl SubtitleWriterWorker {
             status: WriterStatus::Pending,
             last_subtitle,
         }
+    }
+
+    fn export_empty_ocr(&mut self, subtitle: &OcredSubtitle) {
+        let Some(bounds) = region_bounds(&subtitle.region, &subtitle.lifecycle.frame) else {
+            return;
+        };
+        let frame = Arc::clone(&subtitle.lifecycle.frame);
+        let seq = self.empty_saved;
+        self.empty_saved = self.empty_saved.saturating_add(1);
+        let dir = self.empty_dir.clone();
+        let region_id = subtitle.lifecycle.id;
+        let start_frame = subtitle.lifecycle.start_frame;
+        let start_ms = subtitle.lifecycle.start_time.as_millis() as u64;
+        task::block_in_place(|| {
+            if let Err(err) =
+                save_empty_ocr_crop(&dir, seq, bounds, &frame, region_id, start_frame, start_ms)
+            {
+                eprintln!(
+                    "[ocr-empty-export] failed to write empty OCR crop for region {region_id}: {err}"
+                );
+            }
+        });
     }
 
     async fn finish(self) -> Result<WriterEvent, SubtitleWriterError> {
@@ -235,6 +270,71 @@ impl SubtitleWriterWorker {
             last_subtitle: None,
         })
     }
+}
+
+fn save_empty_ocr_crop(
+    dir: &Path,
+    sequence: u64,
+    bounds: RegionBounds,
+    frame: &YPlaneFrame,
+    region_id: u64,
+    start_frame: u64,
+    start_ms: u64,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let (data, width, height) = crop_region(frame, bounds)?;
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    let filename = format!(
+        "{:06}_f{:06}_t{:010}_id{}.png",
+        sequence, start_frame, start_ms, region_id
+    );
+    let path = dir.join(filename);
+    encode_grayscale_png(&path, width, height, &data)
+}
+
+fn crop_region(frame: &YPlaneFrame, bounds: RegionBounds) -> std::io::Result<(Vec<u8>, u32, u32)> {
+    let (left, top, right, bottom) = bounds;
+    let width = right.saturating_sub(left);
+    let height = bottom.saturating_sub(top);
+    if width == 0 || height == 0 {
+        return Ok((Vec::new(), 0, 0));
+    }
+    let stride = frame.stride();
+    let data = frame.data();
+    let mut cropped = Vec::with_capacity(width * height);
+    for row in top..bottom {
+        let start = row
+            .checked_mul(stride)
+            .and_then(|offset| offset.checked_add(left))
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "ROI overflow"))?;
+        let end = start
+            .checked_add(width)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "ROI overflow"))?;
+        let slice = data.get(start..end).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "ROI extends beyond frame data",
+            )
+        })?;
+        cropped.extend_from_slice(slice);
+    }
+    Ok((cropped, width as u32, height as u32))
+}
+
+fn encode_grayscale_png(path: &Path, width: u32, height: u32, data: &[u8]) -> std::io::Result<()> {
+    let file = File::create(path)?;
+    let writer = BufWriter::new(file);
+    let mut encoder = Encoder::new(writer, width, height);
+    encoder.set_color(ColorType::Grayscale);
+    encoder.set_depth(BitDepth::Eight);
+    let mut writer = encoder
+        .write_header()
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+    writer
+        .write_image_data(data)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
 }
 
 fn response_to_text(response: &OcrResponse) -> String {
