@@ -6,8 +6,8 @@ use tokio::sync::mpsc;
 
 use super::StreamBundle;
 use super::detector::DetectionSample;
-use super::segmenter::{
-    SegmentTimings, SegmenterError, SegmenterEvent, SegmenterResult, SubtitleInterval,
+use super::lifecycle::{
+    CompletedRegion, LifecycleEvent, LifecycleResult, RegionLifecycleError, RegionTimings,
 };
 use subtitle_fast_ocr::{LumaPlane, OcrEngine, OcrError, OcrRequest};
 use subtitle_fast_types::{OcrRegion, OcrResponse, RoiConfig, YPlaneFrame};
@@ -26,7 +26,7 @@ impl SubtitleOcr {
         Self { engine }
     }
 
-    pub fn attach(self, input: StreamBundle<SegmenterResult>) -> StreamBundle<OcrStageResult> {
+    pub fn attach(self, input: StreamBundle<LifecycleResult>) -> StreamBundle<OcrStageResult> {
         let StreamBundle {
             stream,
             total_frames,
@@ -57,7 +57,7 @@ impl SubtitleOcr {
                         }
                     }
                     Err(err) => {
-                        let _ = tx.send(Err(OcrStageError::Segmenter(err))).await;
+                        let _ = tx.send(Err(OcrStageError::Lifecycle(err))).await;
                         return;
                     }
                 }
@@ -74,13 +74,13 @@ impl SubtitleOcr {
 
 pub struct OcrEvent {
     pub sample: Option<DetectionSample>,
-    pub subtitles: Vec<OcredSubtitle>,
-    pub segment_timings: Option<SegmentTimings>,
+    pub regions: Vec<OcredSubtitle>,
+    pub region_timings: Option<RegionTimings>,
     pub timings: Option<OcrTimings>,
 }
 
 pub struct OcredSubtitle {
-    pub interval: SubtitleInterval,
+    pub lifecycle: CompletedRegion,
     pub region: OcrRegion,
     pub response: OcrResponse,
 }
@@ -95,7 +95,7 @@ pub struct OcrTimings {
 
 #[derive(Debug)]
 pub enum OcrStageError {
-    Segmenter(SegmenterError),
+    Lifecycle(RegionLifecycleError),
     Engine(OcrError),
 }
 
@@ -108,19 +108,19 @@ impl OcrWorker {
         Self { engine }
     }
 
-    fn handle_event(&self, event: SegmenterEvent) -> Result<OcrEvent, OcrStageError> {
+    fn handle_event(&self, event: LifecycleEvent) -> Result<OcrEvent, OcrStageError> {
         let started = Instant::now();
         let mut timings = OcrTimings::default();
-        let mut subtitles = Vec::with_capacity(event.intervals.len());
+        let mut subtitles = Vec::with_capacity(event.completed.len());
 
-        for interval in event.intervals {
+        for lifecycle in event.completed {
             timings.intervals = timings.intervals.saturating_add(1);
-            let region = roi_to_region(&interval.roi, &interval.first_yplane);
-            let Some(bounds) = region_bounds(&region, &interval.first_yplane) else {
+            let region = roi_to_region(&lifecycle.roi, &lifecycle.frame);
+            let Some(bounds) = region_bounds(&region, &lifecycle.frame) else {
                 continue;
             };
 
-            let plane = LumaPlane::from_frame(&interval.first_yplane);
+            let plane = LumaPlane::from_frame(&lifecycle.frame);
             let regions = [region];
             let request = OcrRequest::new(plane, &regions);
             let ocr_started = Instant::now();
@@ -129,11 +129,11 @@ impl OcrWorker {
                 Err(err) => {
                     eprintln!(
                         "[ocr-error-debug] frame={} roi_norm=({:.3},{:.3},{:.3},{:.3}) region_px={}x{}@({},{}) error={}",
-                        interval.start_frame,
-                        interval.roi.x,
-                        interval.roi.y,
-                        interval.roi.width,
-                        interval.roi.height,
+                        lifecycle.start_frame,
+                        lifecycle.roi.x,
+                        lifecycle.roi.y,
+                        lifecycle.roi.width,
+                        lifecycle.roi.height,
                         bounds.2.saturating_sub(bounds.0),
                         bounds.3.saturating_sub(bounds.1),
                         bounds.0,
@@ -146,7 +146,7 @@ impl OcrWorker {
             timings.ocr_calls = timings.ocr_calls.saturating_add(1);
             timings.ocr_duration = timings.ocr_duration.saturating_add(ocr_started.elapsed());
             subtitles.push(OcredSubtitle {
-                interval,
+                lifecycle,
                 region,
                 response,
             });
@@ -156,8 +156,8 @@ impl OcrWorker {
 
         Ok(OcrEvent {
             sample: event.sample,
-            subtitles,
-            segment_timings: event.segment_timings,
+            regions: subtitles,
+            region_timings: event.region_timings,
             timings: Some(timings),
         })
     }

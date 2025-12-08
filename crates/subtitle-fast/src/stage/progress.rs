@@ -7,8 +7,8 @@ use tokio::sync::mpsc;
 
 use super::StreamBundle;
 use super::detector::DetectionSample;
+use super::lifecycle::RegionTimings;
 use super::ocr::{OcrStageError, OcrTimings};
-use super::segmenter::SegmentTimings;
 use super::writer::{SubtitleWriterError, WriterResult, WriterStatus, WriterTimings};
 
 const PROGRESS_CHANNEL_CAPACITY: usize = 4;
@@ -65,8 +65,8 @@ struct ProgressMonitor {
     started: Instant,
     finished: bool,
     avg_detection_ms: Option<f64>,
-    segment_frames: u64,
-    segment_total: Duration,
+    region_frames: u64,
+    region_total: Duration,
     ocr_intervals: u64,
     ocr_total: Duration,
     writer_cues: u64,
@@ -100,8 +100,8 @@ impl ProgressMonitor {
             started: Instant::now(),
             finished: false,
             avg_detection_ms: None,
-            segment_frames: 0,
-            segment_total: Duration::ZERO,
+            region_frames: 0,
+            region_total: Duration::ZERO,
             ocr_intervals: 0,
             ocr_total: Duration::ZERO,
             writer_cues: 0,
@@ -118,7 +118,7 @@ impl ProgressMonitor {
                 if let Some(sample) = &event.sample {
                     self.observe_sample(sample);
                 }
-                self.observe_segment_time(event.segment_timings);
+                self.observe_region_time(event.region_timings);
                 self.observe_ocr_time(event.ocr_timings);
                 let completed = matches!(event.status, WriterStatus::Completed { .. });
                 self.observe_writer_time(event.writer_timings, completed);
@@ -153,12 +153,12 @@ impl ProgressMonitor {
         });
     }
 
-    fn observe_segment_time(&mut self, timings: Option<SegmentTimings>) {
+    fn observe_region_time(&mut self, timings: Option<RegionTimings>) {
         let Some(timings) = timings else {
             return;
         };
-        self.segment_frames = self.segment_frames.saturating_add(timings.frames);
-        self.segment_total = self.segment_total.saturating_add(timings.total);
+        self.region_frames = self.region_frames.saturating_add(timings.frames);
+        self.region_total = self.region_total.saturating_add(timings.total);
     }
 
     fn observe_ocr_time(&mut self, timings: Option<OcrTimings>) {
@@ -225,7 +225,7 @@ impl ProgressMonitor {
                 .avg_detection_ms
                 .map(|value| format!("{value:.1} ms"))
                 .unwrap_or_else(|| "-- ms".to_string());
-            let seg = average_ms(self.segment_total, self.segment_frames);
+            let reg = average_ms(self.region_total, self.region_frames);
             let ocr = average_ms(self.ocr_total, self.ocr_intervals);
             let writer = average_ms(self.writer_total, self.writer_cues);
             let counts_line = format!(
@@ -233,7 +233,7 @@ impl ProgressMonitor {
                 self.writer_cues, self.writer_merged, self.writer_empty_ocr
             );
             let avg_line = format!(
-                "[{COL_AVG}   avg{COL_RESET}] det {det} • seg {seg} • ocr {ocr} • wr {writer}"
+                "[{COL_AVG}   avg{COL_RESET}] det {det} • reg {reg} • ocr {ocr} • wr {writer}"
             );
             let summary = format!("{processed_line}\n{output_line}\n{avg_line}\n{counts_line}");
             self.bar.finish_with_message(summary);
@@ -267,14 +267,14 @@ impl ProgressMonitor {
             .avg_detection_ms
             .map(|value| format!("{value:.1} ms"))
             .unwrap_or_else(|| "-- ms".to_string());
-        let seg = average_ms(self.segment_total, self.segment_frames);
+        let reg = average_ms(self.region_total, self.region_frames);
         let ocr = average_ms(self.ocr_total, self.ocr_intervals);
         let cues = self.writer_cues;
         let merged = self.writer_merged;
         let writer = average_ms(self.writer_total, self.writer_cues);
 
         let avg_line = format!(
-            "[{COL_AVG}   avg{COL_RESET}] fps {rate:>5.1} • det {det} • seg {seg} • ocr {ocr} • wr {writer}"
+            "[{COL_AVG}   avg{COL_RESET}] fps {rate:>5.1} • det {det} • reg {reg} • ocr {ocr} • wr {writer}"
         );
         let counts_line = format!(
             "[{COL_COUNT}counts{COL_RESET}] cues {cues} • merged {merged} • ocr-empty {}",
@@ -309,13 +309,17 @@ fn describe_error(err: &SubtitleWriterError) -> String {
 
 fn describe_ocr_error(err: &OcrStageError) -> String {
     match err {
-        super::ocr::OcrStageError::Segmenter(segmenter_err) => match segmenter_err {
-            super::segmenter::SegmenterError::Detector(detector_err) => match detector_err {
-                super::detector::DetectorError::Sampler(sampler_err) => {
-                    format!("sampler error: {sampler_err}")
-                }
-                super::detector::DetectorError::Detection(det_err) => {
-                    format!("detector error: {det_err}")
+        super::ocr::OcrStageError::Lifecycle(lifecycle_err) => match lifecycle_err {
+            super::lifecycle::RegionLifecycleError::Determiner(det_err) => match det_err {
+                super::determiner::RegionDeterminerError::Detector(detector_err) => {
+                    match detector_err {
+                        super::detector::DetectorError::Sampler(sampler_err) => {
+                            format!("sampler error: {sampler_err}")
+                        }
+                        super::detector::DetectorError::Detection(det_err) => {
+                            format!("detector error: {det_err}")
+                        }
+                    }
                 }
             },
         },

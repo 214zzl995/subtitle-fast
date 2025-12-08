@@ -8,8 +8,8 @@ use tokio::sync::mpsc;
 
 use super::StreamBundle;
 use super::detector::DetectionSample;
+use super::lifecycle::RegionTimings;
 use super::ocr::{OcrEvent, OcrStageError, OcrStageResult, OcrTimings};
-use super::segmenter::SegmentTimings;
 use subtitle_fast_types::OcrResponse;
 
 const WRITER_CHANNEL_CAPACITY: usize = 4;
@@ -73,7 +73,7 @@ impl SubtitleWriter {
 
 pub struct WriterEvent {
     pub sample: Option<DetectionSample>,
-    pub segment_timings: Option<SegmentTimings>,
+    pub region_timings: Option<RegionTimings>,
     pub ocr_timings: Option<OcrTimings>,
     pub writer_timings: Option<WriterTimings>,
     pub status: WriterStatus,
@@ -140,7 +140,7 @@ impl SubtitleWriterWorker {
         let mut ocr_empty = 0_u64;
         let mut last_subtitle: Option<GuiSubtitleInfo> = None;
 
-        for subtitle in event.subtitles {
+        for subtitle in event.regions {
             let text = response_to_text(&subtitle.response);
             if text.is_empty() {
                 ocr_empty = ocr_empty.saturating_add(1);
@@ -148,17 +148,17 @@ impl SubtitleWriterWorker {
             }
             let center = subtitle.region.y + subtitle.region.height * 0.5;
             let cue = SubtitleCue {
-                start_time: subtitle.interval.start_time,
-                end_time: subtitle.interval.end_time,
-                start_frame: subtitle.interval.start_frame,
+                start_time: subtitle.lifecycle.start_time,
+                end_time: subtitle.lifecycle.end_time,
+                start_frame: subtitle.lifecycle.start_frame,
                 text,
                 center,
             };
             self.cues.push(cue.clone());
             buffered = buffered.saturating_add(1);
             last_subtitle = Some(GuiSubtitleInfo {
-                start_ms: subtitle.interval.start_time.as_secs_f64() * 1000.0,
-                end_ms: subtitle.interval.end_time.as_secs_f64() * 1000.0,
+                start_ms: subtitle.lifecycle.start_time.as_secs_f64() * 1000.0,
+                end_ms: subtitle.lifecycle.end_time.as_secs_f64() * 1000.0,
                 text: cue.text.clone(),
             });
         }
@@ -176,7 +176,7 @@ impl SubtitleWriterWorker {
 
         WriterEvent {
             sample: event.sample,
-            segment_timings: event.segment_timings,
+            region_timings: event.region_timings,
             ocr_timings: event.timings,
             writer_timings: Some(timings),
             status: WriterStatus::Pending,
@@ -225,7 +225,7 @@ impl SubtitleWriterWorker {
 
         Ok(WriterEvent {
             sample: None,
-            segment_timings: None,
+            region_timings: None,
             ocr_timings: None,
             writer_timings: Some(timings),
             status: WriterStatus::Completed {
