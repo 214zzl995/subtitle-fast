@@ -50,13 +50,14 @@ samples_per_second = 7
 target = 230
 delta = 12
 # comparator = "bitset-cover"
+# roi = { x = 0.0, y = 0.75, width = 1.0, height = 0.25 } # normalized 0-1; omit/zero → full frame
 
 [decoder]
 # backend = "dxva"
 # channel_capacity = 32
 ```
 
-CLI flags like `--detector-target`, `--detector-delta`, `--backend`, and `--ocr-backend` override the file settings.
+CLI flags like `--detector-target`, `--detector-delta`, `--roi x,y,width,height`, `--backend`, and `--ocr-backend` override the file settings. Omit the ROI flag or use a zero-sized ROI to scan the full frame.
 
 ## Pipeline overview
 

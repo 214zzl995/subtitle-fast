@@ -34,6 +34,16 @@ struct DetectionFileConfig {
     target: Option<u8>,
     delta: Option<u8>,
     comparator: Option<String>,
+    roi: Option<RoiFileConfig>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(default)]
+struct RoiFileConfig {
+    x: Option<f32>,
+    y: Option<f32>,
+    width: Option<f32>,
+    height: Option<f32>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -243,6 +253,13 @@ fn merge(
         config_path.as_ref(),
     )?;
 
+    let detection_roi = resolve_detection_roi(
+        cli.roi,
+        detection_cfg.roi,
+        !sources.detector_roi_from_cli,
+        config_path.as_ref(),
+    )?;
+
     let decoder_channel_capacity = resolve_decoder_capacity(
         cli.decoder_channel_capacity,
         decoder_cfg.channel_capacity,
@@ -268,7 +285,7 @@ fn merge(
             target: detector_target,
             delta: detector_delta,
             comparator: comparator_kind,
-            roi: None,
+            roi: Some(detection_roi),
         },
         decoder: decoder_settings,
         output: output_settings,
@@ -331,6 +348,77 @@ fn resolve_detector_u8(
     Ok(default)
 }
 
+fn full_frame_roi() -> RoiConfig {
+    RoiConfig {
+        x: 0.0,
+        y: 0.0,
+        width: 1.0,
+        height: 1.0,
+    }
+}
+
+fn resolve_detection_roi(
+    cli_value: Option<RoiConfig>,
+    file_value: Option<RoiFileConfig>,
+    use_file: bool,
+    config_path: Option<&PathBuf>,
+) -> Result<RoiConfig, ConfigError> {
+    let raw = if let Some(roi) = cli_value {
+        Some(roi)
+    } else if use_file {
+        file_value.map(|roi| RoiConfig {
+            x: roi.x.unwrap_or(0.0),
+            y: roi.y.unwrap_or(0.0),
+            width: roi.width.unwrap_or(0.0),
+            height: roi.height.unwrap_or(0.0),
+        })
+    } else {
+        None
+    };
+
+    let normalized = match raw {
+        Some(roi) => normalize_roi(roi, config_path)?,
+        None => None,
+    };
+
+    Ok(normalized.unwrap_or_else(full_frame_roi))
+}
+
+fn normalize_roi(
+    roi: RoiConfig,
+    config_path: Option<&PathBuf>,
+) -> Result<Option<RoiConfig>, ConfigError> {
+    if roi.x < 0.0 || roi.y < 0.0 || roi.width < 0.0 || roi.height < 0.0 {
+        return Err(ConfigError::InvalidValue {
+            path: config_path.cloned(),
+            field: "detection_roi",
+            value: format!("{},{},{},{}", roi.x, roi.y, roi.width, roi.height),
+        });
+    }
+
+    if roi.width == 0.0 || roi.height == 0.0 {
+        return Ok(None);
+    }
+
+    let x = roi.x.min(1.0);
+    let y = roi.y.min(1.0);
+    let max_width = (1.0 - x).max(0.0);
+    let max_height = (1.0 - y).max(0.0);
+    let width = roi.width.min(1.0).min(max_width);
+    let height = roi.height.min(1.0).min(max_height);
+
+    if width <= 0.0 || height <= 0.0 {
+        return Ok(None);
+    }
+
+    Ok(Some(RoiConfig {
+        x,
+        y,
+        width,
+        height,
+    }))
+}
+
 fn resolve_comparator_kind(
     cli_value: Option<String>,
     file_value: Option<String>,
@@ -387,4 +475,89 @@ fn resolve_decoder_capacity(
         capacity = Some(value);
     }
     Ok(capacity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roi_defaults_to_full_when_missing() {
+        let roi = resolve_detection_roi(None, None, true, None).unwrap();
+        assert_eq!(roi, full_frame_roi());
+    }
+
+    #[test]
+    fn zero_sized_roi_falls_back_to_full_frame() {
+        let roi = resolve_detection_roi(
+            Some(RoiConfig {
+                x: 0.5,
+                y: 0.5,
+                width: 0.0,
+                height: 0.0,
+            }),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(roi, full_frame_roi());
+    }
+
+    #[test]
+    fn roi_clamps_to_bounds() {
+        let roi = resolve_detection_roi(
+            Some(RoiConfig {
+                x: 0.9,
+                y: 0.1,
+                width: 0.5,
+                height: 0.95,
+            }),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            roi,
+            RoiConfig {
+                x: 0.9,
+                y: 0.1,
+                width: 0.1,
+                height: 0.9
+            }
+        );
+    }
+
+    #[test]
+    fn negative_roi_is_invalid() {
+        let err = resolve_detection_roi(
+            Some(RoiConfig {
+                x: -0.1,
+                y: 0.0,
+                width: 0.2,
+                height: 0.2,
+            }),
+            None,
+            false,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::InvalidValue { field, .. } if field == "detection_roi"
+        ));
+    }
+
+    #[test]
+    fn file_roi_defaults_to_full_when_empty() {
+        let file_roi = RoiFileConfig {
+            x: Some(0.0),
+            y: Some(0.0),
+            width: Some(0.0),
+            height: Some(0.0),
+        };
+        let roi = resolve_detection_roi(None, Some(file_roi), true, None).unwrap();
+        assert_eq!(roi, full_frame_roi());
+    }
 }

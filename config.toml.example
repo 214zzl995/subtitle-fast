@@ -7,6 +7,7 @@ samples_per_second = 7
 target = 230
 delta = 12
 # comparator = "bitset-cover"
+# roi = { x = 0.0, y = 0.75, width = 1.0, height = 0.25 } # normalized 0-1; omit or zero-sized -> full frame
 
 [decoder]
 # backend = "dxva" # Windows D3D11/DXVA; use "ffmpeg" or "mft" as fallbacks
