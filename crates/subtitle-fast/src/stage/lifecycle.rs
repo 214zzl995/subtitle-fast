@@ -20,7 +20,7 @@ use subtitle_fast_types::{RoiConfig, YPlaneFrame};
 const REGION_TRACKER_CHANNEL_CAPACITY: usize = 4;
 const MIN_REGION_AREA_FRACTION: f32 = 0.001;
 const MIN_REGION_DURATION: Duration = Duration::from_millis(200);
-const MIN_REGION_DIM_PX: u32 = 3;
+const MIN_REGION_DIM_PX: u32 = 15;
 
 pub struct CompletedRegion {
     pub id: RegionId,
