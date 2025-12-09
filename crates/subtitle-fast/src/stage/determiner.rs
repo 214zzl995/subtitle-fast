@@ -83,6 +83,12 @@ impl RegionDeterminer {
     }
 }
 
+impl Default for RegionDeterminer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 struct RegionDeterminerWorker {
     persistent: Arc<Mutex<PersistentStore>>,
 }
@@ -120,22 +126,22 @@ impl RegionDeterminerWorker {
                 (guard.id, guard.label.clone(), None)
             };
 
-            if let Some(previous) = previous_roi {
-                if roi_area(&roi) > roi_area(&previous) && overlaps(&roi, &previous) {
-                    if let Some(clipped) = clip_region(&previous, &roi) {
-                        let created = {
-                            let mut store = self.persistent.lock();
-                            store.insert_new(clipped)
-                        };
-                        let guard = created.lock();
-                        used_ids.insert(guard.id);
-                        emitted.push(RegionUnit {
-                            id: guard.id,
-                            label: guard.label.clone(),
-                            roi: clipped,
-                        });
-                    }
-                }
+            if let Some(previous) = previous_roi
+                && roi_area(&roi) > roi_area(&previous)
+                && overlaps(&roi, &previous)
+                && let Some(clipped) = clip_region(&previous, &roi)
+            {
+                let created = {
+                    let mut store = self.persistent.lock();
+                    store.insert_new(clipped)
+                };
+                let guard = created.lock();
+                used_ids.insert(guard.id);
+                emitted.push(RegionUnit {
+                    id: guard.id,
+                    label: guard.label.clone(),
+                    roi: clipped,
+                });
             }
 
             emitted.push(RegionUnit { id, label, roi });
@@ -253,9 +259,7 @@ fn roi_intersection(a: &RoiConfig, b: &RoiConfig) -> Option<RoiConfig> {
 }
 
 fn clip_region(smaller: &RoiConfig, larger: &RoiConfig) -> Option<RoiConfig> {
-    let Some(inter) = roi_intersection(smaller, larger) else {
-        return None;
-    };
+    let inter = roi_intersection(smaller, larger)?;
 
     let candidates = [
         // Above overlap

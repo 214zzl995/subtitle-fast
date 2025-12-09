@@ -311,10 +311,10 @@ fn crop_region(frame: &YPlaneFrame, bounds: RegionBounds) -> std::io::Result<(Ve
         let start = row
             .checked_mul(stride)
             .and_then(|offset| offset.checked_add(left))
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "ROI overflow"))?;
+            .ok_or_else(|| std::io::Error::other("ROI overflow"))?;
         let end = start
             .checked_add(width)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "ROI overflow"))?;
+            .ok_or_else(|| std::io::Error::other("ROI overflow"))?;
         let slice = data.get(start..end).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -332,12 +332,8 @@ fn encode_grayscale_png(path: &Path, width: u32, height: u32, data: &[u8]) -> st
     let mut encoder = Encoder::new(writer, width, height);
     encoder.set_color(ColorType::Grayscale);
     encoder.set_depth(BitDepth::Eight);
-    let mut writer = encoder
-        .write_header()
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
-    writer
-        .write_image_data(data)
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
+    let mut writer = encoder.write_header().map_err(std::io::Error::other)?;
+    writer.write_image_data(data).map_err(std::io::Error::other)
 }
 
 fn response_to_text(response: &OcrResponse) -> String {
