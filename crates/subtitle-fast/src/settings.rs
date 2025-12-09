@@ -412,11 +412,16 @@ fn normalize_roi(
     }
 
     Ok(Some(RoiConfig {
-        x,
-        y,
-        width,
-        height,
+        x: round_roi(x),
+        y: round_roi(y),
+        width: round_roi(width),
+        height: round_roi(height),
     }))
+}
+
+fn round_roi(value: f32) -> f32 {
+    const SCALE: f32 = 1_000_000.0;
+    (value * SCALE).round() / SCALE
 }
 
 fn resolve_comparator_kind(

@@ -9,8 +9,8 @@ use tokio::sync::mpsc;
 
 use super::StreamBundle;
 use super::detector::DetectionSample;
+use super::lifecycle::RegionTimings;
 use super::ocr::OcrTimings;
-use super::segmenter::SegmentTimings;
 use super::writer::{SubtitleWriterError, WriterResult, WriterStatus, WriterTimings};
 
 const GUI_PROGRESS_CHANNEL_CAPACITY: usize = 4;
@@ -82,8 +82,8 @@ struct GuiProgressState {
     latest_frame_index: Option<u64>,
     started: Instant,
     avg_detection_ms: Option<f64>,
-    segment_frames: u64,
-    segment_total: Duration,
+    region_frames: u64,
+    region_total: Duration,
     ocr_intervals: u64,
     ocr_total: Duration,
     writer_cues: u64,
@@ -114,8 +114,8 @@ impl GuiProgressInner {
             latest_frame_index: None,
             started: Instant::now(),
             avg_detection_ms: None,
-            segment_frames: 0,
-            segment_total: Duration::ZERO,
+            region_frames: 0,
+            region_total: Duration::ZERO,
             ocr_intervals: 0,
             ocr_total: Duration::ZERO,
             writer_cues: 0,
@@ -152,7 +152,7 @@ impl GuiProgressInner {
             if let Some(sample) = &event.sample {
                 Self::observe_sample(&mut state, sample);
             }
-            Self::observe_segment_time(&mut state, event.segment_timings);
+            Self::observe_region_time(&mut state, event.region_timings);
             Self::observe_ocr_time(&mut state, event.ocr_timings);
             let completed = matches!(event.status, WriterStatus::Completed { .. });
             Self::observe_writer_time(&mut state, event.writer_timings, completed);
@@ -208,12 +208,12 @@ impl GuiProgressInner {
         });
     }
 
-    fn observe_segment_time(state: &mut GuiProgressState, timings: Option<SegmentTimings>) {
+    fn observe_region_time(state: &mut GuiProgressState, timings: Option<RegionTimings>) {
         let Some(timings) = timings else {
             return;
         };
-        state.segment_frames = state.segment_frames.saturating_add(timings.frames);
-        state.segment_total = state.segment_total.saturating_add(timings.total);
+        state.region_frames = state.region_frames.saturating_add(timings.frames);
+        state.region_total = state.region_total.saturating_add(timings.total);
     }
 
     fn observe_ocr_time(state: &mut GuiProgressState, timings: Option<OcrTimings>) {
@@ -260,7 +260,7 @@ impl GuiProgressInner {
                 0.0
             },
             det_ms: state.avg_detection_ms.unwrap_or(0.0),
-            seg_ms: average_ms(state.segment_total, state.segment_frames),
+            seg_ms: average_ms(state.region_total, state.region_frames),
             ocr_ms: average_ms(state.ocr_total, state.ocr_intervals),
             writer_ms: average_ms(state.writer_total, state.writer_cues),
             cues: state.writer_cues,
@@ -438,9 +438,20 @@ fn average_ms(total: Duration, units: u64) -> f64 {
 fn describe_error(err: &SubtitleWriterError) -> String {
     match err {
         SubtitleWriterError::Ocr(ocr_err) => match ocr_err {
-            super::ocr::OcrStageError::Segmenter(segmenter_err) => {
-                format!("segmenter error: {segmenter_err:?}")
-            }
+            super::ocr::OcrStageError::Lifecycle(lifecycle_err) => match lifecycle_err {
+                super::lifecycle::RegionLifecycleError::Determiner(det_err) => match det_err {
+                    super::determiner::RegionDeterminerError::Detector(detector_err) => {
+                        match detector_err {
+                            super::detector::DetectorError::Sampler(sampler_err) => {
+                                format!("sampler error: {sampler_err}")
+                            }
+                            super::detector::DetectorError::Detection(det_err) => {
+                                format!("detector error: {det_err}")
+                            }
+                        }
+                    }
+                },
+            },
             super::ocr::OcrStageError::Engine(engine_err) => {
                 format!("ocr error: {engine_err}")
             }

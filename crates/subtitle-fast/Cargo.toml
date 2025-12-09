@@ -35,6 +35,8 @@ tokio = { version = "1", features = [
 ] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 toml = "0.8"
+parking_lot = "0.12"
+png = "0.18"
 
 [dev-dependencies]
 tempfile = "3"

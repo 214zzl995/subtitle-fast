@@ -1,9 +1,10 @@
 pub mod detector;
+pub mod determiner;
+pub mod lifecycle;
 pub mod ocr;
 pub mod progress;
 pub mod progress_gui;
 pub mod sampler;
-pub mod segmenter;
 pub mod sorter;
 pub mod writer;
 
@@ -16,11 +17,12 @@ use tokio_stream::{StreamExt, wrappers::WatchStream};
 
 use crate::settings::{DetectionSettings, EffectiveSettings};
 use detector::Detector;
+use determiner::{RegionDeterminer, RegionDeterminerError};
+use lifecycle::{RegionLifecycleError, RegionLifecycleTracker};
 use ocr::{OcrStageError, SubtitleOcr};
 use progress::Progress;
 use progress_gui::{GuiProgress, GuiProgressInner};
 use sampler::FrameSampler;
-use segmenter::{SegmenterError, SubtitleSegmenter};
 use sorter::FrameSorter;
 use subtitle_fast_decoder::DynYPlaneProvider;
 #[cfg(all(feature = "ocr-vision", target_os = "macos"))]
@@ -104,8 +106,9 @@ pub async fn run_pipeline(
         Detector::new(&pipeline.detection).map_err(|err| (detection_error_to_yplane(err), 0))?;
 
     let detected = detector_stage.attach(sampled);
-    let segmented = SubtitleSegmenter::new(&pipeline.detection).attach(detected);
-    let ocred = SubtitleOcr::new(Arc::clone(&pipeline.ocr.engine)).attach(segmented);
+    let determined = RegionDeterminer::new().attach(detected);
+    let tracked = RegionLifecycleTracker::new(&pipeline.detection).attach(determined);
+    let ocred = SubtitleOcr::new(Arc::clone(&pipeline.ocr.engine)).attach(tracked);
     let written = SubtitleWriter::new(pipeline.output.path.clone()).attach(ocred);
     let monitored = if let Some(handle) = &pipeline.progress {
         GuiProgress::new(Arc::clone(handle)).attach(written)
@@ -208,12 +211,14 @@ fn detection_error_to_yplane(err: SubtitleDetectionError) -> YPlaneError {
 fn writer_error_to_yplane(err: SubtitleWriterError) -> YPlaneError {
     match err {
         SubtitleWriterError::Ocr(ocr_err) => match ocr_err {
-            OcrStageError::Segmenter(segmenter_err) => match segmenter_err {
-                SegmenterError::Detector(detector_err) => match detector_err {
-                    detector::DetectorError::Sampler(sampler_err) => sampler_err,
-                    detector::DetectorError::Detection(det_err) => {
-                        detection_error_to_yplane(det_err)
-                    }
+            OcrStageError::Lifecycle(lifecycle_err) => match lifecycle_err {
+                RegionLifecycleError::Determiner(det_err) => match det_err {
+                    RegionDeterminerError::Detector(detector_err) => match detector_err {
+                        detector::DetectorError::Sampler(sampler_err) => sampler_err,
+                        detector::DetectorError::Detection(det_err) => {
+                            detection_error_to_yplane(det_err)
+                        }
+                    },
                 },
             },
             OcrStageError::Engine(ocr_err) => {

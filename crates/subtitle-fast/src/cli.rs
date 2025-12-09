@@ -121,10 +121,7 @@ fn parse_positive_u32(value: &str) -> Result<u32, String> {
 }
 
 fn parse_roi(value: &str) -> Result<RoiConfig, String> {
-    let parts: Vec<_> = value
-        .split(|c| c == ',' || c == ' ')
-        .filter(|s| !s.is_empty())
-        .collect();
+    let parts: Vec<_> = value.split([',', ' ']).filter(|s| !s.is_empty()).collect();
     if parts.len() != 4 {
         return Err("roi must be four numbers: x,y,width,height".into());
     }
