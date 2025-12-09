@@ -20,7 +20,7 @@ use super::ocr::{
 use subtitle_fast_types::{OcrResponse, YPlaneFrame};
 
 const WRITER_CHANNEL_CAPACITY: usize = 4;
-const EMPTY_OCR_DIR: &str = "ocr-empty";
+const ENV_EMPTY_OCR_DIR: &str = "SUBFAST_EMPTY_OCR_DIR";
 
 pub type WriterResult = Result<WriterEvent, SubtitleWriterError>;
 
@@ -131,7 +131,7 @@ struct SubtitleWriterWorker {
     output_path: PathBuf,
     cues: Vec<SubtitleCue>,
     merged: u64,
-    empty_dir: PathBuf,
+    empty_dir: Option<PathBuf>,
     empty_saved: u64,
 }
 
@@ -141,7 +141,7 @@ impl SubtitleWriterWorker {
             output_path,
             cues: Vec::new(),
             merged: 0,
-            empty_dir: PathBuf::from(EMPTY_OCR_DIR),
+            empty_dir: empty_ocr_export_dir(),
             empty_saved: 0,
         }
     }
@@ -198,13 +198,16 @@ impl SubtitleWriterWorker {
     }
 
     fn export_empty_ocr(&mut self, subtitle: &OcredSubtitle) {
+        let Some(dir) = self.empty_dir.as_ref() else {
+            return;
+        };
         let Some(bounds) = region_bounds(&subtitle.region, &subtitle.lifecycle.frame) else {
             return;
         };
         let frame = Arc::clone(&subtitle.lifecycle.frame);
         let seq = self.empty_saved;
         self.empty_saved = self.empty_saved.saturating_add(1);
-        let dir = self.empty_dir.clone();
+        let dir = dir.clone();
         let region_id = subtitle.lifecycle.id;
         let start_frame = subtitle.lifecycle.start_frame;
         let start_ms = subtitle.lifecycle.start_time.as_millis() as u64;
@@ -482,6 +485,20 @@ fn should_merge(current: &MergedSubtitle, incoming: &SubtitleCue) -> bool {
     } else {
         false
     }
+}
+
+fn empty_ocr_export_dir() -> Option<PathBuf> {
+    std::env::var(ENV_EMPTY_OCR_DIR)
+        .ok()
+        .map(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            }
+        })
+        .unwrap_or(None)
 }
 
 #[cfg(test)]
