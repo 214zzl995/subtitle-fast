@@ -1,14 +1,51 @@
+use std::env;
+
+mod backend;
+mod cli;
+mod settings;
+mod stage;
+
+#[cfg(feature = "gui")]
+mod gui;
+
 use backend::ExecutionPlan;
 use clap::CommandFactory;
 use cli::{CliArgs, CliSources, parse_cli};
 use settings::{ConfigError, resolve_settings};
 use stage::PipelineConfig;
 use std::num::NonZeroUsize;
-use subtitle_fast::{backend, cli, settings, stage};
 use subtitle_fast_types::YPlaneError;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), YPlaneError> {
+    #[allow(unused_variables)]
+    let args: Vec<String> = env::args().collect();
+
+    #[cfg(feature = "gui")]
+    {
+        if args.len() == 1 {
+            return run_gui();
+        }
+    }
+
+    run_cli().await
+}
+
+#[cfg(feature = "gui")]
+fn run_gui() -> Result<(), YPlaneError> {
+    use gpui::*;
+    use gui::SubtitleFastApp;
+
+    Application::new().run(|cx: &mut App| {
+        let app = SubtitleFastApp::new(cx);
+        app.open_window(cx);
+        cx.activate(true);
+    });
+
+    Ok(())
+}
+
+async fn run_cli() -> Result<(), YPlaneError> {
     match prepare_execution_plan().await? {
         Some(plan) => backend::run(plan).await,
         None => Ok(()),
