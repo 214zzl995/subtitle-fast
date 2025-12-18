@@ -24,118 +24,142 @@ impl AppTheme {
     // Background colors
     pub fn background(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.05, 1.0) // Very dark grey, almost black
+            hsla(220.0, 0.1, 0.08, 1.0)
         } else {
-            hsla(0.0, 0.0, 0.98, 1.0) // Very light grey, almost white
+            hsla(220.0, 0.02, 0.97, 1.0)
         }
     }
 
     pub fn surface(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.12, 1.0) // Dark grey
+            hsla(220.0, 0.08, 0.11, 1.0)
         } else {
-            hsla(0.0, 0.0, 1.0, 1.0) // Pure white
+            hsla(220.0, 0.03, 0.93, 1.0)
         }
     }
 
     pub fn surface_elevated(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.18, 1.0) // Slightly lighter dark grey
+            hsla(220.0, 0.08, 0.15, 1.0)
         } else {
-            hsla(0.0, 0.0, 0.95, 1.0) // Light grey
+            hsla(220.0, 0.04, 0.9, 1.0)
+        }
+    }
+
+    pub fn translucent_panel(&self) -> Hsla {
+        if self.is_dark {
+            hsla(220.0, 0.12, 0.07, 0.8)
+        } else {
+            hsla(220.0, 0.02, 0.98, 0.8)
         }
     }
 
     // Text colors
     pub fn text_primary(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.95, 1.0) // Very light grey
+            hsla(220.0, 0.02, 0.92, 1.0)
         } else {
-            hsla(0.0, 0.0, 0.1, 1.0) // Very dark grey
+            hsla(220.0, 0.02, 0.12, 1.0)
         }
     }
 
     pub fn text_secondary(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.65, 1.0) // Light grey (high contrast)
+            hsla(220.0, 0.03, 0.65, 1.0)
         } else {
-            hsla(0.0, 0.0, 0.4, 1.0) // Dark grey (high contrast)
+            hsla(220.0, 0.03, 0.35, 1.0)
         }
     }
 
     pub fn text_tertiary(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.45, 1.0) // Medium-light grey
+            hsla(220.0, 0.03, 0.48, 1.0)
         } else {
-            hsla(0.0, 0.0, 0.55, 1.0) // Medium-dark grey
+            hsla(220.0, 0.03, 0.55, 1.0)
         }
     }
 
     // Border colors
     pub fn border(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.25, 1.0) // Dark grey border
+            hsla(220.0, 0.08, 0.22, 1.0)
         } else {
-            hsla(0.0, 0.0, 0.85, 1.0) // Light grey border
+            hsla(220.0, 0.08, 0.78, 1.0)
         }
     }
 
     pub fn border_focused(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.4, 1.0) // Lighter grey for focus
+            hsla(216.0, 0.8, 0.64, 0.8)
         } else {
-            hsla(0.0, 0.0, 0.6, 1.0) // Darker grey for focus
+            hsla(216.0, 0.8, 0.4, 0.8)
         }
     }
 
-    // Accent color (avoiding blue/purple, using grey-based)
+    // Accent color
     pub fn accent(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.8, 1.0) // Light grey accent
+            hsla(216.0, 0.78, 0.64, 1.0)
         } else {
-            hsla(0.0, 0.0, 0.2, 1.0) // Dark grey accent
+            hsla(216.0, 0.78, 0.46, 1.0)
+        }
+    }
+
+    pub fn accent_muted(&self) -> Hsla {
+        if self.is_dark {
+            hsla(216.0, 0.78, 0.64, 0.16)
+        } else {
+            hsla(216.0, 0.78, 0.46, 0.18)
         }
     }
 
     pub fn accent_hover(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.9, 1.0) // Very light grey
+            hsla(216.0, 0.86, 0.7, 1.0)
         } else {
-            hsla(0.0, 0.0, 0.1, 1.0) // Very dark grey
+            hsla(216.0, 0.86, 0.36, 1.0)
         }
     }
 
-    // Status colors (minimal, grey-based)
+    // Status colors
     pub fn success(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.75, 1.0)
+            hsla(152.0, 0.5, 0.55, 1.0)
         } else {
-            hsla(0.0, 0.0, 0.25, 1.0)
+            hsla(152.0, 0.5, 0.35, 1.0)
         }
     }
 
     pub fn warning(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.7, 1.0)
+            hsla(42.0, 0.9, 0.56, 1.0)
         } else {
-            hsla(0.0, 0.0, 0.3, 1.0)
+            hsla(42.0, 0.9, 0.4, 1.0)
         }
     }
 
     pub fn error(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.65, 1.0)
+            hsla(2.0, 0.84, 0.62, 1.0)
         } else {
-            hsla(0.0, 0.0, 0.35, 1.0)
+            hsla(2.0, 0.84, 0.45, 1.0)
         }
     }
 
     // Overlay colors
     pub fn overlay(&self) -> Hsla {
         if self.is_dark {
-            hsla(0.0, 0.0, 0.0, 0.6)
+            hsla(220.0, 0.1, 0.02, 0.65)
         } else {
-            hsla(0.0, 0.0, 0.0, 0.3)
+            hsla(220.0, 0.1, 0.9, 0.35)
+        }
+    }
+
+    pub fn overlay_dashed(&self) -> Hsla {
+        if self.is_dark {
+            hsla(216.0, 0.78, 0.64, 0.65)
+        } else {
+            hsla(216.0, 0.78, 0.46, 0.65)
         }
     }
 }

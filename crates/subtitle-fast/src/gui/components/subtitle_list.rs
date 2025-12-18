@@ -29,34 +29,50 @@ impl Render for SubtitleList {
             .border_color(self.theme.border())
             .rounded_md()
             .child(
-                // Header
                 div()
                     .flex()
                     .justify_between()
                     .items_center()
-                    .p_3()
+                    .p(px(12.0))
                     .border_b_1()
                     .border_color(self.theme.border())
                     .child(
                         div()
                             .text_sm()
                             .text_color(self.theme.text_primary())
-                            .child("Subtitles"),
+                            .child("字幕列表"),
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(self.theme.text_secondary())
-                            .child(format!("{} cues", subtitles.len())),
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(self.theme.text_secondary())
+                                    .child(format!("{} 条", subtitles.len())),
+                            )
+                            .child(
+                                div()
+                                    .px(px(10.0))
+                                    .py(px(6.0))
+                                    .rounded_md()
+                                    .bg(self.theme.surface_elevated())
+                                    .border_1()
+                                    .border_color(self.theme.border())
+                                    .text_xs()
+                                    .text_color(self.theme.text_secondary())
+                                    .child("导出"),
+                            ),
                     ),
             )
             .child(
-                // Subtitle list - simple flex_col instead of overflow_y_scroll
                 div()
                     .flex()
                     .flex_col()
-                    .p_2()
-                    .gap_2()
+                    .p(px(12.0))
+                    .gap(px(8.0))
                     .when(subtitles.is_empty(), |div| {
                         div.child(self.render_empty_state())
                     })
@@ -74,12 +90,12 @@ impl SubtitleList {
         div()
             .flex()
             .flex_col()
-            .p_2()
+            .p(px(12.0))
             .bg(self.theme.surface_elevated())
             .border_1()
             .border_color(self.theme.border())
             .rounded_md()
-            .gap_1()
+            .gap(px(6.0))
             .child(
                 div()
                     .text_xs()
@@ -99,7 +115,7 @@ impl SubtitleList {
             div()
                 .text_sm()
                 .text_color(self.theme.text_tertiary())
-                .child("No subtitles yet"),
+                .child("开始检测后，字幕会出现在这里"),
         )
     }
 

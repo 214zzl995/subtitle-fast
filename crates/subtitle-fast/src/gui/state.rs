@@ -76,6 +76,8 @@ pub struct AppState {
     threshold: RwLock<f64>,
     tolerance: RwLock<f64>,
     roi: RwLock<Option<RoiSelection>>,
+    selection_visible: RwLock<bool>,
+    highlight_enabled: RwLock<bool>,
 
     // Detection results
     metrics: RwLock<DetectionMetrics>,
@@ -83,6 +85,9 @@ pub struct AppState {
 
     // UI state
     error_message: RwLock<Option<String>>,
+    playhead_ms: RwLock<f64>,
+    duration_ms: RwLock<f64>,
+    playing: RwLock<bool>,
 }
 
 impl AppState {
@@ -92,11 +97,16 @@ impl AppState {
             active_file_id: RwLock::new(None),
             next_file_id: RwLock::new(1),
             threshold: RwLock::new(230.0),
-            tolerance: RwLock::new(12.0),
-            roi: RwLock::new(None),
+            tolerance: RwLock::new(20.0),
+            roi: RwLock::new(Some(Self::default_roi())),
+            selection_visible: RwLock::new(true),
+            highlight_enabled: RwLock::new(false),
             metrics: RwLock::new(DetectionMetrics::default()),
             subtitles: RwLock::new(Vec::new()),
             error_message: RwLock::new(None),
+            playhead_ms: RwLock::new(2000.0),
+            duration_ms: RwLock::new(30000.0),
+            playing: RwLock::new(false),
         })
     }
 
@@ -208,6 +218,60 @@ impl AppState {
 
     pub fn set_error_message(&self, msg: Option<String>) {
         *self.error_message.write() = msg;
+    }
+
+    pub fn selection_visible(&self) -> bool {
+        *self.selection_visible.read()
+    }
+
+    pub fn toggle_selection_visibility(&self) {
+        let mut guard = self.selection_visible.write();
+        *guard = !*guard;
+    }
+
+    pub fn highlight_enabled(&self) -> bool {
+        *self.highlight_enabled.read()
+    }
+
+    pub fn toggle_highlight(&self) {
+        let mut guard = self.highlight_enabled.write();
+        *guard = !*guard;
+    }
+
+    pub fn playhead_ms(&self) -> f64 {
+        *self.playhead_ms.read()
+    }
+
+    pub fn set_playhead_ms(&self, value: f64) {
+        let duration = *self.duration_ms.read();
+        let clamped = value.clamp(0.0, duration);
+        *self.playhead_ms.write() = clamped;
+    }
+
+    pub fn duration_ms(&self) -> f64 {
+        *self.duration_ms.read()
+    }
+
+    pub fn set_duration_ms(&self, value: f64) {
+        *self.duration_ms.write() = value.max(1.0);
+    }
+
+    pub fn is_playing(&self) -> bool {
+        *self.playing.read()
+    }
+
+    pub fn toggle_playing(&self) {
+        let mut guard = self.playing.write();
+        *guard = !*guard;
+    }
+
+    fn default_roi() -> RoiSelection {
+        RoiSelection {
+            x: 0.15,
+            y: 0.75,
+            width: 0.70,
+            height: 0.25,
+        }
     }
 
     pub fn build_execution_plan(&self, file: &TrackedFile) -> anyhow::Result<ExecutionPlan> {
