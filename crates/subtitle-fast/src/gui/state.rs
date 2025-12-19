@@ -11,9 +11,9 @@ use crate::settings::EffectiveSettings;
 use crate::stage::PipelineConfig;
 use subtitle_fast_types::RoiConfig;
 
-const LEFT_SIDEBAR_MIN_WIDTH: f32 = 150.0;
+const LEFT_SIDEBAR_MIN_WIDTH: f32 = 225.0;
 const LEFT_SIDEBAR_MAX_WIDTH: f32 = 400.0;
-const LEFT_SIDEBAR_DEFAULT_WIDTH: f32 = 175.0;
+const LEFT_SIDEBAR_DEFAULT_WIDTH: f32 = 225.0;
 
 const RIGHT_SIDEBAR_MIN_WIDTH: f32 = 200.0;
 const RIGHT_SIDEBAR_MAX_WIDTH: f32 = 500.0;

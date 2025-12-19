@@ -33,9 +33,10 @@ impl Render for Sidebar {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(4.0))
-                    .px(px(10.0))
-                    .py(px(10.0))
+                    .gap(px(6.0))
+                    .px(px(12.0))
+                    .pt(px(14.0))
+                    .pb(px(10.0))
                     .child(icon_sm(Icon::Film, self.theme.text_secondary()))
                     .child(
                         div()
@@ -50,8 +51,9 @@ impl Render for Sidebar {
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .p(px(8.0))
-                    .gap(px(4.0))
+                    .px(px(8.0))
+                    .pb(px(10.0))
+                    .gap(px(6.0))
                     .overflow_hidden()
                     .children(
                         files
@@ -103,23 +105,26 @@ impl Sidebar {
             Icon::Film
         };
 
+        let base_bg = if is_active {
+            self.theme.accent_muted()
+        } else {
+            gpui::transparent_black()
+        };
+
         div()
             .flex()
             .flex_col()
-            .p(px(8.0))
-            .rounded(px(6.0))
-            .bg(if is_active {
-                self.theme.accent_muted()
-            } else {
-                self.theme.surface_elevated()
-            })
+            .px(px(10.0))
+            .py(px(8.0))
+            .rounded(px(8.0))
+            .bg(base_bg)
             .gap(px(6.0))
             .cursor_pointer()
             .hover(|s| {
                 if !is_active {
-                    s.bg(self.theme.accent_muted().opacity(0.5))
+                    s.bg(self.theme.surface_hover())
                 } else {
-                    s.bg(self.theme.accent_muted().opacity(0.8))
+                    s.bg(self.theme.accent_muted().opacity(0.75))
                 }
             })
             .child(
@@ -160,7 +165,7 @@ impl Sidebar {
                     .w_full()
                     .h(px(4.0))
                     .rounded_full()
-                    .bg(self.theme.border())
+                    .bg(self.theme.border().opacity(0.7))
                     .overflow_hidden()
                     .child(
                         div()

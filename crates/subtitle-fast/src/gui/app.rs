@@ -7,6 +7,24 @@ use crate::gui::icons::{Icon, icon_sm};
 use crate::gui::state::AppState;
 use crate::gui::theme::AppTheme;
 
+const SIDEBAR_TOGGLE_SIZE: f32 = 26.0;
+const SIDEBAR_TOGGLE_PADDING_X: f32 = 10.0;
+const SIDEBAR_TOGGLE_GAP: f32 = 16.0;
+const TITLEBAR_HEIGHT_DEFAULT: f32 = 32.0;
+const TITLEBAR_COLLAPSED_WIDTH_DEFAULT: f32 = 48.0;
+const MACOS_TITLEBAR_HEIGHT: f32 = 40.0;
+const MACOS_TRAFFIC_LIGHT_OFFSET_X: f32 = 12.0;
+const MACOS_TRAFFIC_LIGHT_DIAMETER: f32 = 12.0;
+const MACOS_TRAFFIC_LIGHT_GAP: f32 = 6.0;
+const MACOS_TRAFFIC_LIGHT_OFFSET_Y: f32 =
+    (MACOS_TITLEBAR_HEIGHT - MACOS_TRAFFIC_LIGHT_DIAMETER) / 2.0;
+
+fn macos_titlebar_collapsed_width() -> f32 {
+    let traffic_light_width = MACOS_TRAFFIC_LIGHT_DIAMETER * 3.0 + MACOS_TRAFFIC_LIGHT_GAP * 2.0;
+    let traffic_light_end = MACOS_TRAFFIC_LIGHT_OFFSET_X + traffic_light_width;
+    traffic_light_end + SIDEBAR_TOGGLE_GAP + SIDEBAR_TOGGLE_PADDING_X + SIDEBAR_TOGGLE_SIZE
+}
+
 pub struct SubtitleFastApp {
     state: Arc<AppState>,
 }
@@ -27,7 +45,10 @@ impl SubtitleFastApp {
                     titlebar: Some(TitlebarOptions {
                         title: Some("subtitle-fast".into()),
                         appears_transparent: true,
-                        traffic_light_position: Some(point(px(12.0), px(12.0))),
+                        traffic_light_position: Some(point(
+                            px(MACOS_TRAFFIC_LIGHT_OFFSET_X),
+                            px(MACOS_TRAFFIC_LIGHT_OFFSET_Y),
+                        )),
                     }),
                     window_min_size: Some(size(px(1150.0), px(720.0))),
                     ..Default::default()
@@ -63,10 +84,19 @@ impl Render for MainWindow {
         let sidebar_panel_state = self.state.left_sidebar_panel_state();
         let sidebar_collapsed = sidebar_panel_state.is_collapsed();
         let max_width = self.state.left_sidebar_width();
+        let animation_duration = std::time::Duration::from_millis(200);
+        let titlebar_collapsed_width = if cfg!(target_os = "macos") {
+            macos_titlebar_collapsed_width()
+        } else {
+            TITLEBAR_COLLAPSED_WIDTH_DEFAULT
+        };
 
         let sidebar_config = AnimatedPanelConfig::new(max_width)
             .with_collapsed_width(0.0)
-            .with_duration(std::time::Duration::from_millis(200));
+            .with_duration(animation_duration);
+        let titlebar_sidebar_config = AnimatedPanelConfig::new(max_width)
+            .with_collapsed_width(titlebar_collapsed_width)
+            .with_duration(animation_duration);
 
         let sidebar = cx.new(|_| Sidebar::new(Arc::clone(&self.state), theme));
         let preview = cx.new(|_| PreviewPanel::new(Arc::clone(&self.state), theme));
@@ -97,7 +127,13 @@ impl Render for MainWindow {
                     }
                 }),
             )
-            .child(self.render_titlebar(theme, window, cx))
+            .child(self.render_titlebar(
+                theme,
+                window,
+                cx,
+                sidebar_panel_state,
+                titlebar_sidebar_config,
+            ))
             .child(
                 div()
                     .relative()
@@ -105,33 +141,53 @@ impl Render for MainWindow {
                     .flex_1()
                     .gap(px(1.0))
                     .overflow_hidden()
-                    .when(sidebar_collapsed, |d| {
-                        d.child(self.render_floating_sidebar_toggle(theme, cx))
-                    })
-                    .child(animated_panel_container(
-                        sidebar_panel_state,
-                        sidebar_config,
-                        "left-sidebar",
-                        div()
-                            .relative()
-                            .w(px(max_width))
-                            .h_full()
-                            .bg(theme.surface())
-                            .child(self.render_sidebar_toggle(theme, cx, sidebar_collapsed))
-                            .child(sidebar)
-                            .when(!sidebar_collapsed, |d| {
-                                d.child(self.render_resize_handle_left(theme, cx))
-                            }),
-                    ))
                     .child(
                         div()
+                            .relative()
                             .flex()
-                            .flex_col()
                             .flex_1()
-                            .h_full()
-                            .gap(px(1.0))
-                            .child(div().flex_1().child(preview))
-                            .child(div().child(control_panel)),
+                            .overflow_hidden()
+                            .child(animated_panel_container(
+                                sidebar_panel_state,
+                                sidebar_config,
+                                "left-sidebar",
+                                div()
+                                    .relative()
+                                    .w_full()
+                                    .h_full()
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .w(px(max_width))
+                                            .h_full()
+                                            .bg(theme.surface())
+                                            .child(sidebar)
+                                            .when(!sidebar_collapsed, |d| {
+                                                d.child(self.render_resize_handle_left(theme, cx))
+                                            }),
+                                    )
+                                    .when(!sidebar_collapsed, |d| {
+                                        d.child(
+                                            div()
+                                                .absolute()
+                                                .right(px(0.0))
+                                                .top_0()
+                                                .bottom_0()
+                                                .w(px(1.0))
+                                                .bg(theme.titlebar_border()),
+                                        )
+                                    }),
+                            ))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .h_full()
+                                    .gap(px(1.0))
+                                    .child(div().flex_1().child(preview))
+                                    .child(div().child(control_panel)),
+                            ),
                     )
                     .child(
                         div()
@@ -167,8 +223,22 @@ impl MainWindow {
             }));
     }
 
-    fn render_titlebar(&self, theme: AppTheme, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let titlebar_height = px(38.0);
+    fn render_titlebar(
+        &self,
+        theme: AppTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        sidebar_panel_state: AnimatedPanelState,
+        sidebar_config: AnimatedPanelConfig,
+    ) -> Div {
+        let titlebar_height = if cfg!(target_os = "macos") {
+            px(MACOS_TITLEBAR_HEIGHT)
+        } else {
+            px(TITLEBAR_HEIGHT_DEFAULT)
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        let _ = window;
 
         #[cfg(target_os = "windows")]
         let controls = self.render_windows_controls(theme, window, cx);
@@ -179,50 +249,73 @@ impl MainWindow {
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         let controls = self.render_linux_controls(theme, cx);
 
-        #[cfg(target_os = "macos")]
-        let left_padding = px(80.0);
+        let sidebar_collapsed = sidebar_panel_state.is_collapsed();
+        let sidebar_controls = div()
+            .flex()
+            .items_center()
+            .justify_end()
+            .h_full()
+            .w_full()
+            .px(px(SIDEBAR_TOGGLE_PADDING_X))
+            .child(self.render_sidebar_toggle(theme, cx, sidebar_collapsed));
 
-        #[cfg(not(target_os = "macos"))]
-        let left_padding = px(12.0);
+        let sidebar_slot = div()
+            .relative()
+            .h_full()
+            .bg(theme.titlebar_bg())
+            .child(sidebar_controls)
+            .when(!sidebar_collapsed, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .right(px(0.0))
+                        .top_0()
+                        .bottom_0()
+                        .w(px(1.0))
+                        .bg(theme.titlebar_border()),
+                )
+            })
+            .when(sidebar_collapsed, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .bottom(px(0.0))
+                        .h(px(1.0))
+                        .bg(theme.titlebar_border()),
+                )
+            })
+            .overflow_hidden()
+            .with_animated_width(sidebar_panel_state, sidebar_config, "left-titlebar");
+
+        let controls_slot = div()
+            .relative()
+            .flex()
+            .items_center()
+            .justify_end()
+            .flex_1()
+            .h_full()
+            .child(controls)
+            .child(
+                div()
+                    .absolute()
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .bottom(px(0.0))
+                    .h(px(1.0))
+                    .bg(theme.titlebar_border()),
+            );
 
         div()
             .flex()
             .items_center()
-            .justify_between()
             .h(titlebar_height)
             .w_full()
             .bg(theme.titlebar_bg())
             .window_control_area(WindowControlArea::Drag)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .pl(left_padding)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .w(px(20.0))
-                            .h(px(20.0))
-                            .rounded(px(4.0))
-                            .bg(theme.surface_elevated())
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.text_secondary())
-                                    .child("⌘"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text_primary())
-                            .child("subtitle-fast"),
-                    ),
-            )
-            .child(controls)
+            .child(sidebar_slot)
+            .child(controls_slot)
     }
 
     #[cfg(target_os = "windows")]
@@ -382,45 +475,28 @@ impl MainWindow {
         &self,
         theme: AppTheme,
         cx: &mut Context<Self>,
-        _collapsed: bool,
+        collapsed: bool,
     ) -> Div {
         div()
-            .absolute()
-            .top(px(8.0))
-            .right(px(8.0))
             .flex()
             .items_center()
             .justify_center()
-            .w(px(20.0))
-            .h(px(20.0))
-            .rounded(px(4.0))
+            .w(px(SIDEBAR_TOGGLE_SIZE))
+            .h(px(SIDEBAR_TOGGLE_SIZE))
+            .rounded(px(6.0))
+            .bg(theme.surface_elevated())
+            .border_1()
+            .border_color(theme.border())
             .cursor_pointer()
             .hover(|s| s.bg(theme.surface_hover()))
-            .child(icon_sm(Icon::ChevronLeft, theme.text_secondary()))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.state.toggle_sidebar();
-                    cx.notify();
-                }),
-            )
-    }
-
-    fn render_floating_sidebar_toggle(&self, theme: AppTheme, cx: &mut Context<Self>) -> Div {
-        div()
-            .absolute()
-            .top(px(8.0))
-            .left(px(8.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(px(24.0))
-            .h(px(24.0))
-            .rounded(px(4.0))
-            .bg(theme.surface())
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.surface_hover()))
-            .child(icon_sm(Icon::ChevronRight, theme.text_secondary()))
+            .child(icon_sm(
+                if collapsed {
+                    Icon::ChevronRight
+                } else {
+                    Icon::ChevronLeft
+                },
+                theme.text_secondary(),
+            ))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
