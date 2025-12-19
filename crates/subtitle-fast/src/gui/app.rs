@@ -194,7 +194,6 @@ impl Render for MainWindow {
                                         .flex_col()
                                         .flex_1()
                                         .h_full()
-                                        .gap(px(1.0))
                                         .child(div().flex_1().child(preview))
                                         .child(div().child(control_panel)),
                                 ),

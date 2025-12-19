@@ -32,11 +32,12 @@ impl Render for PreviewPanel {
             .bg(self.theme.surface())
             .child(
                 div()
+                    .relative()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .px(px(12.0))
-                    .py(px(8.0))
+                    .px(px(8.0))
+                    .py(px(6.0))
                     .child(
                         div()
                             .flex()
@@ -92,14 +93,29 @@ impl Render for PreviewPanel {
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .relative()
-                    .bg(self.theme.translucent_panel())
-                    .overflow_hidden()
-                    .child(if let Some(file) = file {
-                        self.render_preview(&file, roi, selection_visible, highlight_enabled)
-                    } else {
-                        self.render_empty_state()
-                    }),
+                    .pt(px(0.0))
+                    .px(px(8.0))
+                    .pb(px(6.0))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .rounded(px(12.0))
+                            .border_1()
+                            .border_color(self.theme.border())
+                            .bg(hsla(0.0, 0.0, 0.04, 1.0))
+                            .overflow_hidden()
+                            .child(if let Some(file) = file {
+                                self.render_preview(
+                                    &file,
+                                    roi,
+                                    selection_visible,
+                                    highlight_enabled,
+                                )
+                            } else {
+                                self.render_empty_state()
+                            }),
+                    ),
             )
     }
 }
@@ -207,12 +223,12 @@ impl PreviewPanel {
             .relative()
             .w_full()
             .h_full()
-            .bg(hsla(220.0 / 360.0, 0.15, 0.05, 1.0))
+            .bg(hsla(0.0, 0.0, 0.02, 1.0))
             .child(
                 div()
                     .absolute()
-                    .left(px(16.0))
-                    .top(px(16.0))
+                    .left(px(12.0))
+                    .top(px(12.0))
                     .text_xs()
                     .text_color(self.theme.text_tertiary())
                     .child(format!("{}", file.path.display())),
@@ -220,8 +236,8 @@ impl PreviewPanel {
             .child(
                 div()
                     .absolute()
-                    .left(px(16.0))
-                    .bottom(px(16.0))
+                    .left(px(12.0))
+                    .bottom(px(12.0))
                     .text_sm()
                     .text_color(self.theme.text_primary())
                     .child("Sample subtitle text\nfor demonstration purposes"),

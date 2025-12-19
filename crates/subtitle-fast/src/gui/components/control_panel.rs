@@ -41,7 +41,9 @@ impl Render for ControlPanel {
             .flex_col()
             .w_full()
             .bg(self.theme.surface())
-            .p(px(12.0))
+            .px(px(10.0))
+            .pt(px(6.0))
+            .pb(px(10.0))
             .gap(px(12.0))
             .child(self.render_playback_bar(cx, playhead, duration, playing))
             .child(self.render_selection_section(cx, roi, selection_visible, highlight))
@@ -86,25 +88,33 @@ impl ControlPanel {
             .flex()
             .flex_col()
             .gap(px(8.0))
+            .bg(self.theme.surface_elevated())
+            .border_1()
+            .border_color(self.theme.border())
+            .rounded(px(10.0))
+            .px(px(10.0))
+            .py(px(8.0))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .gap(px(10.0))
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .justify_center()
-                            .w(px(32.0))
-                            .h(px(32.0))
+                            .w(px(30.0))
+                            .h(px(30.0))
                             .rounded_full()
-                            .bg(self.theme.accent())
+                            .bg(self.theme.surface_active())
+                            .border_1()
+                            .border_color(self.theme.border())
                             .cursor_pointer()
-                            .hover(|s| s.bg(self.theme.accent_hover()))
+                            .hover(|s| s.bg(self.theme.surface_hover()))
                             .child(icon_sm(
                                 if playing { Icon::Pause } else { Icon::Play },
-                                self.theme.background(),
+                                self.theme.text_primary(),
                             ))
                             .on_mouse_down(
                                 MouseButton::Left,
@@ -114,39 +124,38 @@ impl ControlPanel {
                                 }),
                             ),
                     )
+                    .child(self.render_progress_bar(cx, progress, duration).flex_1())
                     .child(
                         div()
                             .text_xs()
                             .text_color(self.theme.text_secondary())
                             .child(format!(
-                                "{}  Frame {}/{}",
-                                self.format_time(playhead),
-                                current_frame,
-                                total_frames
-                            )),
-                    ),
-            )
-            .child(self.render_progress_bar(cx, progress, duration))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(self.jump_button(cx, "-1f", -33.0))
-                    .child(self.jump_button(cx, "-7f", -233.0))
-                    .child(self.jump_button(cx, "-7s", -7000.0))
-                    .child(self.jump_button(cx, "+7s", 7000.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_right()
-                            .text_xs()
-                            .text_color(self.theme.text_tertiary())
-                            .child(format!(
                                 "{} / {}",
                                 self.format_time(playhead),
                                 self.format_time(duration)
                             )),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(self.theme.text_tertiary())
+                            .child(format!("Frame {}/{}", current_frame, total_frames)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(self.jump_button(cx, "-1f", -33.0))
+                            .child(self.jump_button(cx, "-7f", -233.0))
+                            .child(self.jump_button(cx, "-7s", -7000.0))
+                            .child(self.jump_button(cx, "+7s", 7000.0)),
                     ),
             )
     }
@@ -157,11 +166,8 @@ impl ControlPanel {
         div()
             .relative()
             .w_full()
-            .h(px(8.0))
-            .rounded_full()
-            .bg(self.theme.border())
+            .h(px(12.0))
             .cursor_pointer()
-            .overflow_hidden()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
@@ -173,7 +179,20 @@ impl ControlPanel {
             )
             .child(
                 div()
-                    .h_full()
+                    .absolute()
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .top(px(4.0))
+                    .h(px(4.0))
+                    .rounded_full()
+                    .bg(self.theme.border().opacity(0.6)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(0.0))
+                    .top(px(4.0))
+                    .h(px(4.0))
                     .rounded_full()
                     .bg(self.theme.accent())
                     .w(relative(progress as f32)),
@@ -181,25 +200,28 @@ impl ControlPanel {
             .child(
                 div()
                     .absolute()
-                    .top(px(-2.0))
+                    .top(px(1.0))
                     .left(relative(progress as f32))
-                    .ml(px(-6.0))
-                    .w(px(12.0))
-                    .h(px(12.0))
+                    .ml(px(-5.0))
+                    .w(px(10.0))
+                    .h(px(10.0))
                     .rounded_full()
-                    .bg(self.theme.accent())
+                    .bg(self.theme.surface())
                     .border_2()
-                    .border_color(self.theme.background())
-                    .shadow_sm(),
+                    .border_color(self.theme.accent())
+                    .shadow_sm()
+                    .hover(|s| s.top(px(0.0)).ml(px(-6.0)).w(px(12.0)).h(px(12.0))),
             )
     }
 
     fn jump_button(&self, cx: &mut Context<Self>, label: &str, delta_ms: f64) -> Div {
         div()
             .px(px(8.0))
-            .py(px(4.0))
-            .rounded(px(4.0))
+            .py(px(3.0))
+            .rounded_full()
             .bg(self.theme.surface_elevated())
+            .border_1()
+            .border_color(self.theme.border())
             .text_xs()
             .text_color(self.theme.text_secondary())
             .cursor_pointer()
