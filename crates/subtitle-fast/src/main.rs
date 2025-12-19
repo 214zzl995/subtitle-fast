@@ -1,19 +1,11 @@
 use std::env;
-
-mod backend;
-mod cli;
-mod settings;
-mod stage;
-
-#[cfg(feature = "gui")]
-mod gui;
-
-use backend::ExecutionPlan;
-use clap::CommandFactory;
-use cli::{CliArgs, CliSources, parse_cli};
-use settings::{ConfigError, resolve_settings};
-use stage::PipelineConfig;
 use std::num::NonZeroUsize;
+
+use clap::CommandFactory;
+use subtitle_fast::backend::{self, ExecutionPlan};
+use subtitle_fast::cli::{CliArgs, CliSources, parse_cli};
+use subtitle_fast::settings::{ConfigError, resolve_settings};
+use subtitle_fast::stage::PipelineConfig;
 use subtitle_fast_types::YPlaneError;
 
 #[tokio::main(flavor = "multi_thread")]
@@ -34,7 +26,7 @@ async fn main() -> Result<(), YPlaneError> {
 #[cfg(feature = "gui")]
 fn run_gui() -> Result<(), YPlaneError> {
     use gpui::*;
-    use gui::{AppAssets, SubtitleFastApp};
+    use subtitle_fast::gui::{AppAssets, SubtitleFastApp};
 
     Application::new()
         .with_assets(AppAssets)

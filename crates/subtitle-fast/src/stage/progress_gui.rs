@@ -182,9 +182,11 @@ impl GuiProgressInner {
 
     fn finish(&self) {
         if let Ok(state) = self.state.lock() {
+            let handle_id = state.handle_id;
             let update = Self::snapshot(&state, true);
             drop(state);
             self.emit_progress(&update);
+            drop_progress_handle(handle_id);
         }
     }
 
@@ -394,10 +396,14 @@ pub(crate) fn drop_progress_handle(handle_id: u64) {
 }
 
 pub(crate) fn progress_for_handle(handle_id: u64) -> Option<Arc<GuiProgressInner>> {
-    HANDLE_MAP
+    let existing = HANDLE_MAP
         .lock()
         .ok()
-        .and_then(|m| m.get(&handle_id).cloned())
+        .and_then(|m| m.get(&handle_id).cloned());
+    if existing.is_some() {
+        return existing;
+    }
+    create_progress_handle(handle_id, None)
 }
 
 /// # Safety
