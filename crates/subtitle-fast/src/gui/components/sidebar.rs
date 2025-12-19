@@ -45,7 +45,6 @@ impl Render for Sidebar {
                     ),
             )
             .child(
-
                 div()
                     .flex()
                     .flex_col()
@@ -118,7 +117,6 @@ impl Sidebar {
                 }
             })
             .child(
-
                 div()
                     .flex()
                     .items_center()
@@ -146,14 +144,12 @@ impl Sidebar {
                     ),
             )
             .child(
-
                 div()
                     .text_xs()
                     .text_color(self.status_color(status))
                     .child(self.status_text(status)),
             )
             .child(
-
                 div()
                     .w_full()
                     .h(px(4.0))

@@ -1,3 +1,4 @@
+use gpui::WindowAppearance;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -133,7 +134,7 @@ impl AppState {
             right_panel_resizing: RwLock::new(false),
             resize_start_x: RwLock::new(0.0),
             resize_start_width: RwLock::new(0.0),
-            current_theme: RwLock::new(AppTheme::auto()),
+            current_theme: RwLock::new(AppTheme::dark()),
         })
     }
 
@@ -437,8 +438,8 @@ impl AppState {
         *self.current_theme.write() = theme;
     }
 
-    pub fn update_theme_from_system(&self) -> bool {
-        let new_theme = AppTheme::auto();
+    pub fn update_theme_from_window_appearance(&self, appearance: WindowAppearance) -> bool {
+        let new_theme = AppTheme::from_window_appearance(appearance);
         let current = *self.current_theme.read();
 
         if new_theme.is_dark != current.is_dark {

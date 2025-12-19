@@ -62,13 +62,11 @@ impl Render for StatusPanel {
                     ),
             )
             .child(
-
                 div()
                     .flex()
                     .flex_col()
                     .p(px(12.0))
                     .gap(px(12.0))
-
                     .child(
                         div()
                             .flex()
@@ -96,7 +94,6 @@ impl Render for StatusPanel {
                                     .child(format!("{:.0}%", progress * 100.0)),
                             ),
                     )
-
                     .child(
                         div()
                             .flex()
@@ -120,9 +117,7 @@ impl Render for StatusPanel {
                                 "frames",
                             )),
                     )
-
                     .child(self.render_action_buttons(cx, status))
-
                     .when_some(error, |this, err| {
                         this.child(div().text_xs().text_color(self.theme.error()).child(err))
                     }),
@@ -212,7 +207,6 @@ impl StatusPanel {
         div()
             .flex()
             .gap(px(8.0))
-
             .child(
                 div()
                     .flex()
@@ -235,7 +229,6 @@ impl StatusPanel {
                     )
                     .on_mouse_down(MouseButton::Left, primary_action),
             )
-
             .when(is_running, |this| {
                 this.child(
                     div()

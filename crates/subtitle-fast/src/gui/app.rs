@@ -1,7 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::gui::components::*;
 use crate::gui::icons::{Icon, icon_sm};
@@ -43,16 +42,21 @@ impl SubtitleFastApp {
 
 pub struct MainWindow {
     state: Arc<AppState>,
+    appearance_subscription: Option<Subscription>,
 }
 
 impl MainWindow {
     pub fn new(state: Arc<AppState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            appearance_subscription: None,
+        }
     }
 }
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_theme_listener(window, cx);
 
         let theme = self.state.get_theme();
 
@@ -76,9 +80,7 @@ impl Render for MainWindow {
             .w_full()
             .h_full()
             .bg(theme.background())
-
             .child(self.render_titlebar(theme, window, cx))
-
             .when(self.state.is_resizing(), |d| {
                 d.cursor(CursorStyle::ResizeLeftRight)
             })
@@ -102,33 +104,24 @@ impl Render for MainWindow {
                     .flex_1()
                     .gap(px(1.0))
                     .overflow_hidden()
-
                     .child(
                         div()
                             .flex()
                             .h_full()
-                            .child(
-
-                                self.render_sidebar_toggle(theme, cx, sidebar_collapsed),
-                            )
-                            .child(
-
-                                animated_panel_container(
-                                    sidebar_panel_state,
-                                    sidebar_config,
-                                    "left-sidebar",
-
-                                    div()
-                                        .w(px(max_width))
-                                        .h_full()
-                                        .child(sidebar)
-                                        .when(!sidebar_collapsed, |d| {
-                                            d.child(self.render_resize_handle_left(theme, cx))
-                                        }),
-                                ),
-                            ),
+                            .child(self.render_sidebar_toggle(theme, cx, sidebar_collapsed))
+                            .child(animated_panel_container(
+                                sidebar_panel_state,
+                                sidebar_config,
+                                "left-sidebar",
+                                div()
+                                    .w(px(max_width))
+                                    .h_full()
+                                    .child(sidebar)
+                                    .when(!sidebar_collapsed, |d| {
+                                        d.child(self.render_resize_handle_left(theme, cx))
+                                    }),
+                            )),
                     )
-
                     .child(
                         div()
                             .flex()
@@ -139,7 +132,6 @@ impl Render for MainWindow {
                             .child(div().flex_1().child(preview))
                             .child(div().child(control_panel)),
                     )
-
                     .child(
                         div()
                             .relative()
@@ -157,6 +149,23 @@ impl Render for MainWindow {
 }
 
 impl MainWindow {
+    fn ensure_theme_listener(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.appearance_subscription.is_some() {
+            return;
+        }
+
+        self.state
+            .update_theme_from_window_appearance(window.appearance());
+
+        let state = Arc::clone(&self.state);
+        self.appearance_subscription =
+            Some(cx.observe_window_appearance(window, move |_, window, cx| {
+                if state.update_theme_from_window_appearance(window.appearance()) {
+                    cx.notify();
+                }
+            }));
+    }
+
     fn render_titlebar(&self, theme: AppTheme, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let titlebar_height = px(38.0);
 
@@ -184,14 +193,12 @@ impl MainWindow {
             .bg(theme.titlebar_bg())
             .window_control_area(WindowControlArea::Drag)
             .child(
-
                 div()
                     .flex()
                     .items_center()
                     .gap(px(8.0))
                     .pl(left_padding)
                     .child(
-
                         div()
                             .flex()
                             .items_center()
@@ -241,7 +248,6 @@ impl MainWindow {
             .content_stretch()
             .max_h(button_height)
             .min_h(button_height)
-
             .child(
                 div()
                     .id("minimize")
@@ -258,7 +264,6 @@ impl MainWindow {
                     .window_control_area(WindowControlArea::Min)
                     .child("\u{e921}"),
             )
-
             .child(
                 div()
                     .id("maximize-or-restore")
@@ -279,7 +284,6 @@ impl MainWindow {
                         "\u{e922}"
                     }),
             )
-
             .child(
                 div()
                     .id("close")
@@ -300,7 +304,6 @@ impl MainWindow {
 
     #[cfg(target_os = "macos")]
     fn render_macos_controls(&self, _theme: AppTheme) -> Div {
-
         div()
     }
 
@@ -316,7 +319,6 @@ impl MainWindow {
             .flex()
             .gap(px(4.0))
             .px(px(8.0))
-
             .child(
                 div()
                     .id("linux-minimize")
@@ -335,7 +337,6 @@ impl MainWindow {
                             .text_color(icon_color),
                     ),
             )
-
             .child(
                 div()
                     .id("linux-maximize")
@@ -354,7 +355,6 @@ impl MainWindow {
                             .text_color(icon_color),
                     ),
             )
-
             .child(
                 div()
                     .id("linux-close")

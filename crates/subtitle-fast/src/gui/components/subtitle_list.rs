@@ -61,7 +61,6 @@ impl Render for SubtitleList {
                     ),
             )
             .child(
-
                 div()
                     .flex()
                     .flex_col()
@@ -93,14 +92,12 @@ impl SubtitleList {
             .cursor_pointer()
             .hover(|s| s.bg(self.theme.surface_hover()))
             .child(
-
                 div()
                     .text_xs()
                     .text_color(self.theme.text_tertiary())
                     .child(self.format_time_range(cue.start_ms, cue.end_ms)),
             )
             .child(
-
                 div()
                     .text_sm()
                     .text_color(self.theme.text_primary())

@@ -38,7 +38,6 @@ impl Render for PreviewPanel {
                     .px(px(12.0))
                     .py(px(8.0))
                     .child(
-
                         div()
                             .flex()
                             .items_center()
@@ -52,7 +51,6 @@ impl Render for PreviewPanel {
                             ),
                     )
                     .child(
-
                         div()
                             .flex()
                             .items_center()
@@ -71,7 +69,6 @@ impl Render for PreviewPanel {
                                 },
                             ))
                             .child(
-
                                 div()
                                     .w(px(1.0))
                                     .h(px(16.0))
@@ -83,7 +80,6 @@ impl Render for PreviewPanel {
                     ),
             )
             .child(
-
                 div()
                     .flex()
                     .flex_col()
@@ -150,7 +146,6 @@ impl PreviewPanel {
             .cursor_pointer()
             .hover(|s| s.bg(self.theme.surface_hover()))
             .child(
-
                 div()
                     .w(px(14.0))
                     .h(px(14.0))
@@ -206,7 +201,6 @@ impl PreviewPanel {
             .h_full()
             .bg(hsla(220.0 / 360.0, 0.15, 0.05, 1.0))
             .child(
-
                 div()
                     .absolute()
                     .left(px(16.0))
@@ -216,7 +210,6 @@ impl PreviewPanel {
                     .child(format!("{}", file.path.display())),
             )
             .child(
-
                 div()
                     .absolute()
                     .left(px(16.0))
@@ -276,7 +269,6 @@ impl PreviewPanel {
                         .border_color(self.theme.overlay_dashed())
                         .rounded(px(4.0))
                         .child(
-
                             div()
                                 .absolute()
                                 .left(px(8.0))
@@ -295,7 +287,6 @@ impl PreviewPanel {
         let offset = px(-5.0);
 
         vec![
-
             div()
                 .absolute()
                 .left(offset)
@@ -306,7 +297,6 @@ impl PreviewPanel {
                 .border_2()
                 .border_color(self.theme.background())
                 .cursor(CursorStyle::ResizeUpLeftDownRight),
-
             div()
                 .absolute()
                 .right(offset)
@@ -317,7 +307,6 @@ impl PreviewPanel {
                 .border_2()
                 .border_color(self.theme.background())
                 .cursor(CursorStyle::ResizeUpRightDownLeft),
-
             div()
                 .absolute()
                 .left(offset)
@@ -328,7 +317,6 @@ impl PreviewPanel {
                 .border_2()
                 .border_color(self.theme.background())
                 .cursor(CursorStyle::ResizeUpRightDownLeft),
-
             div()
                 .absolute()
                 .right(offset)

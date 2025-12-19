@@ -43,11 +43,8 @@ impl Render for ControlPanel {
             .bg(self.theme.surface())
             .p(px(12.0))
             .gap(px(12.0))
-
             .child(self.render_playback_bar(cx, playhead, duration, playing))
-
             .child(self.render_selection_section(cx, roi, selection_visible, highlight))
-
             .child(self.render_slider(
                 cx,
                 "Brightness Threshold",
@@ -89,14 +86,12 @@ impl ControlPanel {
             .flex()
             .flex_col()
             .gap(px(8.0))
-
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
                     .child(
-
                         div()
                             .flex()
                             .items_center()
@@ -124,7 +119,6 @@ impl ControlPanel {
                             ),
                     )
                     .child(
-
                         div()
                             .text_xs()
                             .text_color(self.theme.text_secondary())
@@ -136,9 +130,7 @@ impl ControlPanel {
                             )),
                     ),
             )
-
             .child(self.render_progress_bar(cx, progress, duration))
-
             .child(
                 div()
                     .flex()
@@ -177,7 +169,6 @@ impl ControlPanel {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
-
                     let click_ratio = 0.5;
                     let new_time = click_ratio * this.state.duration_ms();
                     this.state.set_playhead_ms(new_time);
@@ -185,7 +176,6 @@ impl ControlPanel {
                 }),
             )
             .child(
-
                 div()
                     .h_full()
                     .rounded_full()
@@ -193,7 +183,6 @@ impl ControlPanel {
                     .w(relative(progress as f32)),
             )
             .child(
-
                 div()
                     .absolute()
                     .top(px(-2.0))
@@ -241,7 +230,6 @@ impl ControlPanel {
             .flex()
             .flex_col()
             .gap(px(8.0))
-
             .child(
                 div()
                     .flex()
@@ -255,7 +243,6 @@ impl ControlPanel {
                             .child("Selection Overview"),
                     ),
             )
-
             .child(
                 div()
                     .flex()
@@ -270,7 +257,6 @@ impl ControlPanel {
                         }),
                     ),
             )
-
             .child(
                 div()
                     .flex()
@@ -306,7 +292,6 @@ impl ControlPanel {
             .gap(px(6.0))
             .cursor_pointer()
             .child(
-
                 div()
                     .flex()
                     .items_center()
@@ -360,7 +345,6 @@ impl ControlPanel {
             .flex()
             .flex_col()
             .gap(px(6.0))
-
             .child(
                 div()
                     .flex()
@@ -378,15 +362,12 @@ impl ControlPanel {
                             .child(format!("{:.0}", value)),
                     ),
             )
-
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-
                     .child(self.slider_button(cx, "-", value, min, max, -step, update))
-
                     .child(
                         div()
                             .flex_1()
@@ -402,7 +383,6 @@ impl ControlPanel {
                                     .w(relative(ratio)),
                             ),
                     )
-
                     .child(self.slider_button(cx, "+", value, min, max, step, update)),
             )
     }

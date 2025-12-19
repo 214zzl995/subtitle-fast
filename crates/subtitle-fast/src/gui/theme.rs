@@ -14,11 +14,10 @@ impl AppTheme {
         Self { is_dark: true }
     }
 
-    pub fn auto() -> Self {
-        match dark_light::detect() {
-            dark_light::Mode::Dark => Self::dark(),
-            dark_light::Mode::Light => Self::light(),
-            dark_light::Mode::Default => Self::dark(),
+    pub fn from_window_appearance(appearance: WindowAppearance) -> Self {
+        match appearance {
+            WindowAppearance::Light | WindowAppearance::VibrantLight => Self::light(),
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::dark(),
         }
     }
 
