@@ -179,7 +179,14 @@ impl Render for MainWindow {
                     .flex_col()
                     .flex_1()
                     .h_full()
-                    .child(self.render_controls_titlebar(theme, window, cx, titlebar_height))
+                    .child(self.render_controls_titlebar(
+                        theme,
+                        window,
+                        cx,
+                        titlebar_height,
+                        sidebar_collapsed,
+                        titlebar_collapsed_width,
+                    ))
                     .child(
                         div()
                             .relative()
@@ -255,20 +262,28 @@ impl MainWindow {
         &self,
         theme: AppTheme,
         window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
         titlebar_height: Pixels,
+        sidebar_collapsed: bool,
+        titlebar_collapsed_width: f32,
     ) -> Div {
         #[cfg(not(target_os = "windows"))]
         let _ = window;
 
         #[cfg(target_os = "windows")]
-        let controls = self.render_windows_controls(theme, window, _cx);
+        let controls = self.render_windows_controls(theme, window, cx);
 
         #[cfg(target_os = "macos")]
         let controls = self.render_macos_controls(theme);
 
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        let controls = self.render_linux_controls(theme, _cx);
+        let controls = self.render_linux_controls(theme, cx);
+
+        let file_button_offset = if sidebar_collapsed {
+            px(titlebar_collapsed_width)
+        } else {
+            px(12.0)
+        };
 
         let controls_slot = div()
             .relative()
@@ -288,15 +303,21 @@ impl MainWindow {
             .bg(theme.titlebar_bg())
             .window_control_area(WindowControlArea::Drag);
 
-        titlebar.child(controls_slot).child(
-            div()
-                .absolute()
-                .left(px(0.0))
-                .right(px(0.0))
-                .bottom(px(0.0))
-                .h(px(1.0))
-                .bg(theme.titlebar_border()),
-        )
+        titlebar
+            .child(
+                self.render_file_picker_button(theme, cx)
+                    .ml(file_button_offset),
+            )
+            .child(controls_slot)
+            .child(
+                div()
+                    .absolute()
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .bottom(px(0.0))
+                    .h(px(1.0))
+                    .bg(theme.titlebar_border()),
+            )
     }
 
     fn render_sidebar_toggle_overlay(
@@ -518,6 +539,63 @@ impl MainWindow {
                 cx.listener(|this, _, _, cx| {
                     this.state.toggle_sidebar();
                     cx.notify();
+                }),
+            )
+    }
+
+    fn render_file_picker_button(&self, theme: AppTheme, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(SIDEBAR_TOGGLE_SIZE))
+            .h(px(SIDEBAR_TOGGLE_SIZE))
+            .rounded(px(6.0))
+            .bg(theme.surface_elevated())
+            .border_1()
+            .border_color(theme.border())
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.surface_hover()))
+            .child(icon_sm(Icon::Upload, theme.text_secondary()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_this, _, _, cx| {
+                    let receiver = cx.prompt_for_paths(PathPromptOptions {
+                        files: true,
+                        directories: false,
+                        multiple: true,
+                        prompt: Some("Select video files".into()),
+                    });
+                    cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                        let mut async_app = (*cx).clone();
+                        async move {
+                            let result = match receiver.await {
+                                Ok(result) => result,
+                                Err(_) => return,
+                            };
+                            match result {
+                                Ok(Some(paths)) => {
+                                    let _ = this.update(&mut async_app, |this, cx| {
+                                        for path in paths {
+                                            this.state.add_file(path);
+                                        }
+                                        this.state.set_error_message(None);
+                                        cx.notify();
+                                    });
+                                }
+                                Ok(None) => {}
+                                Err(err) => {
+                                    let _ = this.update(&mut async_app, |this, cx| {
+                                        this.state.set_error_message(Some(format!(
+                                            "Failed to open file picker: {err}"
+                                        )));
+                                        cx.notify();
+                                    });
+                                }
+                            }
+                        }
+                    })
+                    .detach();
                 }),
             )
     }
