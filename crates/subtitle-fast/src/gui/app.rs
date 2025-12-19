@@ -155,11 +155,11 @@ impl Render for MainWindow {
                                     .flex_1()
                                     .w_full()
                                     .h_full()
-                                    .child(sidebar)
-                                    .when(!sidebar_collapsed, |d| {
-                                        d.child(self.render_resize_handle_left(theme, cx))
-                                    }),
-                            ),
+                                    .child(sidebar),
+                            )
+                            .when(!sidebar_collapsed, |d| {
+                                d.child(self.render_resize_handle_left(theme, cx))
+                            }),
                     )
                     .when(!sidebar_collapsed, |d| {
                         d.child(
