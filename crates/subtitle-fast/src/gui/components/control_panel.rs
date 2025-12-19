@@ -1,3 +1,4 @@
+use crate::gui::icons::{Icon, icon_sm};
 use crate::gui::state::AppState;
 use crate::gui::theme::AppTheme;
 use gpui::prelude::*;
@@ -40,27 +41,31 @@ impl Render for ControlPanel {
             .flex_col()
             .w_full()
             .bg(self.theme.surface())
-            .border_1()
-            .border_color(self.theme.border())
-            .rounded_md()
-            .p(px(14.0))
+            .p(px(12.0))
             .gap(px(12.0))
+
             .child(self.render_playback_bar(cx, playhead, duration, playing))
-            .child(self.render_selection_row(cx, roi, selection_visible, highlight))
+
+            .child(self.render_selection_section(cx, roi, selection_visible, highlight))
+
             .child(self.render_slider(
                 cx,
-                "亮度阈值",
+                "Brightness Threshold",
                 threshold,
                 0.0,
                 255.0,
                 5.0,
                 |state, value| state.set_threshold(value),
             ))
-            .child(
-                self.render_slider(cx, "容差", tolerance, 0.0, 50.0, 2.0, |state, value| {
-                    state.set_tolerance(value)
-                }),
-            )
+            .child(self.render_slider(
+                cx,
+                "Tolerance",
+                tolerance,
+                0.0,
+                50.0,
+                2.0,
+                |state, value| state.set_tolerance(value),
+            ))
     }
 }
 
@@ -77,56 +82,76 @@ impl ControlPanel {
         } else {
             0.0
         };
+        let total_frames = 214918u32;
+        let current_frame = (progress * total_frames as f64).round() as u32;
 
         div()
             .flex()
             .flex_col()
-            .gap(px(6.0))
+            .gap(px(8.0))
+
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
                     .child(
+
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.0))
-                            .child(self.play_button(cx, playing)),
+                            .justify_center()
+                            .w(px(32.0))
+                            .h(px(32.0))
+                            .rounded_full()
+                            .bg(self.theme.accent())
+                            .cursor_pointer()
+                            .hover(|s| s.bg(self.theme.accent_hover()))
+                            .child(icon_sm(
+                                if playing {
+                                    Icon::Minus
+                                } else {
+                                    Icon::ArrowRight
+                                },
+                                self.theme.background(),
+                            ))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.state.toggle_playing();
+                                    cx.notify();
+                                }),
+                            ),
                     )
                     .child(
+
                         div()
                             .text_xs()
                             .text_color(self.theme.text_secondary())
                             .child(format!(
-                                "{} · Frame {}/{}",
+                                "{}  Frame {}/{}",
                                 self.format_time(playhead),
-                                (progress * 180.0).round() as u32,
-                                180
+                                current_frame,
+                                total_frames
                             )),
                     ),
             )
+
+            .child(self.render_progress_bar(cx, progress, duration))
+
             .child(
                 div()
-                    .w_full()
-                    .h(px(10.0))
-                    .rounded_full()
-                    .bg(self.theme.border())
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(self.jump_button(cx, "-1f", -33.0))
+                    .child(self.jump_button(cx, "-7f", -233.0))
+                    .child(self.jump_button(cx, "-7s", -7000.0))
+                    .child(self.jump_button(cx, "+7s", 7000.0))
                     .child(
                         div()
-                            .h_full()
-                            .rounded_full()
-                            .bg(self.theme.accent())
-                            .w(relative(progress as f32)),
-                    ),
-            )
-            .child(div().flex().items_center().gap(px(6.0)).children(vec![
-                        self.jump_button(cx, "-1s", -1000.0),
-                        self.jump_button(cx, "-5s", -5000.0),
-                        self.jump_button(cx, "+1s", 1000.0),
-                        self.jump_button(cx, "+5s", 5000.0),
-                        div()
                             .flex_1()
+                            .text_right()
                             .text_xs()
                             .text_color(self.theme.text_tertiary())
                             .child(format!(
@@ -134,25 +159,53 @@ impl ControlPanel {
                                 self.format_time(playhead),
                                 self.format_time(duration)
                             )),
-                    ]))
+                    ),
+            )
     }
 
-    fn play_button(&self, cx: &mut Context<Self>, playing: bool) -> Div {
-        let label = if playing { "暂停" } else { "播放" };
+    fn render_progress_bar(&self, cx: &mut Context<Self>, progress: f64, _duration: f64) -> Div {
+        let _state = Arc::clone(&self.state);
+
         div()
-            .px(px(10.0))
-            .py(px(6.0))
+            .relative()
+            .w_full()
+            .h(px(8.0))
             .rounded_full()
-            .bg(self.theme.accent())
-            .text_xs()
-            .text_color(self.theme.background())
-            .child(label.to_string())
+            .bg(self.theme.border())
+            .cursor_pointer()
+            .overflow_hidden()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.state.toggle_playing();
+                cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+
+                    let click_ratio = 0.5;
+                    let new_time = click_ratio * this.state.duration_ms();
+                    this.state.set_playhead_ms(new_time);
                     cx.notify();
                 }),
+            )
+            .child(
+
+                div()
+                    .h_full()
+                    .rounded_full()
+                    .bg(self.theme.accent())
+                    .w(relative(progress as f32)),
+            )
+            .child(
+
+                div()
+                    .absolute()
+                    .top(px(-2.0))
+                    .left(relative(progress as f32))
+                    .ml(px(-6.0))
+                    .w(px(12.0))
+                    .h(px(12.0))
+                    .rounded_full()
+                    .bg(self.theme.accent())
+                    .border_2()
+                    .border_color(self.theme.background())
+                    .shadow_sm(),
             )
     }
 
@@ -160,12 +213,12 @@ impl ControlPanel {
         div()
             .px(px(8.0))
             .py(px(4.0))
-            .rounded_md()
+            .rounded(px(4.0))
             .bg(self.theme.surface_elevated())
-            .border_1()
-            .border_color(self.theme.border())
             .text_xs()
             .text_color(self.theme.text_secondary())
+            .cursor_pointer()
+            .hover(|s| s.bg(self.theme.surface_hover()))
             .child(label.to_string())
             .on_mouse_down(
                 MouseButton::Left,
@@ -177,7 +230,7 @@ impl ControlPanel {
             )
     }
 
-    fn render_selection_row(
+    fn render_selection_section(
         &self,
         cx: &mut Context<Self>,
         roi: crate::gui::state::RoiSelection,
@@ -188,37 +241,46 @@ impl ControlPanel {
             .flex()
             .flex_col()
             .gap(px(8.0))
+
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .gap(px(6.0))
+                    .child(icon_sm(Icon::Frame, self.theme.text_secondary()))
                     .child(
                         div()
                             .text_sm()
                             .text_color(self.theme.text_primary())
-                            .child("选区概览"),
-                    )
-                    .child(div().flex().items_center().gap(px(6.0)).children(vec![
-                        self.toggle_chip(cx, "显示选区", selection_visible, |state| {
-                            state.toggle_selection_visibility();
-                        }),
-                        self.toggle_chip(cx, "亮度高亮", highlight_enabled, |state| {
-                            state.toggle_highlight();
-                        }),
-                    ])),
+                            .child("Selection Overview"),
+                    ),
             )
+
             .child(
                 div()
                     .flex()
                     .items_center()
+                    .gap(px(12.0))
+                    .child(self.checkbox(cx, "Region", selection_visible, |state| {
+                        state.toggle_selection_visibility();
+                    }))
+                    .child(
+                        self.checkbox(cx, "Brightness Threshold", highlight_enabled, |state| {
+                            state.toggle_highlight();
+                        }),
+                    ),
+            )
+
+            .child(
+                div()
+                    .flex()
                     .justify_between()
                     .child(
                         div()
                             .text_xs()
                             .text_color(self.theme.text_secondary())
                             .child(format!(
-                                "x {:.2} y {:.2} w {:.2} h {:.2}",
+                                "x{:.2} y{:.2} w{:.2} h{:.2}",
                                 roi.x, roi.y, roi.width, roi.height
                             )),
                     )
@@ -226,40 +288,53 @@ impl ControlPanel {
                         div()
                             .text_xs()
                             .text_color(self.theme.text_tertiary())
-                            .child("底部 25% 默认选区"),
+                            .child("Bottom 25% default selection"),
                     ),
             )
     }
 
-    fn toggle_chip(
+    fn checkbox(
         &self,
         cx: &mut Context<Self>,
         label: &str,
-        active: bool,
+        checked: bool,
         toggle: impl Fn(&AppState) + 'static,
     ) -> Div {
         div()
-            .px(px(10.0))
-            .py(px(6.0))
-            .rounded_md()
-            .bg(if active {
-                self.theme.accent_muted()
-            } else {
-                self.theme.surface_elevated()
-            })
-            .border_1()
-            .border_color(if active {
-                self.theme.border_focused()
-            } else {
-                self.theme.border()
-            })
-            .text_xs()
-            .text_color(if active {
-                self.theme.text_primary()
-            } else {
-                self.theme.text_secondary()
-            })
-            .child(label.to_string())
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .cursor_pointer()
+            .child(
+
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(16.0))
+                    .h(px(16.0))
+                    .rounded(px(3.0))
+                    .border_1()
+                    .border_color(if checked {
+                        self.theme.accent()
+                    } else {
+                        self.theme.border()
+                    })
+                    .bg(if checked {
+                        self.theme.accent()
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .when(checked, |d| {
+                        d.child(icon_sm(Icon::Check, self.theme.background()))
+                    }),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(self.theme.text_secondary())
+                    .child(label.to_string()),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -280,24 +355,12 @@ impl ControlPanel {
         update: fn(&AppState, f64),
     ) -> Div {
         let ratio = ((value - min) / (max - min)).clamp(0.0, 1.0) as f32;
-        let dec_value = value;
-        let dec = cx.listener(move |this, _, _, cx| {
-            let current = dec_value - step;
-            update(&this.state, current.max(min));
-            cx.notify();
-        });
-
-        let inc_value = value;
-        let inc = cx.listener(move |this, _, _, cx| {
-            let current = inc_value + step;
-            update(&this.state, current.min(max));
-            cx.notify();
-        });
 
         div()
             .flex()
             .flex_col()
             .gap(px(6.0))
+
             .child(
                 div()
                     .flex()
@@ -315,28 +378,22 @@ impl ControlPanel {
                             .child(format!("{:.0}", value)),
                     ),
             )
+
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .child(
-                        div()
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded_md()
-                            .bg(self.theme.surface_elevated())
-                            .text_xs()
-                            .text_color(self.theme.text_secondary())
-                            .child("-")
-                            .on_mouse_down(MouseButton::Left, dec),
-                    )
+
+                    .child(self.slider_button(cx, "-", value, min, max, -step, update))
+
                     .child(
                         div()
                             .flex_1()
-                            .h(px(8.0))
+                            .h(px(6.0))
                             .rounded_full()
                             .bg(self.theme.border())
+                            .overflow_hidden()
                             .child(
                                 div()
                                     .h_full()
@@ -345,17 +402,41 @@ impl ControlPanel {
                                     .w(relative(ratio)),
                             ),
                     )
-                    .child(
-                        div()
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded_md()
-                            .bg(self.theme.surface_elevated())
-                            .text_xs()
-                            .text_color(self.theme.text_secondary())
-                            .child("+")
-                            .on_mouse_down(MouseButton::Left, inc),
-                    ),
+
+                    .child(self.slider_button(cx, "+", value, min, max, step, update)),
+            )
+    }
+
+    fn slider_button(
+        &self,
+        cx: &mut Context<Self>,
+        label: &str,
+        current: f64,
+        min: f64,
+        max: f64,
+        delta: f64,
+        update: fn(&AppState, f64),
+    ) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(24.0))
+            .h(px(24.0))
+            .rounded(px(4.0))
+            .bg(self.theme.surface_elevated())
+            .text_xs()
+            .text_color(self.theme.text_secondary())
+            .cursor_pointer()
+            .hover(|s| s.bg(self.theme.surface_hover()))
+            .child(label.to_string())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    let new_value = (current + delta).clamp(min, max);
+                    update(&this.state, new_value);
+                    cx.notify();
+                }),
             )
     }
 

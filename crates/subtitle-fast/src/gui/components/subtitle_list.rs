@@ -1,5 +1,7 @@
+use crate::gui::icons::{Icon, icon_sm};
 use crate::gui::state::AppState;
 use crate::gui::theme::AppTheme;
+use gpui::InteractiveElement;
 use gpui::prelude::*;
 use gpui::*;
 use std::sync::Arc;
@@ -25,54 +27,48 @@ impl Render for SubtitleList {
             .w_full()
             .h_full()
             .bg(self.theme.surface())
-            .border_1()
-            .border_color(self.theme.border())
-            .rounded_md()
             .child(
                 div()
                     .flex()
-                    .justify_between()
                     .items_center()
-                    .p(px(12.0))
-                    .border_b_1()
-                    .border_color(self.theme.border())
+                    .justify_between()
+                    .px(px(12.0))
+                    .py(px(10.0))
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(self.theme.text_primary())
-                            .child("字幕列表"),
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(icon_sm(Icon::ALargeSmall, self.theme.text_secondary()))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(self.theme.text_primary())
+                                    .child("Subtitles"),
+                            ),
                     )
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.0))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(self.theme.text_secondary())
-                                    .child(format!("{} 条", subtitles.len())),
-                            )
-                            .child(
-                                div()
-                                    .px(px(10.0))
-                                    .py(px(6.0))
-                                    .rounded_md()
-                                    .bg(self.theme.surface_elevated())
-                                    .border_1()
-                                    .border_color(self.theme.border())
-                                    .text_xs()
-                                    .text_color(self.theme.text_secondary())
-                                    .child("导出"),
-                            ),
+                            .justify_center()
+                            .w(px(28.0))
+                            .h(px(28.0))
+                            .rounded(px(6.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(self.theme.surface_hover()))
+                            .child(icon_sm(Icon::Copy, self.theme.text_secondary())),
                     ),
             )
             .child(
+
                 div()
                     .flex()
                     .flex_col()
-                    .p(px(12.0))
-                    .gap(px(8.0))
+                    .flex_1()
+                    .p(px(8.0))
+                    .gap(px(6.0))
+                    .overflow_hidden()
                     .when(subtitles.is_empty(), |div| {
                         div.child(self.render_empty_state())
                     })
@@ -90,19 +86,21 @@ impl SubtitleList {
         div()
             .flex()
             .flex_col()
-            .p(px(12.0))
+            .p(px(10.0))
+            .rounded(px(6.0))
             .bg(self.theme.surface_elevated())
-            .border_1()
-            .border_color(self.theme.border())
-            .rounded_md()
-            .gap(px(6.0))
+            .gap(px(4.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(self.theme.surface_hover()))
             .child(
+
                 div()
                     .text_xs()
                     .text_color(self.theme.text_tertiary())
                     .child(self.format_time_range(cue.start_ms, cue.end_ms)),
             )
             .child(
+
                 div()
                     .text_sm()
                     .text_color(self.theme.text_primary())
@@ -111,12 +109,22 @@ impl SubtitleList {
     }
 
     fn render_empty_state(&self) -> Div {
-        div().flex().items_center().justify_center().h_full().child(
-            div()
-                .text_sm()
-                .text_color(self.theme.text_tertiary())
-                .child("开始检测后，字幕会出现在这里"),
-        )
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .h_full()
+            .py(px(40.0))
+            .gap(px(12.0))
+            .child(icon_sm(Icon::ALargeSmall, self.theme.text_tertiary()))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(self.theme.text_tertiary())
+                    .text_center()
+                    .child("Subtitles will appear here after detection starts"),
+            )
     }
 
     fn format_time_range(&self, start_ms: f64, end_ms: f64) -> String {
@@ -129,6 +137,6 @@ impl SubtitleList {
             format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
         }
 
-        format!("{} → {}", ms_to_time(start_ms), ms_to_time(end_ms))
+        format!("{} - {}", ms_to_time(start_ms), ms_to_time(end_ms))
     }
 }

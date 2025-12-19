@@ -34,9 +34,11 @@ async fn main() -> Result<(), YPlaneError> {
 #[cfg(feature = "gui")]
 fn run_gui() -> Result<(), YPlaneError> {
     use gpui::*;
+    use gpui_component_assets::Assets;
     use gui::SubtitleFastApp;
 
-    Application::new().run(|cx: &mut App| {
+    Application::new().with_assets(Assets).run(|cx: &mut App| {
+        gpui_component::init(cx);
         let app = SubtitleFastApp::new(cx);
         app.open_window(cx);
         cx.activate(true);

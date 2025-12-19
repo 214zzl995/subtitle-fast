@@ -1,3 +1,4 @@
+use crate::gui::icons::{Icon, icon_sm};
 use crate::gui::state::{AppState, FileStatus, TrackedFile};
 use crate::gui::theme::AppTheme;
 use gpui::prelude::*;
@@ -28,53 +29,30 @@ impl Render for Sidebar {
             .w_full()
             .h_full()
             .bg(self.theme.surface())
-            .border_r_1()
-            .border_color(self.theme.border())
-            .rounded_md()
-            .p(px(14.0))
-            .gap(px(12.0))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .gap(px(6.0))
+                    .px(px(12.0))
+                    .py(px(10.0))
+                    .child(icon_sm(Icon::Folder, self.theme.text_secondary()))
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(
-                                div()
-                                    .w(px(10.0))
-                                    .h(px(10.0))
-                                    .rounded_full()
-                                    .bg(self.theme.accent()),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(self.theme.text_primary())
-                                    .child("视频"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .px(px(10.0))
-                            .py(px(6.0))
-                            .rounded_md()
-                            .bg(self.theme.surface_elevated())
-                            .border_1()
-                            .border_color(self.theme.border())
-                            .text_xs()
-                            .text_color(self.theme.text_secondary())
-                            .child("导入"),
+                            .text_sm()
+                            .text_color(self.theme.text_primary())
+                            .child("Videos"),
                     ),
             )
             .child(
+
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(8.0))
+                    .flex_1()
+                    .p(px(8.0))
+                    .gap(px(4.0))
+                    .overflow_hidden()
                     .children(
                         files
                             .into_iter()
@@ -84,18 +62,17 @@ impl Render for Sidebar {
                         container.child(
                             div()
                                 .flex()
+                                .flex_col()
                                 .items_center()
                                 .justify_center()
-                                .py(px(40.0))
-                                .rounded_md()
-                                .bg(self.theme.surface_elevated())
-                                .border_1()
-                                .border_color(self.theme.border())
+                                .py(px(32.0))
+                                .gap(px(8.0))
+                                .child(icon_sm(Icon::File, self.theme.text_tertiary()))
                                 .child(
                                     div()
                                         .text_xs()
                                         .text_color(self.theme.text_tertiary())
-                                        .child("导入视频后会显示在这里"),
+                                        .child("Imported videos will appear here"),
                                 ),
                         )
                     }),
@@ -118,68 +95,77 @@ impl Sidebar {
             .unwrap_or("Unknown")
             .to_string();
 
+        let progress = file.progress;
+        let status = file.status;
+
         div()
             .flex()
             .flex_col()
-            .p(px(12.0))
-            .rounded_md()
+            .p(px(8.0))
+            .rounded(px(6.0))
             .bg(if is_active {
                 self.theme.accent_muted()
             } else {
                 self.theme.surface_elevated()
             })
-            .border_1()
-            .border_color(if is_active {
-                self.theme.border_focused()
-            } else {
-                self.theme.border()
-            })
             .gap(px(6.0))
+            .cursor_pointer()
+            .hover(|s| {
+                if !is_active {
+                    s.bg(self.theme.surface_hover())
+                } else {
+                    s
+                }
+            })
             .child(
+
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(self.theme.text_primary())
-                            .child(file_name),
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(icon_sm(Icon::File, self.theme.text_secondary()))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(self.theme.text_primary())
+                                    .max_w(px(100.0))
+                                    .overflow_hidden()
+                                    .child(file_name),
+                            ),
                     )
-                    .child(div().flex().items_center().gap(px(6.0)).children(vec![
-                            div()
-                                .w(px(8.0))
-                                .h(px(8.0))
-                                .rounded_full()
-                                .bg(if matches!(file.status, FileStatus::Detecting) {
-                                    self.theme.accent()
-                                } else {
-                                    self.theme.border()
-                                }),
-                            div()
-                                .text_xs()
-                                .text_color(self.theme.text_secondary())
-                                .child(format!("{:.0}%", file.progress * 100.0)),
-                        ])),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(self.theme.text_tertiary())
+                            .child(format!("{:.0}%", progress * 100.0)),
+                    ),
             )
             .child(
+
                 div()
                     .text_xs()
-                    .text_color(self.theme.text_secondary())
-                    .child(self.status_text(file.status)),
+                    .text_color(self.status_color(status))
+                    .child(self.status_text(status)),
             )
             .child(
+
                 div()
                     .w_full()
-                    .h(px(6.0))
+                    .h(px(4.0))
                     .rounded_full()
                     .bg(self.theme.border())
+                    .overflow_hidden()
                     .child(
                         div()
                             .h_full()
                             .rounded_full()
                             .bg(self.theme.accent())
-                            .w(relative(file.progress as f32)),
+                            .w(relative(progress as f32)),
                     ),
             )
             .on_mouse_down(
@@ -193,12 +179,23 @@ impl Sidebar {
 
     fn status_text(&self, status: FileStatus) -> &'static str {
         match status {
-            FileStatus::Idle => "待命",
-            FileStatus::Detecting => "检测中",
-            FileStatus::Paused => "已暂停",
-            FileStatus::Completed => "完成",
-            FileStatus::Failed => "失败",
-            FileStatus::Canceled => "已取消",
+            FileStatus::Idle => "Idle",
+            FileStatus::Detecting => "Detecting",
+            FileStatus::Paused => "Paused",
+            FileStatus::Completed => "Completed",
+            FileStatus::Failed => "Failed",
+            FileStatus::Canceled => "Canceled",
+        }
+    }
+
+    fn status_color(&self, status: FileStatus) -> Hsla {
+        match status {
+            FileStatus::Idle => self.theme.text_tertiary(),
+            FileStatus::Detecting => self.theme.accent(),
+            FileStatus::Paused => self.theme.warning(),
+            FileStatus::Completed => self.theme.success(),
+            FileStatus::Failed => self.theme.error(),
+            FileStatus::Canceled => self.theme.text_tertiary(),
         }
     }
 }

@@ -1,7 +1,9 @@
+use crate::gui::icons::{Icon, icon_sm};
 use crate::gui::state::AppState;
 use crate::gui::theme::AppTheme;
 use gpui::prelude::*;
 use gpui::*;
+use gpui::{InteractiveElement, MouseButton};
 use std::sync::Arc;
 
 pub struct PreviewPanel {
@@ -16,7 +18,7 @@ impl PreviewPanel {
 }
 
 impl Render for PreviewPanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let file = self.state.get_active_file();
         let roi = self.state.get_roi();
         let selection_visible = self.state.selection_visible();
@@ -28,36 +30,66 @@ impl Render for PreviewPanel {
             .w_full()
             .h_full()
             .bg(self.theme.surface())
-            .border_1()
-            .border_color(self.theme.border())
-            .rounded_md()
-            .p(px(12.0))
-            .gap(px(12.0))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
+                    .px(px(12.0))
+                    .py(px(8.0))
                     .child(
+
                         div()
-                            .text_sm()
-                            .text_color(self.theme.text_primary())
-                            .child("预览"),
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(icon_sm(Icon::Frame, self.theme.text_secondary()))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(self.theme.text_primary())
+                                    .child("Preview"),
+                            ),
                     )
-                    .child(div().flex().items_center().gap(px(8.0)).children(vec![
-                        self.chip("字幕", true),
-                        self.chip("亮色区域", highlight_enabled),
-                        self.chip("叠加", selection_visible),
-                    ])),
+                    .child(
+
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(self.icon_toggle(cx, Icon::Eye, selection_visible, |state| {
+                                state.toggle_selection_visibility();
+                            }))
+                            .child(self.icon_toggle(cx, Icon::Redo2, false, |_| {}))
+                            .child(self.icon_toggle(cx, Icon::Frame, false, |_| {}))
+                            .child(self.icon_toggle(
+                                cx,
+                                Icon::LayoutDashboard,
+                                highlight_enabled,
+                                |state| {
+                                    state.toggle_highlight();
+                                },
+                            ))
+                            .child(
+
+                                div()
+                                    .w(px(1.0))
+                                    .h(px(16.0))
+                                    .bg(self.theme.border())
+                                    .mx(px(4.0)),
+                            )
+                            .child(self.color_picker_button())
+                            .child(self.y_plane_toggle()),
+                    ),
             )
             .child(
+
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .relative()
                     .bg(self.theme.translucent_panel())
-                    .rounded_md()
                     .overflow_hidden()
                     .child(if let Some(file) = file {
                         self.render_preview(&file, roi, selection_visible, highlight_enabled)
@@ -69,6 +101,91 @@ impl Render for PreviewPanel {
 }
 
 impl PreviewPanel {
+    fn icon_toggle(
+        &self,
+        cx: &mut Context<Self>,
+        icon: Icon,
+        active: bool,
+        toggle: impl Fn(&AppState) + 'static,
+    ) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(28.0))
+            .h(px(28.0))
+            .rounded(px(6.0))
+            .bg(if active {
+                self.theme.accent_muted()
+            } else {
+                gpui::transparent_black()
+            })
+            .cursor_pointer()
+            .hover(|s| s.bg(self.theme.surface_hover()))
+            .child(icon_sm(
+                icon,
+                if active {
+                    self.theme.accent()
+                } else {
+                    self.theme.text_secondary()
+                },
+            ))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    toggle(&this.state);
+                    cx.notify();
+                }),
+            )
+    }
+
+    fn color_picker_button(&self) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(8.0))
+            .h(px(28.0))
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(self.theme.surface_hover()))
+            .child(
+
+                div()
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .rounded(px(3.0))
+                    .bg(self.theme.accent())
+                    .border_1()
+                    .border_color(self.theme.border()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(self.theme.text_secondary())
+                    .child("Foreground"),
+            )
+            .child(icon_sm(Icon::ChevronDown, self.theme.text_tertiary()))
+    }
+
+    fn y_plane_toggle(&self) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .px(px(10.0))
+            .h(px(28.0))
+            .rounded_full()
+            .bg(self.theme.surface_elevated())
+            .cursor_pointer()
+            .hover(|s| s.bg(self.theme.surface_hover()))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(self.theme.text_secondary())
+                    .child("Y Plane"),
+            )
+    }
+
     fn render_preview(
         &self,
         file: &crate::gui::state::TrackedFile,
@@ -87,35 +204,27 @@ impl PreviewPanel {
             .relative()
             .w_full()
             .h_full()
-            .bg(self.theme.surface_elevated())
+            .bg(hsla(220.0 / 360.0, 0.15, 0.05, 1.0))
             .child(
-                div().absolute().inset_0().child(
-                    div()
-                        .w_full()
-                        .h_full()
-                        .bg(hsla(215.0, 0.18, 0.08, 1.0))
-                        .child(div().absolute().inset_0().bg(self.theme.overlay()))
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(22.0))
-                                .top(px(22.0))
-                                .text_xs()
-                                .text_color(self.theme.text_secondary())
-                                .child(format!("{}", file.path.display())),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(22.0))
-                                .bottom(px(22.0))
-                                .text_sm()
-                                .text_color(self.theme.text_primary())
-                                .child("我再问一次\n请你解释安东生先生魔术的原理"),
-                        ),
-                ),
+
+                div()
+                    .absolute()
+                    .left(px(16.0))
+                    .top(px(16.0))
+                    .text_xs()
+                    .text_color(self.theme.text_tertiary())
+                    .child(format!("{}", file.path.display())),
             )
-            .child(self.render_overlay_toolbar(selection_visible, highlight_enabled))
+            .child(
+
+                div()
+                    .absolute()
+                    .left(px(16.0))
+                    .bottom(px(16.0))
+                    .text_sm()
+                    .text_color(self.theme.text_primary())
+                    .child("Sample subtitle text\nfor demonstration purposes"),
+            )
             .when(selection_visible, |div| {
                 div.child(self.render_selection_overlay(overlay, highlight_enabled))
             })
@@ -124,10 +233,13 @@ impl PreviewPanel {
     fn render_empty_state(&self) -> Div {
         div()
             .flex()
+            .flex_col()
             .items_center()
             .justify_center()
             .w_full()
             .h_full()
+            .gap(px(12.0))
+            .child(icon_sm(Icon::File, self.theme.text_tertiary()))
             .child(
                 div()
                     .text_sm()
@@ -158,20 +270,20 @@ impl PreviewPanel {
                         .bg(if highlight {
                             self.theme.accent_muted()
                         } else {
-                            hsla(215.0, 0.1, 0.08, 0.4)
+                            hsla(210.0 / 360.0, 0.15, 0.12, 0.5)
                         })
                         .border_1()
                         .border_color(self.theme.overlay_dashed())
-                        .border_dashed()
-                        .rounded_md()
+                        .rounded(px(4.0))
                         .child(
+
                             div()
                                 .absolute()
-                                .left(px(6.0))
-                                .top(px(6.0))
+                                .left(px(8.0))
+                                .top(px(8.0))
                                 .text_xs()
                                 .text_color(self.theme.text_secondary())
-                                .child(format!("x {:.2} y {:.2} w {:.2} h {:.2}", x, y, w, h)),
+                                .child(format!("x{:.2} y{:.2} w{:.2} h{:.2}", x, y, w, h)),
                         )
                         .children(self.render_handles()),
                 ),
@@ -179,108 +291,54 @@ impl PreviewPanel {
     }
 
     fn render_handles(&self) -> Vec<Div> {
+        let handle_size = px(10.0);
+        let offset = px(-5.0);
+
         vec![
+
             div()
                 .absolute()
-                .left(px(-6.0))
-                .top(px(-6.0))
-                .w(px(12.0))
-                .h(px(12.0))
+                .left(offset)
+                .top(offset)
+                .size(handle_size)
                 .rounded_full()
                 .bg(self.theme.accent())
-                .border_1()
-                .border_color(self.theme.border_focused()),
+                .border_2()
+                .border_color(self.theme.background())
+                .cursor(CursorStyle::ResizeUpLeftDownRight),
+
             div()
                 .absolute()
-                .right(px(-6.0))
-                .top(px(-6.0))
-                .w(px(12.0))
-                .h(px(12.0))
+                .right(offset)
+                .top(offset)
+                .size(handle_size)
                 .rounded_full()
                 .bg(self.theme.accent())
-                .border_1()
-                .border_color(self.theme.border_focused()),
+                .border_2()
+                .border_color(self.theme.background())
+                .cursor(CursorStyle::ResizeUpRightDownLeft),
+
             div()
                 .absolute()
-                .left(px(-6.0))
-                .bottom(px(-6.0))
-                .w(px(12.0))
-                .h(px(12.0))
+                .left(offset)
+                .bottom(offset)
+                .size(handle_size)
                 .rounded_full()
                 .bg(self.theme.accent())
-                .border_1()
-                .border_color(self.theme.border_focused()),
+                .border_2()
+                .border_color(self.theme.background())
+                .cursor(CursorStyle::ResizeUpRightDownLeft),
+
             div()
                 .absolute()
-                .right(px(-6.0))
-                .bottom(px(-6.0))
-                .w(px(12.0))
-                .h(px(12.0))
+                .right(offset)
+                .bottom(offset)
+                .size(handle_size)
                 .rounded_full()
                 .bg(self.theme.accent())
-                .border_1()
-                .border_color(self.theme.border_focused()),
+                .border_2()
+                .border_color(self.theme.background())
+                .cursor(CursorStyle::ResizeUpLeftDownRight),
         ]
-    }
-
-    fn render_overlay_toolbar(&self, selection_visible: bool, highlight_enabled: bool) -> Div {
-        div()
-            .absolute()
-            .top(px(14.0))
-            .right(px(14.0))
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .children(vec![
-                self.rounded_icon(selection_visible, "选区"),
-                self.rounded_icon(highlight_enabled, "亮度"),
-                self.rounded_icon(true, "色彩"),
-            ])
-    }
-
-    fn rounded_icon(&self, active: bool, label: &str) -> Div {
-        div()
-            .px(px(12.0))
-            .py(px(8.0))
-            .rounded_full()
-            .bg(if active {
-                self.theme.accent()
-            } else {
-                self.theme.surface_elevated()
-            })
-            .border_1()
-            .border_color(if active {
-                self.theme.border_focused()
-            } else {
-                self.theme.border()
-            })
-            .text_xs()
-            .text_color(if active {
-                self.theme.background()
-            } else {
-                self.theme.text_secondary()
-            })
-            .child(label.to_string())
-    }
-
-    fn chip(&self, label: &str, active: bool) -> Div {
-        div()
-            .px(px(10.0))
-            .py(px(6.0))
-            .rounded_md()
-            .bg(if active {
-                self.theme.accent_muted()
-            } else {
-                self.theme.surface_elevated()
-            })
-            .border_1()
-            .border_color(if active {
-                self.theme.border_focused()
-            } else {
-                self.theme.border()
-            })
-            .text_xs()
-            .text_color(self.theme.text_secondary())
-            .child(label.to_string())
     }
 }
