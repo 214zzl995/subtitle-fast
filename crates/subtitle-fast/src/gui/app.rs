@@ -9,7 +9,7 @@ use crate::gui::theme::AppTheme;
 
 const SIDEBAR_TOGGLE_SIZE: f32 = 26.0;
 const SIDEBAR_TOGGLE_PADDING_X: f32 = 10.0;
-const SIDEBAR_TOGGLE_GAP: f32 = 16.0;
+const SIDEBAR_TOGGLE_GAP: f32 = 20.0;
 const TITLEBAR_HEIGHT_DEFAULT: f32 = 32.0;
 const TITLEBAR_COLLAPSED_WIDTH_DEFAULT: f32 = 48.0;
 const MACOS_TITLEBAR_HEIGHT: f32 = 40.0;
@@ -85,6 +85,11 @@ impl Render for MainWindow {
         let sidebar_collapsed = sidebar_panel_state.is_collapsed();
         let max_width = self.state.left_sidebar_width();
         let animation_duration = std::time::Duration::from_millis(200);
+        let titlebar_height = if cfg!(target_os = "macos") {
+            px(MACOS_TITLEBAR_HEIGHT)
+        } else {
+            px(TITLEBAR_HEIGHT_DEFAULT)
+        };
         let titlebar_collapsed_width = if cfg!(target_os = "macos") {
             macos_titlebar_collapsed_width()
         } else {
@@ -94,9 +99,6 @@ impl Render for MainWindow {
         let sidebar_config = AnimatedPanelConfig::new(max_width)
             .with_collapsed_width(0.0)
             .with_duration(animation_duration);
-        let titlebar_sidebar_config = AnimatedPanelConfig::new(max_width)
-            .with_collapsed_width(titlebar_collapsed_width)
-            .with_duration(animation_duration);
 
         let sidebar = cx.new(|_| Sidebar::new(Arc::clone(&self.state), theme));
         let preview = cx.new(|_| PreviewPanel::new(Arc::clone(&self.state), theme));
@@ -105,8 +107,9 @@ impl Render for MainWindow {
         let subtitle_list = cx.new(|_| SubtitleList::new(Arc::clone(&self.state), theme));
 
         div()
+            .relative()
             .flex()
-            .flex_col()
+            .flex_row()
             .w_full()
             .h_full()
             .bg(theme.background())
@@ -127,81 +130,98 @@ impl Render for MainWindow {
                     }
                 }),
             )
-            .child(self.render_titlebar(
-                theme,
-                window,
-                cx,
+            .child(animated_panel_container(
                 sidebar_panel_state,
-                titlebar_sidebar_config,
+                sidebar_config,
+                "left-sidebar",
+                div()
+                    .relative()
+                    .w_full()
+                    .h_full()
+                    .child(
+                        div()
+                            .relative()
+                            .w(px(max_width))
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .bg(theme.surface())
+                            .child(self.render_sidebar_titlebar(theme, titlebar_height))
+                            .child(
+                                div()
+                                    .relative()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .w_full()
+                                    .h_full()
+                                    .child(sidebar)
+                                    .when(!sidebar_collapsed, |d| {
+                                        d.child(self.render_resize_handle_left(theme, cx))
+                                    }),
+                            ),
+                    )
+                    .when(!sidebar_collapsed, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .right(px(0.0))
+                                .top_0()
+                                .bottom_0()
+                                .w(px(1.0))
+                                .bg(theme.titlebar_border()),
+                        )
+                    }),
             ))
             .child(
                 div()
-                    .relative()
                     .flex()
+                    .flex_col()
                     .flex_1()
-                    .gap(px(1.0))
-                    .overflow_hidden()
+                    .h_full()
+                    .child(self.render_controls_titlebar(theme, window, cx, titlebar_height))
                     .child(
                         div()
                             .relative()
                             .flex()
                             .flex_1()
+                            .gap(px(1.0))
                             .overflow_hidden()
-                            .child(animated_panel_container(
-                                sidebar_panel_state,
-                                sidebar_config,
-                                "left-sidebar",
-                                div()
-                                    .relative()
-                                    .w_full()
-                                    .h_full()
-                                    .child(
-                                        div()
-                                            .relative()
-                                            .w(px(max_width))
-                                            .h_full()
-                                            .bg(theme.surface())
-                                            .child(sidebar)
-                                            .when(!sidebar_collapsed, |d| {
-                                                d.child(self.render_resize_handle_left(theme, cx))
-                                            }),
-                                    )
-                                    .when(!sidebar_collapsed, |d| {
-                                        d.child(
-                                            div()
-                                                .absolute()
-                                                .right(px(0.0))
-                                                .top_0()
-                                                .bottom_0()
-                                                .w(px(1.0))
-                                                .bg(theme.titlebar_border()),
-                                        )
-                                    }),
-                            ))
+                            .child(
+                                div().relative().flex().flex_1().overflow_hidden().child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .flex_1()
+                                        .h_full()
+                                        .gap(px(1.0))
+                                        .child(div().flex_1().child(preview))
+                                        .child(div().child(control_panel)),
+                                ),
+                            )
                             .child(
                                 div()
+                                    .relative()
                                     .flex()
                                     .flex_col()
-                                    .flex_1()
+                                    .w(px(self.state.right_sidebar_width()))
                                     .h_full()
                                     .gap(px(1.0))
-                                    .child(div().flex_1().child(preview))
-                                    .child(div().child(control_panel)),
+                                    .child(self.render_resize_handle_right(theme, cx))
+                                    .child(div().child(status_panel))
+                                    .child(div().flex_1().child(subtitle_list)),
                             ),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .flex()
-                            .flex_col()
-                            .w(px(self.state.right_sidebar_width()))
-                            .h_full()
-                            .gap(px(1.0))
-                            .child(self.render_resize_handle_right(theme, cx))
-                            .child(div().child(status_panel))
-                            .child(div().flex_1().child(subtitle_list)),
                     ),
             )
+            .child(self.render_sidebar_toggle_overlay(
+                theme,
+                cx,
+                sidebar_panel_state,
+                max_width,
+                titlebar_height,
+                titlebar_collapsed_width,
+                animation_duration,
+            ))
     }
 }
 
@@ -223,71 +243,33 @@ impl MainWindow {
             }));
     }
 
-    fn render_titlebar(
+    fn render_sidebar_titlebar(&self, theme: AppTheme, titlebar_height: Pixels) -> Div {
+        div()
+            .relative()
+            .h(titlebar_height)
+            .w_full()
+            .bg(theme.titlebar_bg())
+            .window_control_area(WindowControlArea::Drag)
+    }
+
+    fn render_controls_titlebar(
         &self,
         theme: AppTheme,
         window: &mut Window,
-        cx: &mut Context<Self>,
-        sidebar_panel_state: AnimatedPanelState,
-        sidebar_config: AnimatedPanelConfig,
+        _cx: &mut Context<Self>,
+        titlebar_height: Pixels,
     ) -> Div {
-        let titlebar_height = if cfg!(target_os = "macos") {
-            px(MACOS_TITLEBAR_HEIGHT)
-        } else {
-            px(TITLEBAR_HEIGHT_DEFAULT)
-        };
-
         #[cfg(not(target_os = "windows"))]
         let _ = window;
 
         #[cfg(target_os = "windows")]
-        let controls = self.render_windows_controls(theme, window, cx);
+        let controls = self.render_windows_controls(theme, window, _cx);
 
         #[cfg(target_os = "macos")]
         let controls = self.render_macos_controls(theme);
 
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        let controls = self.render_linux_controls(theme, cx);
-
-        let sidebar_collapsed = sidebar_panel_state.is_collapsed();
-        let sidebar_controls = div()
-            .flex()
-            .items_center()
-            .justify_end()
-            .h_full()
-            .w_full()
-            .px(px(SIDEBAR_TOGGLE_PADDING_X))
-            .child(self.render_sidebar_toggle(theme, cx, sidebar_collapsed));
-
-        let sidebar_slot = div()
-            .relative()
-            .h_full()
-            .bg(theme.titlebar_bg())
-            .child(sidebar_controls)
-            .when(!sidebar_collapsed, |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .right(px(0.0))
-                        .top_0()
-                        .bottom_0()
-                        .w(px(1.0))
-                        .bg(theme.titlebar_border()),
-                )
-            })
-            .when(sidebar_collapsed, |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .left(px(0.0))
-                        .right(px(0.0))
-                        .bottom(px(0.0))
-                        .h(px(1.0))
-                        .bg(theme.titlebar_border()),
-                )
-            })
-            .overflow_hidden()
-            .with_animated_width(sidebar_panel_state, sidebar_config, "left-titlebar");
+        let controls = self.render_linux_controls(theme, _cx);
 
         let controls_slot = div()
             .relative()
@@ -296,26 +278,61 @@ impl MainWindow {
             .justify_end()
             .flex_1()
             .h_full()
-            .child(controls)
-            .child(
-                div()
-                    .absolute()
-                    .left(px(0.0))
-                    .right(px(0.0))
-                    .bottom(px(0.0))
-                    .h(px(1.0))
-                    .bg(theme.titlebar_border()),
-            );
+            .child(controls);
 
-        div()
+        let titlebar = div()
+            .relative()
             .flex()
             .items_center()
             .h(titlebar_height)
             .w_full()
             .bg(theme.titlebar_bg())
-            .window_control_area(WindowControlArea::Drag)
-            .child(sidebar_slot)
-            .child(controls_slot)
+            .window_control_area(WindowControlArea::Drag);
+
+        titlebar.child(controls_slot).child(
+            div()
+                .absolute()
+                .left(px(0.0))
+                .right(px(0.0))
+                .bottom(px(0.0))
+                .h(px(1.0))
+                .bg(theme.titlebar_border()),
+        )
+    }
+
+    fn render_sidebar_toggle_overlay(
+        &self,
+        theme: AppTheme,
+        cx: &mut Context<Self>,
+        sidebar_panel_state: AnimatedPanelState,
+        max_width: f32,
+        titlebar_height: Pixels,
+        titlebar_collapsed_width: f32,
+        animation_duration: std::time::Duration,
+    ) -> AnimationElement<Div> {
+        let expanded_x = max_width - SIDEBAR_TOGGLE_PADDING_X - SIDEBAR_TOGGLE_SIZE;
+        let collapsed_x = titlebar_collapsed_width - SIDEBAR_TOGGLE_PADDING_X - SIDEBAR_TOGGLE_SIZE;
+        let (from, to) = if sidebar_panel_state.is_collapsed() {
+            (expanded_x, collapsed_x)
+        } else {
+            (collapsed_x, expanded_x)
+        };
+        let animation = Animation::new(animation_duration).with_easing(ease_out_quint());
+        let animation_id = sidebar_panel_state.animation_id("left-sidebar-toggle");
+
+        div()
+            .absolute()
+            .top(px(0.0))
+            .h(titlebar_height)
+            .w(px(SIDEBAR_TOGGLE_SIZE))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(self.render_sidebar_toggle(theme, cx, sidebar_panel_state.is_collapsed()))
+            .with_animation(animation_id, animation, move |this, t| {
+                let x = from + (to - from) * t;
+                this.left(px(x))
+            })
     }
 
     #[cfg(target_os = "windows")]
@@ -491,9 +508,9 @@ impl MainWindow {
             .hover(|s| s.bg(theme.surface_hover()))
             .child(icon_sm(
                 if collapsed {
-                    Icon::ChevronRight
+                    Icon::PanelLeftOpen
                 } else {
-                    Icon::ChevronLeft
+                    Icon::PanelLeftClose
                 },
                 theme.text_secondary(),
             ))
