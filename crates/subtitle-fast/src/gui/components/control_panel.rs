@@ -33,7 +33,6 @@ impl Render for ControlPanel {
         let playhead = self.state.playhead_ms();
         let duration = self.state.duration_ms();
         let playing = self.state.is_playing();
-        let selection_visible = self.state.selection_visible();
         let highlight = self.state.highlight_enabled();
 
         div()
@@ -43,12 +42,12 @@ impl Render for ControlPanel {
             .bg(self.theme.surface())
             .px(px(10.0))
             .pt(px(6.0))
-            .pb(px(10.0))
+            .pb(px(24.0))
             .gap(px(12.0))
             .child(self.render_playback_bar(cx, playhead, duration, playing))
-            .child(self.render_selection_section(cx, roi, selection_visible, highlight))
             .child(self.render_slider(
                 cx,
+                Icon::Sun,
                 "Brightness Threshold",
                 threshold,
                 0.0,
@@ -58,6 +57,7 @@ impl Render for ControlPanel {
             ))
             .child(self.render_slider(
                 cx,
+                Icon::Gauge,
                 "Tolerance",
                 tolerance,
                 0.0,
@@ -65,6 +65,8 @@ impl Render for ControlPanel {
                 2.0,
                 |state, value| state.set_tolerance(value),
             ))
+            .child(self.render_selection_section(cx, highlight))
+            .child(self.render_selection_info(roi))
     }
 }
 
@@ -237,17 +239,11 @@ impl ControlPanel {
             )
     }
 
-    fn render_selection_section(
-        &self,
-        cx: &mut Context<Self>,
-        roi: crate::gui::state::RoiSelection,
-        selection_visible: bool,
-        highlight_enabled: bool,
-    ) -> Div {
+    fn render_selection_section(&self, cx: &mut Context<Self>, highlight_enabled: bool) -> Div {
         div()
             .flex()
             .flex_col()
-            .gap(px(8.0))
+            .gap(px(6.0))
             .child(
                 div()
                     .flex()
@@ -256,86 +252,81 @@ impl ControlPanel {
                     .child(icon_sm(Icon::MousePointer, self.theme.text_secondary()))
                     .child(
                         div()
-                            .text_sm()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_color(self.theme.text_primary())
                             .child("Selection Overview"),
                     ),
             )
+            .child(self.selection_item(
+                cx,
+                Icon::Sun,
+                "Brightness Threshold",
+                highlight_enabled,
+                |state| {
+                    state.toggle_highlight();
+                },
+            ))
+    }
+
+    fn render_selection_info(&self, roi: crate::gui::state::RoiSelection) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.0))
-                    .child(self.checkbox(cx, "Region", selection_visible, |state| {
-                        state.toggle_selection_visibility();
-                    }))
-                    .child(
-                        self.checkbox(cx, "Brightness Threshold", highlight_enabled, |state| {
-                            state.toggle_highlight();
-                        }),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
+                    .gap(px(6.0))
+                    .child(icon_sm(Icon::Crosshair, self.theme.text_secondary()))
                     .child(
                         div()
                             .text_xs()
                             .text_color(self.theme.text_secondary())
-                            .child(format!(
-                                "x{:.2} y{:.2} w{:.2} h{:.2}",
-                                roi.x, roi.y, roi.width, roi.height
-                            )),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(self.theme.text_tertiary())
-                            .child("Bottom 25% default selection"),
+                            .child("Region"),
                     ),
-            )
-    }
-
-    fn checkbox(
-        &self,
-        cx: &mut Context<Self>,
-        label: &str,
-        checked: bool,
-        toggle: impl Fn(&AppState) + 'static,
-    ) -> Div {
-        div()
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .cursor_pointer()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .w(px(16.0))
-                    .h(px(16.0))
-                    .rounded(px(3.0))
-                    .border_1()
-                    .border_color(if checked {
-                        self.theme.accent()
-                    } else {
-                        self.theme.border()
-                    })
-                    .bg(if checked {
-                        self.theme.accent()
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .when(checked, |d| {
-                        d.child(icon_sm(Icon::Check, self.theme.background()))
-                    }),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(self.theme.text_secondary())
+                    .child(format!(
+                        "x{:.2} y{:.2} w{:.2} h{:.2}",
+                        roi.x, roi.y, roi.width, roi.height
+                    )),
+            )
+    }
+
+    fn selection_item(
+        &self,
+        cx: &mut Context<Self>,
+        icon: Icon,
+        label: &str,
+        active: bool,
+        toggle: impl Fn(&AppState) + 'static,
+    ) -> Div {
+        let icon_color = if active {
+            self.theme.accent()
+        } else {
+            self.theme.text_secondary()
+        };
+        let text_color = if active {
+            self.theme.text_primary()
+        } else {
+            self.theme.text_secondary()
+        };
+
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .cursor_pointer()
+            .child(icon_sm(icon, icon_color))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(text_color)
                     .child(label.to_string()),
             )
             .on_mouse_down(
@@ -349,92 +340,83 @@ impl ControlPanel {
 
     fn render_slider(
         &self,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
+        icon: Icon,
         label: &str,
         value: f64,
         min: f64,
         max: f64,
-        step: f64,
-        update: fn(&AppState, f64),
+        _step: f64,
+        _update: fn(&AppState, f64),
     ) -> Div {
         let ratio = ((value - min) / (max - min)).clamp(0.0, 1.0) as f32;
 
         div()
             .flex()
-            .flex_col()
-            .gap(px(6.0))
+            .items_center()
+            .gap(px(10.0))
             .child(
                 div()
                     .flex()
-                    .justify_between()
+                    .items_center()
+                    .gap(px(6.0))
+                    .w(px(150.0))
+                    .child(icon_sm(icon, self.theme.text_secondary()))
                     .child(
                         div()
                             .text_xs()
                             .text_color(self.theme.text_secondary())
                             .child(label.to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(self.theme.text_secondary())
-                            .child(format!("{:.0}", value)),
                     ),
             )
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(self.slider_button(cx, "-", value, min, max, -step, update))
+                    .w(px(36.0))
+                    .text_right()
+                    .text_xs()
+                    .text_color(self.theme.text_secondary())
+                    .child(format!("{:.0}", value)),
+            )
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .h(px(12.0))
                     .child(
                         div()
-                            .flex_1()
-                            .h(px(6.0))
+                            .absolute()
+                            .left(px(0.0))
+                            .right(px(0.0))
+                            .top(px(4.0))
+                            .h(px(4.0))
                             .rounded_full()
-                            .bg(self.theme.border())
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .h_full()
-                                    .rounded_full()
-                                    .bg(self.theme.accent())
-                                    .w(relative(ratio)),
-                            ),
+                            .bg(self.theme.border().opacity(0.6)),
                     )
-                    .child(self.slider_button(cx, "+", value, min, max, step, update)),
-            )
-    }
-
-    fn slider_button(
-        &self,
-        cx: &mut Context<Self>,
-        label: &str,
-        current: f64,
-        min: f64,
-        max: f64,
-        delta: f64,
-        update: fn(&AppState, f64),
-    ) -> Div {
-        div()
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(px(24.0))
-            .h(px(24.0))
-            .rounded(px(4.0))
-            .bg(self.theme.surface_elevated())
-            .text_xs()
-            .text_color(self.theme.text_secondary())
-            .cursor_pointer()
-            .hover(|s| s.bg(self.theme.surface_hover()))
-            .child(label.to_string())
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    let new_value = (current + delta).clamp(min, max);
-                    update(&this.state, new_value);
-                    cx.notify();
-                }),
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(0.0))
+                            .top(px(4.0))
+                            .h(px(4.0))
+                            .rounded_full()
+                            .bg(self.theme.accent())
+                            .w(relative(ratio)),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(1.0))
+                            .left(relative(ratio))
+                            .ml(px(-5.0))
+                            .w(px(10.0))
+                            .h(px(10.0))
+                            .rounded_full()
+                            .bg(self.theme.surface())
+                            .border_2()
+                            .border_color(self.theme.accent())
+                            .shadow_sm()
+                            .hover(|s| s.top(px(0.0)).ml(px(-6.0)).w(px(12.0)).h(px(12.0))),
+                    ),
             )
     }
 
