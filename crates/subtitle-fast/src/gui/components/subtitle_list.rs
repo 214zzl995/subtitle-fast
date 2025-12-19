@@ -39,7 +39,7 @@ impl Render for SubtitleList {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .child(icon_sm(Icon::ALargeSmall, self.theme.text_secondary()))
+                            .child(icon_sm(Icon::MessageSquare, self.theme.text_secondary()))
                             .child(
                                 div()
                                     .text_sm()
@@ -57,7 +57,7 @@ impl Render for SubtitleList {
                             .rounded(px(6.0))
                             .cursor_pointer()
                             .hover(|s| s.bg(self.theme.surface_hover()))
-                            .child(icon_sm(Icon::Copy, self.theme.text_secondary())),
+                            .child(icon_sm(Icon::Upload, self.theme.text_secondary())),
                     ),
             )
             .child(
@@ -114,7 +114,7 @@ impl SubtitleList {
             .h_full()
             .py(px(40.0))
             .gap(px(12.0))
-            .child(icon_sm(Icon::ALargeSmall, self.theme.text_tertiary()))
+            .child(icon_sm(Icon::MessageSquare, self.theme.text_tertiary()))
             .child(
                 div()
                     .text_xs()

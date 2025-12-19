@@ -2,7 +2,63 @@ use gpui::prelude::*;
 use gpui::*;
 
 use gpui_component::Icon as IconComponent;
-pub use gpui_component::IconName as Icon;
+use gpui_component::IconNamed;
+
+#[derive(Clone, Copy)]
+pub enum Icon {
+    Activity,
+    Check,
+    ChevronDown,
+    ChevronLeft,
+    ChevronRight,
+    Crosshair,
+    Eye,
+    EyeOff,
+    Film,
+    Gauge,
+    Merge,
+    MessageSquare,
+    MousePointer,
+    Pause,
+    Play,
+    PlaySquare,
+    ScanText,
+    RotateCcw,
+    Sparkles,
+    Stop,
+    Sun,
+    Upload,
+}
+
+impl IconNamed for Icon {
+    fn path(self) -> SharedString {
+        match self {
+            Self::Activity => "icons/activity.svg",
+            Self::Check => "icons/check.svg",
+            Self::ChevronDown => "icons/chevron-down.svg",
+            Self::ChevronLeft => "icons/chevron-left.svg",
+            Self::ChevronRight => "icons/chevron-right.svg",
+            Self::Crosshair => "icons/crosshair.svg",
+            Self::Eye => "icons/eye.svg",
+            Self::EyeOff => "icons/eye-off.svg",
+            Self::Film => "icons/film.svg",
+            Self::Gauge => "icons/gauge.svg",
+            Self::Merge => "icons/merge.svg",
+            Self::MessageSquare => "icons/message-square.svg",
+            Self::MousePointer => "icons/mouse-pointer-2.svg",
+            Self::Pause => "icons/pause.svg",
+            Self::Play => "icons/play.svg",
+            Self::PlaySquare => "icons/square-play.svg",
+            Self::ScanText => "icons/scan-text.svg",
+            Self::RotateCcw => "icons/rotate-ccw.svg",
+            Self::Sparkles => "icons/sparkles.svg",
+            Self::Stop => "icons/square.svg",
+            Self::Sun => "icons/sun.svg",
+            Self::Upload => "icons/upload.svg",
+        }
+        .into()
+    }
+}
 
 pub fn icon(name: Icon, color: Hsla) -> IconComponent {
     IconComponent::new(name).text_color(color)

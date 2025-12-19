@@ -4,6 +4,7 @@ use crate::gui::theme::AppTheme;
 use gpui::prelude::*;
 use gpui::*;
 use gpui::{InteractiveElement, MouseButton};
+use gpui_component::Icon as IconComponent;
 use std::sync::Arc;
 
 pub struct StatusPanel {
@@ -46,7 +47,7 @@ impl Render for StatusPanel {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .child(icon_sm(Icon::ChartPie, self.theme.text_secondary()))
+                            .child(icon_sm(Icon::Gauge, self.theme.text_secondary()))
                             .child(
                                 div()
                                     .text_sm()
@@ -97,24 +98,43 @@ impl Render for StatusPanel {
                     .child(
                         div()
                             .flex()
-                            .flex_wrap()
-                            .gap(px(8.0))
-                            .child(self.metric_card("FPS", format!("{:.1}", metrics.fps), "fps"))
-                            .child(self.metric_card(
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(self.metric_row(
+                                Icon::Gauge,
+                                "FPS",
+                                format!("{:.1}", metrics.fps),
+                                Some("fps"),
+                            ))
+                            .child(self.metric_row(
+                                Icon::Activity,
                                 "Detection",
                                 format!("{:.1}", metrics.det_ms),
-                                "ms",
+                                Some("ms"),
                             ))
-                            .child(self.metric_card("OCR", format!("{:.1}", metrics.ocr_ms), "ms"))
-                            .child(self.metric_card(
+                            .child(self.metric_row(
+                                Icon::ScanText,
+                                "OCR",
+                                format!("{:.1}", metrics.ocr_ms),
+                                Some("ms"),
+                            ))
+                            .child(self.metric_row(
+                                Icon::MessageSquare,
                                 "Subtitles",
                                 format!("{}", metrics.cues),
-                                "cues",
+                                Some("cues"),
                             ))
-                            .child(self.metric_card(
+                            .child(self.metric_row(
+                                Icon::Merge,
+                                "Merged",
+                                format!("{}", metrics.merged),
+                                Some("cues"),
+                            ))
+                            .child(self.metric_row(
+                                Icon::EyeOff,
                                 "Empty OCR",
                                 format!("{}", metrics.ocr_empty),
-                                "frames",
+                                Some("frames"),
                             )),
                     )
                     .child(self.render_action_buttons(cx, status))
@@ -126,38 +146,50 @@ impl Render for StatusPanel {
 }
 
 impl StatusPanel {
-    fn metric_card(&self, label: &str, value: String, unit: &str) -> Div {
+    fn metric_row(&self, icon: Icon, label: &str, value: String, unit: Option<&str>) -> Div {
+        let text_size = px(9.0);
+
         div()
             .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .p(px(8.0))
-            .min_w(px(70.0))
-            .rounded(px(6.0))
-            .bg(self.theme.surface_elevated())
+            .items_center()
+            .justify_between()
             .child(
                 div()
-                    .text_xs()
-                    .text_color(self.theme.text_tertiary())
-                    .child(label.to_string()),
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        IconComponent::new(icon)
+                            .w(text_size)
+                            .h(text_size)
+                            .text_color(self.theme.text_secondary()),
+                    )
+                    .child(
+                        div()
+                            .text_size(text_size)
+                            .text_color(self.theme.text_secondary())
+                            .child(label.to_string()),
+                    ),
             )
             .child(
                 div()
                     .flex()
                     .items_baseline()
-                    .gap(px(2.0))
+                    .gap(px(4.0))
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(text_size)
                             .text_color(self.theme.text_primary())
                             .child(value),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(self.theme.text_tertiary())
-                            .child(unit.to_string()),
-                    ),
+                    .when_some(unit, |this, unit| {
+                        this.child(
+                            div()
+                                .text_size(text_size)
+                                .text_color(self.theme.text_secondary())
+                                .child(unit.to_string()),
+                        )
+                    }),
             )
     }
 
@@ -171,9 +203,9 @@ impl StatusPanel {
         };
 
         let primary_icon = match status {
-            FileStatus::Detecting => Icon::Minus,
-            FileStatus::Paused => Icon::ArrowRight,
-            _ => Icon::ArrowRight,
+            FileStatus::Detecting => Icon::Pause,
+            FileStatus::Paused => Icon::Play,
+            _ => Icon::Play,
         };
 
         let primary_action = cx.listener(|this, _, _, cx| {
@@ -242,7 +274,7 @@ impl StatusPanel {
                         .bg(self.theme.danger())
                         .cursor_pointer()
                         .hover(|s| s.bg(self.theme.danger_hover()))
-                        .child(icon_sm(Icon::Close, self.theme.background()))
+                        .child(icon_sm(Icon::Stop, self.theme.background()))
                         .child(
                             div()
                                 .text_xs()

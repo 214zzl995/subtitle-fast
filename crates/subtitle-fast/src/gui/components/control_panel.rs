@@ -103,11 +103,7 @@ impl ControlPanel {
                             .cursor_pointer()
                             .hover(|s| s.bg(self.theme.accent_hover()))
                             .child(icon_sm(
-                                if playing {
-                                    Icon::Minus
-                                } else {
-                                    Icon::ArrowRight
-                                },
+                                if playing { Icon::Pause } else { Icon::Play },
                                 self.theme.background(),
                             ))
                             .on_mouse_down(
@@ -235,7 +231,7 @@ impl ControlPanel {
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    .child(icon_sm(Icon::Frame, self.theme.text_secondary()))
+                    .child(icon_sm(Icon::MousePointer, self.theme.text_secondary()))
                     .child(
                         div()
                             .text_sm()

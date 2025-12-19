@@ -42,7 +42,7 @@ impl Render for PreviewPanel {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .child(icon_sm(Icon::Frame, self.theme.text_secondary()))
+                            .child(icon_sm(Icon::Sparkles, self.theme.text_secondary()))
                             .child(
                                 div()
                                     .text_sm()
@@ -55,19 +55,23 @@ impl Render for PreviewPanel {
                             .flex()
                             .items_center()
                             .gap(px(4.0))
-                            .child(self.icon_toggle(cx, Icon::Eye, selection_visible, |state| {
-                                state.toggle_selection_visibility();
-                            }))
-                            .child(self.icon_toggle(cx, Icon::Redo2, false, |_| {}))
-                            .child(self.icon_toggle(cx, Icon::Frame, false, |_| {}))
                             .child(self.icon_toggle(
                                 cx,
-                                Icon::LayoutDashboard,
-                                highlight_enabled,
+                                if selection_visible {
+                                    Icon::Eye
+                                } else {
+                                    Icon::EyeOff
+                                },
+                                selection_visible,
                                 |state| {
-                                    state.toggle_highlight();
+                                    state.toggle_selection_visibility();
                                 },
                             ))
+                            .child(self.icon_toggle(cx, Icon::RotateCcw, false, |_| {}))
+                            .child(self.icon_toggle(cx, Icon::Crosshair, false, |_| {}))
+                            .child(self.icon_toggle(cx, Icon::Sun, highlight_enabled, |state| {
+                                state.toggle_highlight();
+                            }))
                             .child(
                                 div()
                                     .w(px(1.0))
@@ -232,7 +236,7 @@ impl PreviewPanel {
             .w_full()
             .h_full()
             .gap(px(12.0))
-            .child(icon_sm(Icon::File, self.theme.text_tertiary()))
+            .child(icon_sm(Icon::Film, self.theme.text_tertiary()))
             .child(
                 div()
                     .text_sm()

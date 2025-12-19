@@ -90,7 +90,7 @@ func subtitle_fast_gui_resume(_ handle: UInt64) -> Int32
 // MARK: - FFI Bridge
 
 /// Swift bridge to the Rust subtitle-fast library
-final class SubtitleFastFFI {
+final class SubtitleFastFFI {q
     static let shared = SubtitleFastFFI()
     
     private var callbacksRegistered = false

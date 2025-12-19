@@ -36,7 +36,7 @@ impl Render for Sidebar {
                     .gap(px(6.0))
                     .px(px(12.0))
                     .py(px(10.0))
-                    .child(icon_sm(Icon::Folder, self.theme.text_secondary()))
+                    .child(icon_sm(Icon::Film, self.theme.text_secondary()))
                     .child(
                         div()
                             .text_sm()
@@ -66,7 +66,7 @@ impl Render for Sidebar {
                                 .justify_center()
                                 .py(px(32.0))
                                 .gap(px(8.0))
-                                .child(icon_sm(Icon::File, self.theme.text_tertiary()))
+                                .child(icon_sm(Icon::Film, self.theme.text_tertiary()))
                                 .child(
                                     div()
                                         .text_xs()
@@ -96,6 +96,11 @@ impl Sidebar {
 
         let progress = file.progress;
         let status = file.status;
+        let file_icon = if is_active {
+            Icon::PlaySquare
+        } else {
+            Icon::Film
+        };
 
         div()
             .flex()
@@ -126,7 +131,7 @@ impl Sidebar {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .child(icon_sm(Icon::File, self.theme.text_secondary()))
+                            .child(icon_sm(file_icon, self.theme.text_secondary()))
                             .child(
                                 div()
                                     .text_xs()
