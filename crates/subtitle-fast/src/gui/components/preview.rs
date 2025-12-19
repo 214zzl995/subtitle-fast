@@ -42,7 +42,10 @@ impl Render for PreviewPanel {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .child(icon_sm(Icon::Sparkles, self.theme.text_secondary()))
+                            .child(icon_sm(
+                                Icon::GalleryThumbnails,
+                                self.theme.text_secondary(),
+                            ))
                             .child(
                                 div()
                                     .text_sm()
