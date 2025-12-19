@@ -41,14 +41,15 @@ impl Render for PreviewPanel {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.0))
+                            .gap(px(4.0))
                             .child(icon_sm(
                                 Icon::GalleryThumbnails,
                                 self.theme.text_secondary(),
                             ))
                             .child(
                                 div()
-                                    .text_sm()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(self.theme.text_primary())
                                     .child("Preview"),
                             ),
@@ -115,9 +116,9 @@ impl PreviewPanel {
             .flex()
             .items_center()
             .justify_center()
-            .w(px(28.0))
-            .h(px(28.0))
-            .rounded(px(6.0))
+            .w(px(24.0))
+            .h(px(24.0))
+            .rounded(px(5.0))
             .bg(if active {
                 self.theme.accent_muted()
             } else {
@@ -146,17 +147,17 @@ impl PreviewPanel {
         div()
             .flex()
             .items_center()
-            .gap(px(6.0))
-            .px(px(8.0))
-            .h(px(28.0))
-            .rounded(px(6.0))
+            .gap(px(4.0))
+            .px(px(6.0))
+            .h(px(24.0))
+            .rounded(px(5.0))
             .cursor_pointer()
             .hover(|s| s.bg(self.theme.surface_hover()))
             .child(
                 div()
-                    .w(px(14.0))
-                    .h(px(14.0))
-                    .rounded(px(3.0))
+                    .w(px(12.0))
+                    .h(px(12.0))
+                    .rounded(px(2.0))
                     .bg(self.theme.accent())
                     .border_1()
                     .border_color(self.theme.border()),
@@ -174,8 +175,8 @@ impl PreviewPanel {
         div()
             .flex()
             .items_center()
-            .px(px(10.0))
-            .h(px(28.0))
+            .px(px(8.0))
+            .h(px(24.0))
             .rounded_full()
             .bg(self.theme.surface_elevated())
             .cursor_pointer()

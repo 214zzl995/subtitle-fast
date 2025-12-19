@@ -190,11 +190,7 @@ impl AppTheme {
     }
 
     pub fn titlebar_bg(&self) -> Hsla {
-        if self.is_dark {
-            hsla(220.0 / 360.0, 0.12, 0.08, 1.0)
-        } else {
-            hsla(220.0 / 360.0, 0.02, 0.96, 1.0)
-        }
+        self.background()
     }
 
     pub fn titlebar_border(&self) -> Hsla {

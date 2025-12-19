@@ -80,7 +80,6 @@ impl Render for MainWindow {
             .w_full()
             .h_full()
             .bg(theme.background())
-            .child(self.render_titlebar(theme, window, cx))
             .when(self.state.is_resizing(), |d| {
                 d.cursor(CursorStyle::ResizeLeftRight)
             })
@@ -98,30 +97,32 @@ impl Render for MainWindow {
                     }
                 }),
             )
+            .child(self.render_titlebar(theme, window, cx))
             .child(
                 div()
+                    .relative()
                     .flex()
                     .flex_1()
                     .gap(px(1.0))
                     .overflow_hidden()
-                    .child(
+                    .when(sidebar_collapsed, |d| {
+                        d.child(self.render_floating_sidebar_toggle(theme, cx))
+                    })
+                    .child(animated_panel_container(
+                        sidebar_panel_state,
+                        sidebar_config,
+                        "left-sidebar",
                         div()
-                            .flex()
+                            .relative()
+                            .w(px(max_width))
                             .h_full()
+                            .bg(theme.surface())
                             .child(self.render_sidebar_toggle(theme, cx, sidebar_collapsed))
-                            .child(animated_panel_container(
-                                sidebar_panel_state,
-                                sidebar_config,
-                                "left-sidebar",
-                                div()
-                                    .w(px(max_width))
-                                    .h_full()
-                                    .child(sidebar)
-                                    .when(!sidebar_collapsed, |d| {
-                                        d.child(self.render_resize_handle_left(theme, cx))
-                                    }),
-                            )),
-                    )
+                            .child(sidebar)
+                            .when(!sidebar_collapsed, |d| {
+                                d.child(self.render_resize_handle_left(theme, cx))
+                            }),
+                    ))
                     .child(
                         div()
                             .flex()
@@ -381,40 +382,51 @@ impl MainWindow {
         &self,
         theme: AppTheme,
         cx: &mut Context<Self>,
-        collapsed: bool,
+        _collapsed: bool,
     ) -> Div {
-        let icon = if collapsed {
-            Icon::ChevronRight
-        } else {
-            Icon::ChevronLeft
-        };
-
         div()
+            .absolute()
+            .top(px(8.0))
+            .right(px(8.0))
             .flex()
-            .flex_col()
-            .h_full()
-            .w(px(24.0))
-            .bg(theme.surface())
-            .justify_center()
             .items_center()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .w(px(20.0))
-                    .h(px(20.0))
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover()))
-                    .child(icon_sm(icon, theme.text_secondary()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.state.toggle_sidebar();
-                            cx.notify();
-                        }),
-                    ),
+            .justify_center()
+            .w(px(20.0))
+            .h(px(20.0))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.surface_hover()))
+            .child(icon_sm(Icon::ChevronLeft, theme.text_secondary()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.state.toggle_sidebar();
+                    cx.notify();
+                }),
+            )
+    }
+
+    fn render_floating_sidebar_toggle(&self, theme: AppTheme, cx: &mut Context<Self>) -> Div {
+        div()
+            .absolute()
+            .top(px(8.0))
+            .left(px(8.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(24.0))
+            .h(px(24.0))
+            .rounded(px(4.0))
+            .bg(theme.surface())
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.surface_hover()))
+            .child(icon_sm(Icon::ChevronRight, theme.text_secondary()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.state.toggle_sidebar();
+                    cx.notify();
+                }),
             )
     }
 

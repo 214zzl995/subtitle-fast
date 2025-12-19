@@ -38,11 +38,12 @@ impl Render for SubtitleList {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.0))
+                            .gap(px(4.0))
                             .child(icon_sm(Icon::MessageSquare, self.theme.text_secondary()))
                             .child(
                                 div()
-                                    .text_sm()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(self.theme.text_primary())
                                     .child("Subtitles"),
                             ),
@@ -55,6 +56,7 @@ impl Render for SubtitleList {
                             .w(px(28.0))
                             .h(px(28.0))
                             .rounded(px(6.0))
+                            .bg(self.theme.surface_elevated())
                             .cursor_pointer()
                             .hover(|s| s.bg(self.theme.surface_hover()))
                             .child(icon_sm(Icon::Upload, self.theme.text_secondary())),

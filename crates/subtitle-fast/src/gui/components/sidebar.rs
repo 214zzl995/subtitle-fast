@@ -33,13 +33,14 @@ impl Render for Sidebar {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
-                    .px(px(12.0))
+                    .gap(px(4.0))
+                    .px(px(10.0))
                     .py(px(10.0))
                     .child(icon_sm(Icon::Film, self.theme.text_secondary()))
                     .child(
                         div()
-                            .text_sm()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_color(self.theme.text_primary())
                             .child("Videos"),
                     ),
@@ -116,9 +117,9 @@ impl Sidebar {
             .cursor_pointer()
             .hover(|s| {
                 if !is_active {
-                    s.bg(self.theme.surface_hover())
+                    s.bg(self.theme.accent_muted().opacity(0.5))
                 } else {
-                    s
+                    s.bg(self.theme.accent_muted().opacity(0.8))
                 }
             })
             .child(
@@ -130,7 +131,7 @@ impl Sidebar {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.0))
+                            .gap(px(4.0))
                             .child(icon_sm(file_icon, self.theme.text_secondary()))
                             .child(
                                 div()
