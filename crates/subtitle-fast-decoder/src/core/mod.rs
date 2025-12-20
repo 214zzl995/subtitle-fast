@@ -63,7 +63,7 @@ pub fn spawn_stream_from_channel(
     task: impl FnOnce(Sender<YPlaneResult<PlaneFrame>>) + Send + 'static,
 ) -> YPlaneStream {
     let (tx, rx) = mpsc::channel(capacity);
-    tokio::task::spawn_blocking(move || task(tx));
+    std::thread::spawn(move || task(tx));
     let stream = unfold(rx, |mut receiver| async {
         receiver.recv().await.map(|item| (item, receiver))
     });

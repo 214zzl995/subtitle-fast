@@ -15,6 +15,10 @@ impl Sidebar {
     pub fn new(state: Arc<AppState>, theme: AppTheme) -> Self {
         Self { state, theme }
     }
+
+    pub fn set_theme(&mut self, theme: AppTheme) {
+        self.theme = theme;
+    }
 }
 
 impl Render for Sidebar {
@@ -96,6 +100,7 @@ impl Sidebar {
             .and_then(|n| n.to_str())
             .unwrap_or("Unknown")
             .to_string();
+        let log_name = file_name.clone();
 
         let progress = file.progress;
         let status = file.status;
@@ -178,6 +183,7 @@ impl Sidebar {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
+                    this.state.debug_event(format!("select file {log_name}"));
                     this.state.set_active_file(file.id);
                     cx.notify();
                 }),

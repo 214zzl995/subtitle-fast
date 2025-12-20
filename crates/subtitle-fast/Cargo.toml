@@ -9,7 +9,14 @@ path = "src/main.rs"
 
 [features]
 default = ["gui", "detector-vision", "ocr-vision"]
-gui = ["dep:gpui", "dep:gpui-component", "dep:gpui-component-assets", "dep:anyhow", "dep:rust-embed"]
+gui = [
+    "dep:gpui",
+    "dep:gpui-component",
+    "dep:gpui-component-assets",
+    "dep:anyhow",
+    "dep:rust-embed",
+    "dep:yuv",
+]
 detector-vision = ["subtitle-fast-validator/detector-vision"]
 ocr-vision = ["subtitle-fast-ocr/engine-vision"]
 
@@ -34,6 +41,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 toml = "0.8"
 parking_lot = "0.12"
 png = "0.18"
+yuv = { version = "0.8.9", optional = true }
 
 # GUI dependencies (optional)
 gpui = { version = "0.2", optional = true }

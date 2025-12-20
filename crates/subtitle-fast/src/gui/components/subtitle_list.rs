@@ -15,6 +15,10 @@ impl SubtitleList {
     pub fn new(state: Arc<AppState>, theme: AppTheme) -> Self {
         Self { state, theme }
     }
+
+    pub fn set_theme(&mut self, theme: AppTheme) {
+        self.theme = theme;
+    }
 }
 
 impl Render for SubtitleList {
