@@ -1,4 +1,4 @@
-use subtitle_fast_types::{RoiConfig, YPlaneFrame};
+use subtitle_fast_types::{PlaneFrame, RoiConfig};
 
 #[derive(Copy, Clone, Debug)]
 pub struct PreprocessSettings {
@@ -36,7 +36,7 @@ impl MaskedPatch {
 }
 
 pub fn extract_masked_patch(
-    frame: &YPlaneFrame,
+    frame: &PlaneFrame,
     roi: &RoiConfig,
     settings: PreprocessSettings,
 ) -> Option<MaskedPatch> {
@@ -82,7 +82,7 @@ pub fn extract_masked_patch(
     })
 }
 
-fn roi_bounds(frame: &YPlaneFrame, roi: &RoiConfig) -> Option<(usize, usize, usize, usize)> {
+fn roi_bounds(frame: &PlaneFrame, roi: &RoiConfig) -> Option<(usize, usize, usize, usize)> {
     let frame_w = frame.width() as usize;
     let frame_h = frame.height() as usize;
     if frame_w == 0 || frame_h == 0 {

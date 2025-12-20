@@ -4,5 +4,6 @@ pub mod core;
 
 pub use config::{Backend, Configuration};
 pub use core::{
-    DynYPlaneProvider, YPlaneError, YPlaneFrame, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
+    DynYPlaneProvider, PlaneFrame, PlaneStreamHandle, RawFrame, RawFrameFormat, SeekPosition,
+    YPlaneError, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
 };

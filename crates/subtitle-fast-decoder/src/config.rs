@@ -7,7 +7,7 @@ use std::str::FromStr;
 #[cfg(feature = "backend-ffmpeg")]
 use std::sync::OnceLock;
 
-use crate::core::{DynYPlaneProvider, YPlaneError, YPlaneResult};
+use crate::core::{DynYPlaneProvider, RawFrameFormat, YPlaneError, YPlaneResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -125,6 +125,7 @@ pub struct Configuration {
     pub backend: Backend,
     pub input: Option<PathBuf>,
     pub channel_capacity: Option<NonZeroUsize>,
+    pub output_format: RawFrameFormat,
 }
 
 impl Default for Configuration {
@@ -137,6 +138,7 @@ impl Default for Configuration {
             backend,
             input: None,
             channel_capacity: None,
+            output_format: RawFrameFormat::Y,
         }
     }
 }
@@ -163,6 +165,9 @@ impl Configuration {
             };
             config.channel_capacity = Some(value);
         }
+        if let Ok(format) = env::var("SUBFAST_OUTPUT_FORMAT") {
+            config.output_format = RawFrameFormat::from_str(&format)?;
+        }
         Ok(config)
     }
 
@@ -178,7 +183,11 @@ impl Configuration {
                 if !github_ci_active() {
                     Err(YPlaneError::unsupported("mock"))
                 } else {
-                    crate::backends::mock::boxed_mock(self.input.clone(), channel_capacity)
+                    crate::backends::mock::boxed_mock(
+                        self.input.clone(),
+                        channel_capacity,
+                        self.output_format,
+                    )
                 }
             }
             #[cfg(feature = "backend-ffmpeg")]
@@ -186,7 +195,7 @@ impl Configuration {
                 let path = self.input.clone().ok_or_else(|| {
                     YPlaneError::configuration("FFmpeg backend requires SUBFAST_INPUT")
                 })?;
-                crate::backends::ffmpeg::boxed_ffmpeg(path, channel_capacity)
+                crate::backends::ffmpeg::boxed_ffmpeg(path, channel_capacity, self.output_format)
             }
             #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
             Backend::VideoToolbox => {
@@ -195,21 +204,25 @@ impl Configuration {
                         "VideoToolbox backend requires SUBFAST_INPUT to be set",
                     )
                 })?;
-                crate::backends::videotoolbox::boxed_videotoolbox(path, channel_capacity)
+                crate::backends::videotoolbox::boxed_videotoolbox(
+                    path,
+                    channel_capacity,
+                    self.output_format,
+                )
             }
             #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
             Backend::Dxva => {
                 let path = self.input.clone().ok_or_else(|| {
                     YPlaneError::configuration("DXVA backend requires SUBFAST_INPUT to be set")
                 })?;
-                crate::backends::dxva::boxed_dxva(path, channel_capacity)
+                crate::backends::dxva::boxed_dxva(path, channel_capacity, self.output_format)
             }
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             Backend::Mft => {
                 let path = self.input.clone().ok_or_else(|| {
                     YPlaneError::configuration("MFT backend requires SUBFAST_INPUT to be set")
                 })?;
-                crate::backends::mft::boxed_mft(path, channel_capacity)
+                crate::backends::mft::boxed_mft(path, channel_capacity, self.output_format)
             }
             #[allow(unreachable_patterns)]
             other => Err(YPlaneError::unsupported(other.as_str())),

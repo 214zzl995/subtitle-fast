@@ -8,7 +8,7 @@ use super::{
     SubtitleDetectionConfig, SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector,
     log_region_debug,
 };
-use subtitle_fast_types::YPlaneFrame;
+use subtitle_fast_types::PlaneFrame;
 
 const ROW_DENSITY_THRESHOLD: f32 = 0.08;
 const MIN_BAND_HEIGHT: usize = 8;
@@ -269,7 +269,7 @@ impl SubtitleDetector for ProjectionBandDetector {
 
     fn detect(
         &self,
-        frame: &YPlaneFrame,
+        frame: &PlaneFrame,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
         let data = frame.data();
         if data.len() < self.required_len {

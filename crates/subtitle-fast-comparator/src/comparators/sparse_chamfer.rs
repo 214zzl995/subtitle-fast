@@ -2,7 +2,7 @@ use rayon::prelude::*;
 use std::cell::RefCell;
 use std::mem;
 
-use subtitle_fast_types::{RoiConfig, YPlaneFrame};
+use subtitle_fast_types::{PlaneFrame, RoiConfig};
 
 use crate::comparators::SubtitleComparator;
 use crate::pipeline::ops::sobel_magnitude_into;
@@ -750,7 +750,7 @@ impl SubtitleComparator for SparseChamferComparator {
         TAG
     }
 
-    fn extract(&self, frame: &YPlaneFrame, roi: &RoiConfig) -> Option<FeatureBlob> {
+    fn extract(&self, frame: &PlaneFrame, roi: &RoiConfig) -> Option<FeatureBlob> {
         let patch = extract_masked_patch(frame, roi, self.settings)?;
         if patch.len() < 16 {
             return None;

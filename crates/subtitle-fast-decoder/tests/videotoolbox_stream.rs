@@ -3,7 +3,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use subtitle_fast_decoder::{Backend, Configuration};
+use subtitle_fast_decoder::{Backend, Configuration, RawFrameFormat};
 use tokio_stream::StreamExt;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -19,6 +19,7 @@ async fn videotoolbox_backend_streams_frames() {
     let config = Configuration {
         backend: Backend::VideoToolbox,
         input: Some(asset),
+        output_format: RawFrameFormat::Y,
         ..Configuration::default()
     };
 

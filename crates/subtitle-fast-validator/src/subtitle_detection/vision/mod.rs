@@ -5,7 +5,7 @@ use super::{
     DetectionRegion, RoiConfig, SubtitleDetectionConfig, SubtitleDetectionError,
     SubtitleDetectionResult, SubtitleDetector,
 };
-use subtitle_fast_types::YPlaneFrame;
+use subtitle_fast_types::PlaneFrame;
 
 #[derive(Debug, Clone)]
 pub struct VisionTextDetector {
@@ -127,7 +127,7 @@ impl SubtitleDetector for VisionTextDetector {
 
     fn detect(
         &self,
-        frame: &YPlaneFrame,
+        frame: &PlaneFrame,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
         let y_plane = frame.data();
         if y_plane.len() < self.required_bytes {

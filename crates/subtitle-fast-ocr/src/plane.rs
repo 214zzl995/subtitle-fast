@@ -1,7 +1,7 @@
 use std::fmt;
 use std::ops::Deref;
 
-use subtitle_fast_types::YPlaneFrame;
+use subtitle_fast_types::PlaneFrame;
 
 use crate::error::OcrError;
 
@@ -38,8 +38,8 @@ impl<'a> LumaPlane<'a> {
         })
     }
 
-    pub fn from_frame(frame: &'a YPlaneFrame) -> Self {
-        // SAFETY: YPlaneFrame guarantees the buffer is at least stride * height bytes long.
+    pub fn from_frame(frame: &'a PlaneFrame) -> Self {
+        // SAFETY: PlaneFrame guarantees the buffer is at least stride * height bytes long.
         Self {
             width: frame.width(),
             height: frame.height(),

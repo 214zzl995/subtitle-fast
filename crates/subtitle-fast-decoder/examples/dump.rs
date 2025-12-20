@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use png::{BitDepth, ColorType, Encoder};
-use subtitle_fast_decoder::{Backend, Configuration, YPlaneFrame};
+use subtitle_fast_decoder::{Backend, Configuration, PlaneFrame, RawFrameFormat};
 use tokio_stream::StreamExt;
 
 const SAMPLE_FREQUENCY: usize = 7; // frames per second
@@ -49,6 +49,7 @@ async fn main() -> io::Result<()> {
         backend,
         input: Some(input_path.clone()),
         channel_capacity: None,
+        output_format: RawFrameFormat::Y,
     };
     let provider = config.create_provider().map_err(io::Error::other)?;
     let total_frames = provider.total_frames();
@@ -130,13 +131,13 @@ fn timestamp() -> u64 {
         .unwrap_or(0)
 }
 
-fn write_frame_yuv(frame: &YPlaneFrame, dir: &Path, index: u64) -> Result<(), io::Error> {
+fn write_frame_yuv(frame: &PlaneFrame, dir: &Path, index: u64) -> Result<(), io::Error> {
     let file = dir.join(format!("{index:05}.yuv"));
     let data = flatten_y(frame);
     fs::write(file, data)
 }
 
-fn write_frame_png(frame: &YPlaneFrame, dir: &Path, index: u64) -> Result<(), io::Error> {
+fn write_frame_png(frame: &PlaneFrame, dir: &Path, index: u64) -> Result<(), io::Error> {
     let width = frame.width();
     let height = frame.height();
     let file = File::create(dir.join(format!("{index:05}.png")))?;
@@ -150,7 +151,7 @@ fn write_frame_png(frame: &YPlaneFrame, dir: &Path, index: u64) -> Result<(), io
     Ok(())
 }
 
-fn flatten_y(frame: &YPlaneFrame) -> Vec<u8> {
+fn flatten_y(frame: &PlaneFrame) -> Vec<u8> {
     let width = frame.width() as usize;
     let height = frame.height() as usize;
     let stride = frame.stride();
@@ -172,7 +173,7 @@ fn flatten_y(frame: &YPlaneFrame) -> Vec<u8> {
 }
 
 fn should_emit_frame(
-    frame: &YPlaneFrame,
+    frame: &PlaneFrame,
     processed: u64,
     current_second: &mut Option<u64>,
     emitted_in_second: &mut usize,
@@ -193,7 +194,7 @@ fn should_emit_frame(
     }
 }
 
-fn frame_second_bucket(frame: &YPlaneFrame, processed: u64) -> u64 {
+fn frame_second_bucket(frame: &PlaneFrame, processed: u64) -> u64 {
     let seconds = frame
         .timestamp()
         .map(|ts| ts.as_secs_f64())

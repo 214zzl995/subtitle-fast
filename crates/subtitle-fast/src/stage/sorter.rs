@@ -4,7 +4,7 @@ use std::pin::Pin;
 use futures_util::{Stream, StreamExt};
 
 use super::StreamBundle;
-use subtitle_fast_types::{YPlaneFrame, YPlaneResult};
+use subtitle_fast_types::{PlaneFrame, YPlaneResult};
 
 pub struct FrameSorter;
 
@@ -15,8 +15,8 @@ impl FrameSorter {
 
     pub fn attach(
         self,
-        input: StreamBundle<YPlaneResult<YPlaneFrame>>,
-    ) -> StreamBundle<YPlaneResult<YPlaneFrame>> {
+        input: StreamBundle<YPlaneResult<PlaneFrame>>,
+    ) -> StreamBundle<YPlaneResult<PlaneFrame>> {
         let StreamBundle {
             stream,
             total_frames,
@@ -40,13 +40,13 @@ impl Default for FrameSorter {
 }
 
 struct SorterState {
-    upstream: Pin<Box<dyn Stream<Item = YPlaneResult<YPlaneFrame>> + Send>>,
+    upstream: Pin<Box<dyn Stream<Item = YPlaneResult<PlaneFrame>> + Send>>,
     pool: FramePool,
     finished: bool,
 }
 
 impl SorterState {
-    async fn next(mut state: SorterState) -> Option<(YPlaneResult<YPlaneFrame>, SorterState)> {
+    async fn next(mut state: SorterState) -> Option<(YPlaneResult<PlaneFrame>, SorterState)> {
         loop {
             if let Some(frame) = state.pool.pop_next() {
                 return Some((Ok(frame), state));
@@ -78,12 +78,12 @@ impl SorterState {
 
 #[derive(Default)]
 struct FramePool {
-    pending: BTreeMap<u64, YPlaneFrame>,
+    pending: BTreeMap<u64, PlaneFrame>,
     fallback_index: u64,
 }
 
 impl FramePool {
-    fn insert(&mut self, frame: YPlaneFrame) {
+    fn insert(&mut self, frame: PlaneFrame) {
         let key = frame.frame_index().unwrap_or_else(|| {
             let key = self.fallback_index;
             self.fallback_index = self.fallback_index.saturating_add(1);
@@ -93,7 +93,7 @@ impl FramePool {
         self.pending.entry(key).or_insert(frame);
     }
 
-    fn pop_next(&mut self) -> Option<YPlaneFrame> {
+    fn pop_next(&mut self) -> Option<PlaneFrame> {
         let key = self.pending.keys().next().copied()?;
         self.pending.remove(&key)
     }
