@@ -181,6 +181,10 @@ extern "C"
     {
         bool has_value;
         uint64_t value;
+        double duration_seconds;
+        double fps;
+        uint32_t width;
+        uint32_t height;
         char *error;
     };
 
@@ -203,7 +207,13 @@ extern "C"
     bool mft_probe_total_frames(const char *path, CMftProbeResult *result)
     {
         if (!result) { return false; }
-        *result = {false, 0, nullptr};
+        result->has_value = false;
+        result->value = 0;
+        result->duration_seconds = std::numeric_limits<double>::quiet_NaN();
+        result->fps = std::numeric_limits<double>::quiet_NaN();
+        result->width = 0;
+        result->height = 0;
+        result->error = nullptr;
 
         std::string conversion_error;
         std::wstring wide_path = utf8_to_wide(path, conversion_error);
@@ -228,7 +238,9 @@ extern "C"
         }
 
         std::string reader_error;
-        ComPtr<IMFSourceReader> reader = open_best(wide_path, nullptr, nullptr, reader_error);
+        UINT32 width = 0;
+        UINT32 height = 0;
+        ComPtr<IMFSourceReader> reader = open_best(wide_path, &width, &height, reader_error);
         if (!reader)
         {
             set_error(&result->error, reader_error);
@@ -264,13 +276,42 @@ extern "C"
             &frame_rate_num,
             &frame_rate_den);
 
-        if (duration > 0 && SUCCEEDED(hr) && frame_rate_den != 0)
+        if (width > 0) { result->width = width; }
+        if (height > 0) { result->height = height; }
+
+        double seconds = std::numeric_limits<double>::quiet_NaN();
+        if (duration > 0)
         {
-            double seconds = static_cast<double>(duration) / 10000000.0;
-            double fps = static_cast<double>(frame_rate_num) / static_cast<double>(frame_rate_den);
-            if (fps > 0.0)
+            seconds = static_cast<double>(duration) / 10000000.0;
+            if (std::isfinite(seconds) && seconds > 0.0)
             {
-                uint64_t estimated = static_cast<uint64_t>(std::llround(seconds * fps));
+                result->duration_seconds = seconds;
+            }
+            else
+            {
+                seconds = std::numeric_limits<double>::quiet_NaN();
+            }
+        }
+
+        double fps = std::numeric_limits<double>::quiet_NaN();
+        if (SUCCEEDED(hr) && frame_rate_den != 0)
+        {
+            fps = static_cast<double>(frame_rate_num) / static_cast<double>(frame_rate_den);
+            if (std::isfinite(fps) && fps > 0.0)
+            {
+                result->fps = fps;
+            }
+            else
+            {
+                fps = std::numeric_limits<double>::quiet_NaN();
+            }
+        }
+
+        if (std::isfinite(seconds) && seconds > 0.0 && std::isfinite(fps) && fps > 0.0)
+        {
+            uint64_t estimated = static_cast<uint64_t>(std::llround(seconds * fps));
+            if (estimated > 0)
+            {
                 result->has_value = true;
                 result->value = estimated;
             }

@@ -29,7 +29,8 @@ async fn videotoolbox_backend_streams_frames() {
         }
     };
 
-    let total_frames = provider.total_frames();
+    let metadata = provider.metadata();
+    let total_frames = metadata.total_frames;
     let mut stream = provider.into_stream();
     let frame = stream
         .next()

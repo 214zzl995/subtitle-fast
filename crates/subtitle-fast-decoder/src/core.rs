@@ -1,4 +1,5 @@
 use std::pin::Pin;
+use std::time::Duration;
 
 use futures_core::Stream;
 use futures_util::stream::unfold;
@@ -10,9 +11,64 @@ pub type FrameStream = Pin<Box<dyn Stream<Item = FrameResult<VideoFrame>> + Send
 
 pub type DynFrameProvider = Box<dyn FrameStreamProvider>;
 
-pub trait FrameStreamProvider: Send + 'static {
-    fn total_frames(&self) -> Option<u64> {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VideoMetadata {
+    pub duration: Option<Duration>,
+    pub fps: Option<f64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub total_frames: Option<u64>,
+}
+
+impl Default for VideoMetadata {
+    fn default() -> Self {
+        Self {
+            duration: None,
+            fps: None,
+            width: None,
+            height: None,
+            total_frames: None,
+        }
+    }
+}
+
+impl VideoMetadata {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_duration_and_fps(duration: Duration, fps: f64) -> Self {
+        Self {
+            duration: Some(duration),
+            fps: Some(fps),
+            ..Default::default()
+        }
+    }
+
+    pub fn duration_ms(&self) -> Option<f64> {
+        self.duration.map(|d| d.as_secs_f64() * 1000.0)
+    }
+
+    pub fn calculate_total_frames(&self) -> Option<u64> {
+        if let Some(total) = self.total_frames {
+            return Some(total);
+        }
+
+        if let (Some(duration), Some(fps)) = (self.duration, self.fps) {
+            let seconds = duration.as_secs_f64();
+            let total = (seconds * fps).round();
+            if total.is_finite() && total >= 0.0 {
+                return Some(total as u64);
+            }
+        }
+
         None
+    }
+}
+
+pub trait FrameStreamProvider: Send + 'static {
+    fn metadata(&self) -> VideoMetadata {
+        VideoMetadata::default()
     }
 
     fn into_stream(self: Box<Self>) -> FrameStream;

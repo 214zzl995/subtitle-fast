@@ -18,6 +18,10 @@
 typedef struct {
     bool has_value;
     uint64_t value;
+    double duration_seconds;
+    double fps;
+    uint32_t width;
+    uint32_t height;
     char *error;
 } VideoToolboxProbeResult;
 
@@ -250,6 +254,10 @@ bool videotoolbox_probe_total_frames(const char *path, VideoToolboxProbeResult *
     }
     out_result->has_value = false;
     out_result->value = 0;
+    out_result->duration_seconds = NAN;
+    out_result->fps = NAN;
+    out_result->width = 0;
+    out_result->height = 0;
     out_result->error = NULL;
 
     @autoreleasepool {
@@ -274,8 +282,10 @@ bool videotoolbox_probe_total_frames(const char *path, VideoToolboxProbeResult *
 
         CMTimeRange time_range = track.timeRange;
         Float64 duration_seconds = CMTimeGetSeconds(time_range.duration);
-        if (!isfinite(duration_seconds) || duration_seconds <= 0.0) {
-            return true;
+        if (isfinite(duration_seconds) && duration_seconds > 0.0) {
+            out_result->duration_seconds = duration_seconds;
+        } else {
+            duration_seconds = NAN;
         }
 
         Float64 fps = track.nominalFrameRate;
@@ -287,17 +297,29 @@ bool videotoolbox_probe_total_frames(const char *path, VideoToolboxProbeResult *
             }
         }
 
-        if (!isfinite(fps) || fps <= 0.0) {
-            return true;
+        if (isfinite(fps) && fps > 0.0) {
+            out_result->fps = fps;
+        } else {
+            fps = NAN;
         }
 
-        Float64 total = round(duration_seconds * fps);
-        if (!isfinite(total) || total <= 0.0) {
-            return true;
+        CGSize size = track.naturalSize;
+        CGFloat width = fabs(size.width);
+        CGFloat height = fabs(size.height);
+        if (isfinite(width) && width > 0.0) {
+            out_result->width = (uint32_t)llround(width);
+        }
+        if (isfinite(height) && height > 0.0) {
+            out_result->height = (uint32_t)llround(height);
         }
 
-        out_result->has_value = true;
-        out_result->value = (uint64_t)total;
+        if (isfinite(duration_seconds) && duration_seconds > 0.0 && isfinite(fps) && fps > 0.0) {
+            Float64 total = round(duration_seconds * fps);
+            if (isfinite(total) && total > 0.0) {
+                out_result->has_value = true;
+                out_result->value = (uint64_t)total;
+            }
+        }
     }
 
     return true;

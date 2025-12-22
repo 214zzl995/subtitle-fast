@@ -493,8 +493,10 @@ impl ControlPanel {
                         return;
                     }
                 };
-                let total_frames = provider.total_frames();
-                let _ = tx.send(DecoderMessage::TotalFrames(total_frames)).await;
+                let metadata = provider.metadata();
+                let _ = tx
+                    .send(DecoderMessage::TotalFrames(metadata.total_frames))
+                    .await;
                 let mut stream = provider.into_stream();
                 while let Some(frame) = stream.next().await {
                     if tx.send(DecoderMessage::Frame(frame)).await.is_err() {

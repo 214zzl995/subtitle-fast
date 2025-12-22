@@ -9,10 +9,7 @@ use crate::core::{VideoFrame, spawn_stream_from_channel};
 mod platform {
     use super::*;
 
-    use mp4::{Mp4Reader, TrackType};
     use std::ffi::{CStr, CString, c_char};
-    use std::fs::File;
-    use std::io::BufReader;
     use std::os::raw::c_void;
     use std::path::{Path, PathBuf};
     use std::ptr;
@@ -24,6 +21,10 @@ mod platform {
     struct CVTProbeResult {
         has_value: bool,
         value: u64,
+        duration_seconds: f64,
+        fps: f64,
+        width: u32,
+        height: u32,
         error: *mut c_char,
     }
 
@@ -62,7 +63,7 @@ mod platform {
 
     pub struct VideoToolboxProvider {
         input: PathBuf,
-        total_frames: Option<u64>,
+        metadata: crate::core::VideoMetadata,
         channel_capacity: usize,
     }
 
@@ -75,67 +76,31 @@ mod platform {
                     format!("input file {} does not exist", path.display()),
                 )));
             }
-            let total_frames = probe_total_frames(path)?;
+            let metadata = probe_video_metadata(path)?;
             let capacity = channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
             Ok(Self {
                 input: path.to_path_buf(),
-                total_frames,
+                metadata,
                 channel_capacity: capacity,
             })
         }
     }
 
-    fn probe_total_frames(path: &Path) -> FrameResult<Option<u64>> {
-        match probe_total_frames_videotoolbox(path) {
-            Ok(result) => Ok(result),
-            Err(vt_err) => match probe_total_frames_mp4(path) {
-                Ok(Some(value)) => Ok(Some(value)),
-                Ok(None) => Err(vt_err),
-                Err(mp4_err) => Err(FrameError::backend_failure(
-                    "videotoolbox",
-                    format!("{vt_err}; mp4 fallback failed: {mp4_err}"),
-                )),
-            },
-        }
+    fn probe_video_metadata(path: &Path) -> FrameResult<crate::core::VideoMetadata> {
+        probe_metadata_videotoolbox(path)
     }
 
-    fn probe_total_frames_mp4(path: &Path) -> FrameResult<Option<u64>> {
-        let file = File::open(path)?;
-        let size = file.metadata()?.len();
-        let reader = BufReader::new(file);
-        let reader = match Mp4Reader::read_header(reader, size) {
-            Ok(reader) => reader,
-            Err(_) => return Ok(None),
-        };
+    fn probe_metadata_videotoolbox(path: &Path) -> FrameResult<crate::core::VideoMetadata> {
+        use crate::core::VideoMetadata;
 
-        let track_id = match reader
-            .tracks()
-            .iter()
-            .find(|(_, track)| matches!(track.track_type(), Ok(TrackType::Video)))
-        {
-            Some((&id, _)) => id,
-            None => return Ok(None),
-        };
-
-        let count = reader.sample_count(track_id).map_err(|err| {
-            FrameError::backend_failure(
-                "videotoolbox",
-                format!("failed to query MP4 sample count: {err}"),
-            )
-        })?;
-
-        if count == 0 {
-            return Ok(None);
-        }
-
-        Ok(Some(count as u64))
-    }
-
-    fn probe_total_frames_videotoolbox(path: &Path) -> FrameResult<Option<u64>> {
         let c_path = cstring_from_path(path)?;
         let mut result = CVTProbeResult {
             has_value: false,
             value: 0,
+            duration_seconds: f64::NAN,
+            fps: f64::NAN,
+            width: 0,
+            height: 0,
             error: ptr::null_mut(),
         };
         let ok = unsafe { videotoolbox_probe_total_frames(c_path.as_ptr(), &mut result) };
@@ -149,11 +114,25 @@ mod platform {
         {
             return Err(FrameError::backend_failure("videotoolbox", message));
         }
+
+        let mut metadata = VideoMetadata::new();
         if result.has_value {
-            Ok(Some(result.value))
-        } else {
-            Ok(None)
+            metadata.total_frames = Some(result.value);
         }
+        if result.duration_seconds.is_finite() && result.duration_seconds > 0.0 {
+            metadata.duration = Some(Duration::from_secs_f64(result.duration_seconds));
+        }
+        if result.fps.is_finite() && result.fps > 0.0 {
+            metadata.fps = Some(result.fps);
+        }
+        if result.width > 0 {
+            metadata.width = Some(result.width);
+        }
+        if result.height > 0 {
+            metadata.height = Some(result.height);
+        }
+
+        Ok(metadata)
     }
 
     fn cstring_from_path(path: &Path) -> FrameResult<CString> {
@@ -172,8 +151,8 @@ mod platform {
     }
 
     impl FrameStreamProvider for VideoToolboxProvider {
-        fn total_frames(&self) -> Option<u64> {
-            self.total_frames
+        fn metadata(&self) -> crate::core::VideoMetadata {
+            self.metadata
         }
 
         fn into_stream(self: Box<Self>) -> FrameStream {

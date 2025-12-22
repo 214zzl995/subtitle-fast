@@ -5,5 +5,5 @@ pub mod core;
 pub use config::{Backend, Configuration};
 pub use core::{
     DynFrameProvider, FrameBuffer, FrameError, FrameResult, FrameStream, FrameStreamProvider,
-    Nv12Buffer, VideoFrame,
+    Nv12Buffer, VideoFrame, VideoMetadata,
 };

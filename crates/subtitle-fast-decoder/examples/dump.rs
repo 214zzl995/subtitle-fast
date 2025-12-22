@@ -51,7 +51,8 @@ async fn main() -> io::Result<()> {
         channel_capacity: None,
     };
     let provider = config.create_provider().map_err(io::Error::other)?;
-    let total_frames = provider.total_frames();
+    let metadata = provider.metadata();
+    let total_frames = metadata.total_frames;
 
     write_metadata(&input_path, backend)?;
     println!("Decoding frames from {:?}", input_path);

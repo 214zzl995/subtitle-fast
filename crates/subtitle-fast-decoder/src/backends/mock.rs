@@ -69,8 +69,16 @@ impl MockProvider {
 }
 
 impl FrameStreamProvider for MockProvider {
-    fn total_frames(&self) -> Option<u64> {
-        Some(self.frame_count as u64)
+    fn metadata(&self) -> crate::core::VideoMetadata {
+        use crate::core::VideoMetadata;
+
+        VideoMetadata {
+            duration: Some(Duration::from_secs_f64((self.frame_count as f64) * 0.016)),
+            fps: Some(60.0),
+            width: Some(self.width),
+            height: Some(self.height),
+            total_frames: Some(self.frame_count as u64),
+        }
     }
 
     fn into_stream(self: Box<Self>) -> FrameStream {
@@ -97,9 +105,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn mock_backend_emits_frames() {
         let provider = boxed_mock(None, None).unwrap();
-        let total = provider.total_frames();
+        let metadata = provider.metadata();
         let mut stream = provider.into_stream();
-        assert_eq!(total, Some(120));
+        assert_eq!(metadata.total_frames, Some(120));
         let frame = stream.next().await.unwrap().unwrap();
         assert_eq!(frame.width(), 640);
         assert_eq!(frame.height(), 360);

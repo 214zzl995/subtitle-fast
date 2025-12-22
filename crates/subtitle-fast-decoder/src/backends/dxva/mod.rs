@@ -22,6 +22,10 @@ mod platform {
     struct CDxvaProbeResult {
         has_value: bool,
         value: u64,
+        duration_seconds: f64,
+        fps: f64,
+        width: u32,
+        height: u32,
         error: *mut c_char,
     }
 
@@ -55,7 +59,7 @@ mod platform {
 
     pub struct DxvaProvider {
         input: PathBuf,
-        total_frames: Option<u64>,
+        metadata: crate::core::VideoMetadata,
         channel_capacity: usize,
     }
 
@@ -68,19 +72,19 @@ mod platform {
                     format!("input file {} does not exist", path.display()),
                 )));
             }
-            let total_frames = probe_total_frames(path)?;
+            let metadata = probe_video_metadata(path)?;
             let capacity = channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
             Ok(Self {
                 input: path.to_path_buf(),
-                total_frames,
+                metadata,
                 channel_capacity: capacity,
             })
         }
     }
 
     impl FrameStreamProvider for DxvaProvider {
-        fn total_frames(&self) -> Option<u64> {
-            self.total_frames
+        fn metadata(&self) -> crate::core::VideoMetadata {
+            self.metadata
         }
 
         fn into_stream(self: Box<Self>) -> FrameStream {
@@ -119,7 +123,9 @@ mod platform {
         Ok(())
     }
 
-    fn probe_total_frames(path: &Path) -> FrameResult<Option<u64>> {
+    fn probe_video_metadata(path: &Path) -> FrameResult<crate::core::VideoMetadata> {
+        use crate::core::VideoMetadata;
+
         let c_path = cstring_from_path(path)?;
         let mut result = CDxvaProbeResult {
             has_value: false,
@@ -137,11 +143,25 @@ mod platform {
                 return Err(FrameError::backend_failure(BACKEND_NAME, message));
             }
         }
-        Ok(if result.has_value {
-            Some(result.value)
-        } else {
-            None
-        })
+
+        let mut metadata = VideoMetadata::new();
+        if result.has_value {
+            metadata.total_frames = Some(result.value);
+        }
+        if result.duration_seconds.is_finite() && result.duration_seconds > 0.0 {
+            metadata.duration = Some(Duration::from_secs_f64(result.duration_seconds));
+        }
+        if result.fps.is_finite() && result.fps > 0.0 {
+            metadata.fps = Some(result.fps);
+        }
+        if result.width > 0 {
+            metadata.width = Some(result.width);
+        }
+        if result.height > 0 {
+            metadata.height = Some(result.height);
+        }
+
+        Ok(metadata)
     }
 
     fn cstring_from_path(path: &Path) -> FrameResult<CString> {

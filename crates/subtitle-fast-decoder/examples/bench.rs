@@ -76,7 +76,8 @@ async fn run_backend_bench(
     };
 
     let provider = config.create_provider()?;
-    let total_frames = provider.total_frames();
+    let metadata = provider.metadata();
+    let total_frames = metadata.total_frames;
 
     let progress = total_frames.map(|total| {
         let style = ProgressStyle::with_template(

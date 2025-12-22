@@ -87,7 +87,7 @@ pub async fn run_pipeline(
     provider: DynFrameProvider,
     pipeline: &PipelineConfig,
 ) -> Result<(), (FrameError, u64)> {
-    let initial_total_frames = provider.total_frames();
+    let initial_total_frames = provider.metadata().total_frames;
     let initial_stream = provider.into_stream();
     let paused_stream = if let Some(pause_rx) = pipeline.pause.as_ref() {
         StreamBundle::new(
