@@ -9,7 +9,7 @@ use subtitle_fast_decoder::{Backend, Configuration, VideoFrame};
 use tokio_stream::StreamExt;
 
 const SAMPLE_FREQUENCY: usize = 7; // frames per second
-const DECODER_BACKEND: Backend = Backend::Ffmpeg;
+const DECODER_BACKEND: Backend = Backend::FFmpeg;
 const YUV_DIR: &str = "./demo/decoder/yuv";
 const PNG_DIR: &str = "./demo/decoder/png";
 const INPUT_VIDEO: &str = "./demo/video1_30s.mp4";

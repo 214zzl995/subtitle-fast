@@ -13,7 +13,7 @@ use crate::core::{DynFrameProvider, FrameError, FrameResult};
 pub enum Backend {
     Mock,
     #[cfg(feature = "backend-ffmpeg")]
-    Ffmpeg,
+    FFmpeg,
     #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
     VideoToolbox,
     #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
@@ -29,7 +29,7 @@ impl FromStr for Backend {
         match s.to_ascii_lowercase().as_str() {
             "mock" => Ok(Backend::Mock),
             #[cfg(feature = "backend-ffmpeg")]
-            "ffmpeg" => Ok(Backend::Ffmpeg),
+            "ffmpeg" => Ok(Backend::FFmpeg),
             #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
             "videotoolbox" => Ok(Backend::VideoToolbox),
             #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
@@ -48,7 +48,7 @@ impl Backend {
         match self {
             Backend::Mock => "mock",
             #[cfg(feature = "backend-ffmpeg")]
-            Backend::Ffmpeg => "ffmpeg",
+            Backend::FFmpeg => "ffmpeg",
             #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
             Backend::VideoToolbox => "videotoolbox",
             #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
@@ -85,7 +85,7 @@ fn append_platform_backends(_backends: &mut Vec<Backend>) {
     #[cfg(feature = "backend-ffmpeg")]
     {
         if ffmpeg_runtime_available() {
-            _backends.push(Backend::Ffmpeg);
+            _backends.push(Backend::FFmpeg);
         }
     }
 }
@@ -103,7 +103,7 @@ fn append_platform_backends(backends: &mut Vec<Backend>) {
     #[cfg(feature = "backend-ffmpeg")]
     {
         if ffmpeg_runtime_available() {
-            backends.push(Backend::Ffmpeg);
+            backends.push(Backend::FFmpeg);
         }
     }
 }
@@ -182,7 +182,7 @@ impl Configuration {
                 }
             }
             #[cfg(feature = "backend-ffmpeg")]
-            Backend::Ffmpeg => {
+            Backend::FFmpeg => {
                 let path = self.input.clone().ok_or_else(|| {
                     FrameError::configuration("FFmpeg backend requires SUBFAST_INPUT")
                 })?;
@@ -222,7 +222,7 @@ fn default_backend() -> Backend {
         return Backend::Mock;
     }
     #[cfg(feature = "backend-ffmpeg")]
-    return Backend::Ffmpeg;
+    return Backend::FFmpeg;
 
     #[allow(unreachable_code)]
     Backend::Mock

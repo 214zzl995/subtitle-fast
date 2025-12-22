@@ -17,7 +17,7 @@ async fn ffmpeg_backend_requires_asset() {
     };
 
     let config = Configuration {
-        backend: Backend::Ffmpeg,
+        backend: Backend::FFmpeg,
         input: Some(asset),
         ..Configuration::default()
     };
