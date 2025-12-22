@@ -12,61 +12,129 @@ use std::time::Duration;
 use serde::Serialize;
 use thiserror::Error;
 
-pub type YPlaneResult<T> = Result<T, YPlaneError>;
+pub type FrameResult<T> = Result<T, FrameError>;
 
 #[derive(Clone)]
-pub struct YPlaneFrame {
+pub struct VideoFrame {
     width: u32,
     height: u32,
-    stride: usize,
     frame_index: Option<u64>,
     timestamp: Option<Duration>,
-    data: Arc<[u8]>,
+    buffer: FrameBuffer,
 }
 
-impl fmt::Debug for YPlaneFrame {
+#[derive(Clone)]
+pub enum FrameBuffer {
+    Nv12(Nv12Buffer),
+}
+
+#[derive(Clone)]
+pub struct Nv12Buffer {
+    y_stride: usize,
+    uv_stride: usize,
+    y_plane: Arc<[u8]>,
+    uv_plane: Arc<[u8]>,
+}
+
+impl Nv12Buffer {
+    pub fn y_stride(&self) -> usize {
+        self.y_stride
+    }
+
+    pub fn uv_stride(&self) -> usize {
+        self.uv_stride
+    }
+
+    pub fn y_plane(&self) -> &[u8] {
+        &self.y_plane
+    }
+
+    pub fn uv_plane(&self) -> &[u8] {
+        &self.uv_plane
+    }
+}
+
+impl fmt::Debug for VideoFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("YPlaneFrame")
+        let (y_stride, uv_stride, y_bytes, uv_bytes) = match &self.buffer {
+            FrameBuffer::Nv12(buffer) => (
+                buffer.y_stride,
+                buffer.uv_stride,
+                buffer.y_plane.len(),
+                buffer.uv_plane.len(),
+            ),
+        };
+        f.debug_struct("VideoFrame")
             .field("width", &self.width)
             .field("height", &self.height)
-            .field("stride", &self.stride)
+            .field("format", &"nv12")
+            .field("y_stride", &y_stride)
+            .field("uv_stride", &uv_stride)
+            .field("y_bytes", &y_bytes)
+            .field("uv_bytes", &uv_bytes)
             .field("timestamp", &self.timestamp)
-            .field("bytes", &self.data.len())
             .field("frame_index", &self.frame_index)
             .finish()
     }
 }
 
-impl YPlaneFrame {
-    pub fn from_owned(
+impl VideoFrame {
+    pub fn from_nv12_owned(
         width: u32,
         height: u32,
-        stride: usize,
+        y_stride: usize,
+        uv_stride: usize,
         timestamp: Option<Duration>,
-        data: Vec<u8>,
-    ) -> YPlaneResult<Self> {
-        let required =
-            stride
+        mut y_plane: Vec<u8>,
+        mut uv_plane: Vec<u8>,
+    ) -> FrameResult<Self> {
+        let y_required =
+            y_stride
                 .checked_mul(height as usize)
-                .ok_or_else(|| YPlaneError::InvalidFrame {
-                    reason: "calculated Y plane length overflowed".into(),
+                .ok_or_else(|| FrameError::InvalidFrame {
+                    reason: "calculated NV12 Y plane length overflowed".into(),
                 })?;
-        if data.len() < required {
-            return Err(YPlaneError::InvalidFrame {
+        let uv_rows = nv12_uv_rows(height);
+        let uv_required =
+            uv_stride
+                .checked_mul(uv_rows)
+                .ok_or_else(|| FrameError::InvalidFrame {
+                    reason: "calculated NV12 UV plane length overflowed".into(),
+                })?;
+
+        if y_plane.len() < y_required {
+            return Err(FrameError::InvalidFrame {
                 reason: format!(
-                    "insufficient Y plane bytes: got {} expected at least {}",
-                    data.len(),
-                    required
+                    "insufficient NV12 Y plane bytes: got {} expected at least {}",
+                    y_plane.len(),
+                    y_required
                 ),
             });
         }
+        if uv_plane.len() < uv_required {
+            return Err(FrameError::InvalidFrame {
+                reason: format!(
+                    "insufficient NV12 UV plane bytes: got {} expected at least {}",
+                    uv_plane.len(),
+                    uv_required
+                ),
+            });
+        }
+
+        y_plane.truncate(y_required);
+        uv_plane.truncate(uv_required);
+
         Ok(Self {
             width,
             height,
-            stride,
             timestamp,
-            data: Arc::from(data.into_boxed_slice()),
             frame_index: None,
+            buffer: FrameBuffer::Nv12(Nv12Buffer {
+                y_stride,
+                uv_stride,
+                y_plane: Arc::from(y_plane.into_boxed_slice()),
+                uv_plane: Arc::from(uv_plane.into_boxed_slice()),
+            }),
         })
     }
 
@@ -78,20 +146,46 @@ impl YPlaneFrame {
         self.height
     }
 
-    pub fn stride(&self) -> usize {
-        self.stride
-    }
-
     pub fn timestamp(&self) -> Option<Duration> {
         self.timestamp
     }
 
-    pub fn data(&self) -> &[u8] {
-        &self.data
-    }
-
     pub fn frame_index(&self) -> Option<u64> {
         self.frame_index
+    }
+
+    pub fn buffer(&self) -> &FrameBuffer {
+        &self.buffer
+    }
+
+    pub fn nv12(&self) -> &Nv12Buffer {
+        match &self.buffer {
+            FrameBuffer::Nv12(buffer) => buffer,
+        }
+    }
+
+    pub fn stride(&self) -> usize {
+        self.nv12().y_stride
+    }
+
+    pub fn y_stride(&self) -> usize {
+        self.nv12().y_stride
+    }
+
+    pub fn uv_stride(&self) -> usize {
+        self.nv12().uv_stride
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.nv12().y_plane
+    }
+
+    pub fn y_plane(&self) -> &[u8] {
+        &self.nv12().y_plane
+    }
+
+    pub fn uv_plane(&self) -> &[u8] {
+        &self.nv12().uv_plane
     }
 
     pub fn with_frame_index(mut self, index: Option<u64>) -> Self {
@@ -104,8 +198,12 @@ impl YPlaneFrame {
     }
 }
 
+fn nv12_uv_rows(height: u32) -> usize {
+    (height as usize + 1) / 2
+}
+
 #[derive(Debug, Error)]
-pub enum YPlaneError {
+pub enum FrameError {
     #[error("backend {backend} is not supported in this build")]
     Unsupported { backend: &'static str },
 
@@ -125,7 +223,7 @@ pub enum YPlaneError {
     Io(#[from] std::io::Error),
 }
 
-impl YPlaneError {
+impl FrameError {
     pub fn unsupported(backend: &'static str) -> Self {
         Self::Unsupported { backend }
     }

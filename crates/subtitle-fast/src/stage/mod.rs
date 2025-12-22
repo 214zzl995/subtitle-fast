@@ -24,11 +24,11 @@ use progress::Progress;
 use progress_gui::{GuiProgress, GuiProgressInner};
 use sampler::FrameSampler;
 use sorter::FrameSorter;
-use subtitle_fast_decoder::DynYPlaneProvider;
+use subtitle_fast_decoder::DynFrameProvider;
 #[cfg(all(feature = "ocr-vision", target_os = "macos"))]
 use subtitle_fast_ocr::VisionOcrEngine;
 use subtitle_fast_ocr::{NoopOcrEngine, OcrEngine};
-use subtitle_fast_types::YPlaneError;
+use subtitle_fast_types::FrameError;
 use subtitle_fast_validator::subtitle_detection::SubtitleDetectionError;
 use writer::{SubtitleWriter, SubtitleWriterError, WriterResult};
 
@@ -66,7 +66,7 @@ pub struct OutputPipelineConfig {
 }
 
 impl PipelineConfig {
-    pub fn from_settings(settings: &EffectiveSettings, input: &Path) -> Result<Self, YPlaneError> {
+    pub fn from_settings(settings: &EffectiveSettings, input: &Path) -> Result<Self, FrameError> {
         let engine = build_ocr_engine(settings);
         let output_path = settings
             .output
@@ -84,9 +84,9 @@ impl PipelineConfig {
 }
 
 pub async fn run_pipeline(
-    provider: DynYPlaneProvider,
+    provider: DynFrameProvider,
     pipeline: &PipelineConfig,
-) -> Result<(), (YPlaneError, u64)> {
+) -> Result<(), (FrameError, u64)> {
     let initial_total_frames = provider.total_frames();
     let initial_stream = provider.into_stream();
     let paused_stream = if let Some(pause_rx) = pipeline.pause.as_ref() {
@@ -103,7 +103,7 @@ pub async fn run_pipeline(
     let sampled = FrameSampler::new(pipeline.detection.samples_per_second).attach(sorted);
 
     let detector_stage =
-        Detector::new(&pipeline.detection).map_err(|err| (detection_error_to_yplane(err), 0))?;
+        Detector::new(&pipeline.detection).map_err(|err| (detection_error_to_frame(err), 0))?;
 
     let detected = detector_stage.attach(sampled);
     let determined = RegionDeterminer::new().attach(detected);
@@ -128,8 +128,8 @@ pub async fn run_pipeline(
                 }
             }
             Err(err) => {
-                let yplane_err = writer_error_to_yplane(err);
-                return Err((yplane_err, processed_samples));
+                let frame_err = writer_error_to_frame(err);
+                return Err((frame_err, processed_samples));
             }
         }
     }
@@ -204,11 +204,11 @@ where
     }
 }
 
-fn detection_error_to_yplane(err: SubtitleDetectionError) -> YPlaneError {
-    YPlaneError::configuration(format!("subtitle detection error: {err}"))
+fn detection_error_to_frame(err: SubtitleDetectionError) -> FrameError {
+    FrameError::configuration(format!("subtitle detection error: {err}"))
 }
 
-fn writer_error_to_yplane(err: SubtitleWriterError) -> YPlaneError {
+fn writer_error_to_frame(err: SubtitleWriterError) -> FrameError {
     match err {
         SubtitleWriterError::Ocr(ocr_err) => match ocr_err {
             OcrStageError::Lifecycle(lifecycle_err) => match lifecycle_err {
@@ -216,16 +216,16 @@ fn writer_error_to_yplane(err: SubtitleWriterError) -> YPlaneError {
                     RegionDeterminerError::Detector(detector_err) => match detector_err {
                         detector::DetectorError::Sampler(sampler_err) => sampler_err,
                         detector::DetectorError::Detection(det_err) => {
-                            detection_error_to_yplane(det_err)
+                            detection_error_to_frame(det_err)
                         }
                     },
                 },
             },
             OcrStageError::Engine(ocr_err) => {
-                YPlaneError::configuration(format!("ocr error: {ocr_err}"))
+                FrameError::configuration(format!("ocr error: {ocr_err}"))
             }
         },
-        SubtitleWriterError::Io { path, source } => YPlaneError::configuration(format!(
+        SubtitleWriterError::Io { path, source } => FrameError::configuration(format!(
             "failed to write subtitle file {}: {source}",
             path.display()
         )),

@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use png::{BitDepth, ColorType, Encoder};
-use subtitle_fast_decoder::{Backend, Configuration, YPlaneFrame};
+use subtitle_fast_decoder::{Backend, Configuration, VideoFrame};
 use tokio_stream::StreamExt;
 
 const SAMPLE_FREQUENCY: usize = 7; // frames per second
@@ -130,13 +130,13 @@ fn timestamp() -> u64 {
         .unwrap_or(0)
 }
 
-fn write_frame_yuv(frame: &YPlaneFrame, dir: &Path, index: u64) -> Result<(), io::Error> {
+fn write_frame_yuv(frame: &VideoFrame, dir: &Path, index: u64) -> Result<(), io::Error> {
     let file = dir.join(format!("{index:05}.yuv"));
-    let data = flatten_y(frame);
+    let data = flatten_nv12(frame);
     fs::write(file, data)
 }
 
-fn write_frame_png(frame: &YPlaneFrame, dir: &Path, index: u64) -> Result<(), io::Error> {
+fn write_frame_png(frame: &VideoFrame, dir: &Path, index: u64) -> Result<(), io::Error> {
     let width = frame.width();
     let height = frame.height();
     let file = File::create(dir.join(format!("{index:05}.png")))?;
@@ -150,11 +150,11 @@ fn write_frame_png(frame: &YPlaneFrame, dir: &Path, index: u64) -> Result<(), io
     Ok(())
 }
 
-fn flatten_y(frame: &YPlaneFrame) -> Vec<u8> {
+fn flatten_y(frame: &VideoFrame) -> Vec<u8> {
     let width = frame.width() as usize;
     let height = frame.height() as usize;
     let stride = frame.stride();
-    let data = frame.data();
+    let data = frame.y_plane();
     let mut out = Vec::with_capacity(width * height);
     for row in 0..height {
         let start = row * stride;
@@ -171,8 +171,42 @@ fn flatten_y(frame: &YPlaneFrame) -> Vec<u8> {
     out
 }
 
+fn flatten_nv12(frame: &VideoFrame) -> Vec<u8> {
+    let width = frame.width() as usize;
+    let height = frame.height() as usize;
+    let y_stride = frame.y_stride();
+    let uv_stride = frame.uv_stride();
+    let y_data = frame.y_plane();
+    let uv_data = frame.uv_plane();
+    let uv_rows = (height + 1) / 2;
+    let mut out = Vec::with_capacity(width * height + width * uv_rows);
+    for row in 0..height {
+        let start = row * y_stride;
+        let end = (start + width).min(y_data.len());
+        if end <= start {
+            break;
+        }
+        out.extend_from_slice(&y_data[start..end]);
+        if end - start < width {
+            break;
+        }
+    }
+    for row in 0..uv_rows {
+        let start = row * uv_stride;
+        let end = (start + width).min(uv_data.len());
+        if end <= start {
+            break;
+        }
+        out.extend_from_slice(&uv_data[start..end]);
+        if end - start < width {
+            break;
+        }
+    }
+    out
+}
+
 fn should_emit_frame(
-    frame: &YPlaneFrame,
+    frame: &VideoFrame,
     processed: u64,
     current_second: &mut Option<u64>,
     emitted_in_second: &mut usize,
@@ -193,7 +227,7 @@ fn should_emit_frame(
     }
 }
 
-fn frame_second_bucket(frame: &YPlaneFrame, processed: u64) -> u64 {
+fn frame_second_bucket(frame: &VideoFrame, processed: u64) -> u64 {
     let seconds = frame
         .timestamp()
         .map(|ts| ts.as_secs_f64())

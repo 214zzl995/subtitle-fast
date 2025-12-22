@@ -349,6 +349,7 @@ namespace
         D3D11Context &d3d,
         StagingCopy &staging,
         UINT height,
+        UINT uv_rows,
         std::vector<uint8_t> &out,
         size_t &stride,
         std::string &error)
@@ -390,19 +391,21 @@ namespace
         }
 
         stride = static_cast<size_t>(mapped.RowPitch);
-        const size_t plane_rows = static_cast<size_t>(height);
-        if (stride == 0 || plane_rows == 0 || stride > (std::numeric_limits<size_t>::max)() / plane_rows)
+        const size_t y_rows = static_cast<size_t>(height);
+        const size_t uv_plane_rows = static_cast<size_t>(uv_rows);
+        const size_t total_rows = y_rows + uv_plane_rows;
+        if (stride == 0 || y_rows == 0 || stride > (std::numeric_limits<size_t>::max)() / total_rows)
         {
             d3d.context->Unmap(staging.texture.Get(), 0);
             error = "invalid stride when copying DXVA frame";
             return false;
         }
 
-        const size_t required = stride * plane_rows;
+        const size_t required = stride * total_rows;
         out.resize(required);
 
         const uint8_t *src = static_cast<const uint8_t *>(mapped.pData);
-        for (size_t row = 0; row < plane_rows; ++row)
+        for (size_t row = 0; row < total_rows; ++row)
         {
             std::memcpy(out.data() + row * stride, src + row * mapped.RowPitch, stride);
         }
@@ -425,11 +428,14 @@ extern "C"
 
     struct CDxvaFrame
     {
-        const uint8_t *data;
-        size_t data_len;
+        const uint8_t *y_data;
+        size_t y_len;
+        size_t y_stride;
+        const uint8_t *uv_data;
+        size_t uv_len;
+        size_t uv_stride;
         uint32_t width;
         uint32_t height;
-        size_t stride;
         double timestamp_seconds;
         uint64_t frame_index;
     };
@@ -577,6 +583,7 @@ extern "C"
         StagingCopy staging;
         std::vector<uint8_t> plane;
         size_t stride = 0;
+        UINT uv_rows = (height + 1) / 2;
 
         for (uint64_t frame_index = 0;; frame_index++)
         {
@@ -620,18 +627,24 @@ extern "C"
             }
 
             std::string copy_error;
-            if (!copy_frame_gpu(dxgi_buffer.Get(), d3d, staging, height, plane, stride, copy_error))
+            if (!copy_frame_gpu(dxgi_buffer.Get(), d3d, staging, height, uv_rows, plane, stride, copy_error))
             {
                 set_error(out_error, copy_error.empty() ? "failed to copy DXVA surface to CPU" : copy_error);
                 return false;
             }
 
+            const size_t y_len = stride * static_cast<size_t>(height);
+            const size_t uv_len = stride * static_cast<size_t>(uv_rows);
+
             CDxvaFrame frame{};
-            frame.data = plane.data();
-            frame.data_len = plane.size();
+            frame.y_data = plane.data();
+            frame.y_len = y_len;
+            frame.y_stride = stride;
+            frame.uv_data = plane.data() + y_len;
+            frame.uv_len = uv_len;
+            frame.uv_stride = stride;
             frame.width = width;
             frame.height = height;
-            frame.stride = stride;
             frame.timestamp_seconds = timestamp >= 0
                                           ? static_cast<double>(timestamp) / 10000000.0
                                           : -1.0;

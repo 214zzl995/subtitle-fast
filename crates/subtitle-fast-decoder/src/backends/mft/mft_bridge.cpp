@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <cstring>
 #include <string>
 
@@ -86,7 +87,15 @@ namespace
             buffer = source_buffer;
             if (!buffer) { return E_POINTER; }
             HRESULT hr = buffer.As(&buffer2d);
-            if (SUCCEEDED(hr) && buffer2d && SUCCEEDED(buffer2d->Lock2D(&data, &stride))) { return S_OK; }
+            if (SUCCEEDED(hr) && buffer2d && SUCCEEDED(buffer2d->Lock2D(&data, &stride)))
+            {
+                DWORD current_length = 0;
+                if (SUCCEEDED(buffer->GetCurrentLength(&current_length)))
+                {
+                    contiguous_length = current_length;
+                }
+                return S_OK;
+            }
             buffer2d.Reset();
             BYTE *raw = nullptr; DWORD max_length = 0;
             hr = buffer->Lock(&raw, &max_length, &contiguous_length);
@@ -149,8 +158,7 @@ namespace
         if (FAILED(hr)) { error = hresult("SetStreamSelection(video)", hr); return {}; }
 
         std::string format_error;
-        if (FAILED(set_format(reader.Get(), MFVideoFormat_L8, out_width, out_height, format_error)) &&
-            FAILED(set_format(reader.Get(), MFVideoFormat_NV12, out_width, out_height, format_error)))
+        if (FAILED(set_format(reader.Get(), MFVideoFormat_NV12, out_width, out_height, format_error)))
         {
             error = std::move(format_error);
             reader.Reset();
@@ -178,11 +186,14 @@ extern "C"
 
     struct CMftFrame
     {
-        const uint8_t *data;
-        size_t data_len;
+        const uint8_t *y_data;
+        size_t y_len;
+        size_t y_stride;
+        const uint8_t *uv_data;
+        size_t uv_len;
+        size_t uv_stride;
         uint32_t width;
         uint32_t height;
-        size_t stride;
         double timestamp_seconds;
         uint64_t frame_index;
     };
@@ -345,17 +356,46 @@ extern "C"
                 return false;
             }
 
+            if (!lock.data)
+            {
+                set_error(out_error, "MFT buffer missing NV12 data");
+                return false;
+            }
+
             size_t stride = static_cast<size_t>(lock.stride >= 0 ? lock.stride : -lock.stride);
-            size_t expected = stride * static_cast<size_t>(height);
-            size_t available = lock.buffer2d ? expected : static_cast<size_t>(lock.contiguous_length);
-            size_t plane_bytes = expected <= available ? expected : available;
+            size_t y_rows = static_cast<size_t>(height);
+            size_t uv_rows = (y_rows + 1) / 2;
+            if (stride == 0 || y_rows == 0)
+            {
+                set_error(out_error, "invalid stride or height for NV12 frame");
+                return false;
+            }
+
+            if (stride > (std::numeric_limits<size_t>::max)() / (y_rows + uv_rows))
+            {
+                set_error(out_error, "NV12 plane length overflow");
+                return false;
+            }
+
+            size_t y_len = stride * y_rows;
+            size_t uv_len = stride * uv_rows;
+            size_t total_len = y_len + uv_len;
+            size_t available = static_cast<size_t>(lock.contiguous_length);
+            if (available < total_len)
+            {
+                set_error(out_error, "MFT buffer missing NV12 UV plane data");
+                return false;
+            }
 
             CMftFrame frame{};
-            frame.data = reinterpret_cast<const uint8_t *>(lock.data);
-            frame.data_len = plane_bytes;
+            frame.y_data = reinterpret_cast<const uint8_t *>(lock.data);
+            frame.y_len = y_len;
+            frame.y_stride = stride;
+            frame.uv_data = reinterpret_cast<const uint8_t *>(lock.data) + y_len;
+            frame.uv_len = uv_len;
+            frame.uv_stride = stride;
             frame.width = width;
             frame.height = height;
-            frame.stride = stride;
             frame.timestamp_seconds = timestamp >= 0
                                           ? static_cast<double>(timestamp) / 10000000.0
                                           : -1.0;

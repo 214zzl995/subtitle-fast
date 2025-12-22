@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use super::StreamBundle;
 use super::detector::{DetectionSample, DetectionSampleResult, DetectorError};
-use subtitle_fast_types::{DetectionRegion, RoiConfig, YPlaneFrame};
+use subtitle_fast_types::{DetectionRegion, RoiConfig, VideoFrame};
 
 const REGION_DETERMINER_CHANNEL_CAPACITY: usize = 4;
 const IOU_THRESHOLD: f32 = 0.05;
@@ -99,12 +99,12 @@ impl RegionDeterminerWorker {
     }
 
     fn handle_sample(&mut self, sample: DetectionSample) -> RegionDeterminerEvent {
-        let yplane = sample.sample.frame_handle();
+        let frame = sample.sample.frame_handle();
         let mut used_ids = HashSet::new();
         let mut emitted: Vec<RegionUnit> = Vec::with_capacity(sample.detection.regions.len());
 
         for region in &sample.detection.regions {
-            let roi = region_to_roi(region, &yplane);
+            let roi = region_to_roi(region, &frame);
             let matched = {
                 let store = self.persistent.lock();
                 store.best_match(&roi, &used_ids)
@@ -204,7 +204,7 @@ struct PersistentRegion {
     roi: RoiConfig,
 }
 
-fn region_to_roi(region: &DetectionRegion, frame: &YPlaneFrame) -> RoiConfig {
+fn region_to_roi(region: &DetectionRegion, frame: &VideoFrame) -> RoiConfig {
     let fw = frame.width().max(1) as f32;
     let fh = frame.height().max(1) as f32;
     let x0 = (region.x / fw).clamp(0.0, 1.0);

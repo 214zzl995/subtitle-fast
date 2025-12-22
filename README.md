@@ -61,7 +61,7 @@ CLI flags like `--detector-target`, `--detector-delta`, `--roi x,y,width,height`
 
 ## Pipeline overview
 
-1. Select a decoder and stream Y-plane frames ([decoder](crates/subtitle-fast-decoder/README.md)).
+1. Select a decoder and stream NV12 frames ([decoder](crates/subtitle-fast-decoder/README.md)).
 2. Sample frames and score subtitle bands ([validator](crates/subtitle-fast-validator/README.md)).
 3. Compare regions across frames to spot line starts/ends ([comparator](crates/subtitle-fast-comparator/README.md)).
 4. Run OCR on confirmed regions ([ocr](crates/subtitle-fast-ocr/README.md)) and emit `.srt` cues.

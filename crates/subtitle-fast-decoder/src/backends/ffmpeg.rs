@@ -5,7 +5,7 @@ use ffmpeg::util::error::{EAGAIN, EWOULDBLOCK};
 use ffmpeg_next as ffmpeg;
 
 use crate::core::{
-    DynYPlaneProvider, YPlaneError, YPlaneFrame, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
+    DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider, VideoFrame,
     spawn_stream_from_channel,
 };
 use tokio::sync::mpsc::Sender;
@@ -27,7 +27,7 @@ impl VideoFilterPipeline {
     fn new(
         decoder: &ffmpeg::decoder::Video,
         stream: &ffmpeg::format::stream::Stream,
-    ) -> YPlaneResult<Self> {
+    ) -> FrameResult<Self> {
         let mut graph = ffmpeg::filter::Graph::new();
 
         let (time_base_num, time_base_den) = sanitize_rational(stream.time_base(), (1, 1));
@@ -55,42 +55,42 @@ impl VideoFilterPipeline {
         graph
             .add(
                 &ffmpeg::filter::find("buffer").ok_or_else(|| {
-                    YPlaneError::backend_failure(BACKEND_NAME, "ffmpeg buffer filter not found")
+                    FrameError::backend_failure(BACKEND_NAME, "ffmpeg buffer filter not found")
                 })?,
                 "in",
                 &args,
             )
-            .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
 
         graph
             .add(
                 &ffmpeg::filter::find("buffersink").ok_or_else(|| {
-                    YPlaneError::backend_failure(BACKEND_NAME, "ffmpeg buffersink filter not found")
+                    FrameError::backend_failure(BACKEND_NAME, "ffmpeg buffersink filter not found")
                 })?,
                 "out",
                 "",
             )
-            .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
 
         graph
             .output("in", 0)
             .and_then(|parser| parser.input("out", 0))
             .and_then(|parser| parser.parse(FILTER_SPEC))
-            .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
 
         graph
             .validate()
-            .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
 
         let source_ctx = {
             let mut context = graph.get("in").ok_or_else(|| {
-                YPlaneError::backend_failure(BACKEND_NAME, "failed to access buffer source context")
+                FrameError::backend_failure(BACKEND_NAME, "failed to access buffer source context")
             })?;
             unsafe { context.as_mut_ptr() }
         };
         let sink_ctx = {
             let mut context = graph.get("out").ok_or_else(|| {
-                YPlaneError::backend_failure(BACKEND_NAME, "failed to access buffersink context")
+                FrameError::backend_failure(BACKEND_NAME, "failed to access buffersink context")
             })?;
             unsafe { context.as_mut_ptr() }
         };
@@ -106,22 +106,22 @@ impl VideoFilterPipeline {
         })
     }
 
-    fn push(&mut self, frame: &ffmpeg::util::frame::Video) -> YPlaneResult<()> {
+    fn push(&mut self, frame: &ffmpeg::util::frame::Video) -> FrameResult<()> {
         unsafe {
             let mut context = ffmpeg::filter::context::Context::wrap(self.source_ctx);
             let mut src = ffmpeg::filter::context::Source::wrap(&mut context);
             src.add(frame)
-                .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+                .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
         }
         Ok(())
     }
 
-    fn flush(&mut self) -> YPlaneResult<()> {
+    fn flush(&mut self) -> FrameResult<()> {
         unsafe {
             let mut context = ffmpeg::filter::context::Context::wrap(self.source_ctx);
             let mut src = ffmpeg::filter::context::Source::wrap(&mut context);
             src.flush()
-                .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+                .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
         }
         Ok(())
     }
@@ -129,8 +129,8 @@ impl VideoFilterPipeline {
     fn drain(
         &mut self,
         fallback_time_base: ffmpeg::Rational,
-        tx: &Sender<YPlaneResult<YPlaneFrame>>,
-    ) -> YPlaneResult<()> {
+        tx: &Sender<FrameResult<VideoFrame>>,
+    ) -> FrameResult<()> {
         unsafe {
             let mut context = ffmpeg::filter::context::Context::wrap(self.sink_ctx);
             let mut sink = ffmpeg::filter::context::Sink::wrap(&mut context);
@@ -161,7 +161,7 @@ impl VideoFilterPipeline {
                         if is_retryable_error(&err) || matches!(err, ffmpeg::Error::Eof) {
                             break;
                         }
-                        return Err(YPlaneError::backend_failure(BACKEND_NAME, err.to_string()));
+                        return Err(FrameError::backend_failure(BACKEND_NAME, err.to_string()));
                     }
                 }
             }
@@ -177,16 +177,15 @@ pub struct FfmpegProvider {
 }
 
 impl FfmpegProvider {
-    pub fn open<P: AsRef<Path>>(path: P, channel_capacity: Option<usize>) -> YPlaneResult<Self> {
+    pub fn open<P: AsRef<Path>>(path: P, channel_capacity: Option<usize>) -> FrameResult<Self> {
         let path = path.as_ref();
         if !path.exists() {
-            return Err(YPlaneError::Io(std::io::Error::new(
+            return Err(FrameError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("input file {} does not exist", path.display()),
             )));
         }
-        ffmpeg::init()
-            .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+        ffmpeg::init().map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
         let total_frames = probe_total_frames(path)?;
         let capacity = channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
         Ok(Self {
@@ -196,26 +195,26 @@ impl FfmpegProvider {
         })
     }
 
-    fn decode_loop(&self, tx: Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
+    fn decode_loop(&self, tx: Sender<FrameResult<VideoFrame>>) -> FrameResult<()> {
         let mut ictx = ffmpeg::format::input(&self.input)
-            .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
         let input_stream = ictx
             .streams()
             .best(ffmpeg::media::Type::Video)
-            .ok_or_else(|| YPlaneError::backend_failure(BACKEND_NAME, "no video stream found"))?;
+            .ok_or_else(|| FrameError::backend_failure(BACKEND_NAME, "no video stream found"))?;
         let stream_index = input_stream.index();
         let time_base = input_stream.time_base();
 
         let mut context =
             ffmpeg::codec::context::Context::from_parameters(input_stream.parameters())
-                .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+                .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
         let mut threading = ffmpeg::codec::threading::Config::default();
         threading.kind = ffmpeg::codec::threading::Type::Frame;
         context.set_threading(threading);
         let mut decoder = context
             .decoder()
             .video()
-            .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
 
         let mut filter = VideoFilterPipeline::new(&decoder, &input_stream)?;
         let mut decoded = ffmpeg::util::frame::Video::empty();
@@ -228,7 +227,7 @@ impl FfmpegProvider {
                 Ok(_) => {}
                 Err(err) if is_retryable_error(&err) => {}
                 Err(err) => {
-                    return Err(YPlaneError::backend_failure(BACKEND_NAME, err.to_string()));
+                    return Err(FrameError::backend_failure(BACKEND_NAME, err.to_string()));
                 }
             }
             drain_decoder(&mut decoder, &mut decoded, &mut filter, time_base, &tx)?;
@@ -236,7 +235,7 @@ impl FfmpegProvider {
 
         decoder
             .send_eof()
-            .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
         drain_decoder(&mut decoder, &mut decoded, &mut filter, time_base, &tx)?;
         filter.flush()?;
         filter.drain(time_base, &tx)?;
@@ -244,12 +243,12 @@ impl FfmpegProvider {
     }
 }
 
-impl YPlaneStreamProvider for FfmpegProvider {
+impl FrameStreamProvider for FfmpegProvider {
     fn total_frames(&self) -> Option<u64> {
         self.total_frames
     }
 
-    fn into_stream(self: Box<Self>) -> YPlaneStream {
+    fn into_stream(self: Box<Self>) -> FrameStream {
         let provider = *self;
         let capacity = provider.channel_capacity;
         spawn_stream_from_channel(capacity, move |tx| {
@@ -266,8 +265,8 @@ fn drain_decoder(
     decoded: &mut ffmpeg::util::frame::Video,
     filter: &mut VideoFilterPipeline,
     fallback_time_base: ffmpeg::Rational,
-    tx: &Sender<YPlaneResult<YPlaneFrame>>,
-) -> YPlaneResult<()> {
+    tx: &Sender<FrameResult<VideoFrame>>,
+) -> FrameResult<()> {
     loop {
         match decoder.receive_frame(decoded) {
             Ok(_) => {
@@ -281,7 +280,7 @@ fn drain_decoder(
                 if is_retryable_error(&err) || matches!(err, ffmpeg::Error::Eof) {
                     break;
                 }
-                return Err(YPlaneError::backend_failure(BACKEND_NAME, err.to_string()));
+                return Err(FrameError::backend_failure(BACKEND_NAME, err.to_string()));
             }
         }
     }
@@ -293,23 +292,46 @@ fn frame_from_converted(
     time_base: ffmpeg::Rational,
     frame_rate: Option<(i32, i32)>,
     next_fallback_index: &mut u64,
-) -> YPlaneResult<YPlaneFrame> {
-    let plane = frame.data(0);
-    let stride = frame.stride(0);
+) -> FrameResult<VideoFrame> {
     let width = frame.width();
     let height = frame.height();
-    let mut buffer = Vec::with_capacity(stride * height as usize);
-    for row in 0..height as usize {
-        let offset = row * stride;
-        buffer.extend_from_slice(&plane[offset..offset + stride]);
-    }
+    let y_stride = frame.stride(0);
+    let uv_stride = frame.stride(1);
+    let y_plane = copy_plane(frame.data(0), y_stride, height as usize, "Y")?;
+    let uv_rows = (height as usize + 1) / 2;
+    let uv_plane = copy_plane(frame.data(1), uv_stride, uv_rows, "UV")?;
     let timestamp = frame.pts().map(|pts| {
         let seconds = pts as f64 * f64::from(time_base);
         Duration::from_secs_f64(seconds)
     });
     let frame_index = compute_frame_index(frame, time_base, frame_rate, next_fallback_index);
-    let frame = YPlaneFrame::from_owned(width, height, stride, timestamp, buffer)?;
+    let frame = VideoFrame::from_nv12_owned(
+        width, height, y_stride, uv_stride, timestamp, y_plane, uv_plane,
+    )?;
     Ok(frame.with_frame_index(frame_index))
+}
+
+fn copy_plane(plane: &[u8], stride: usize, rows: usize, label: &str) -> FrameResult<Vec<u8>> {
+    if stride == 0 && rows > 0 {
+        return Err(FrameError::InvalidFrame {
+            reason: format!("NV12 {label} plane stride is zero"),
+        });
+    }
+    let required = stride
+        .checked_mul(rows)
+        .ok_or_else(|| FrameError::InvalidFrame {
+            reason: format!("calculated NV12 {label} plane length overflowed"),
+        })?;
+    if plane.len() < required {
+        return Err(FrameError::InvalidFrame {
+            reason: format!(
+                "insufficient NV12 {label} plane bytes: got {} expected at least {}",
+                plane.len(),
+                required
+            ),
+        });
+    }
+    Ok(plane[..required].to_vec())
 }
 
 fn compute_frame_index(
@@ -351,13 +373,13 @@ fn is_retryable_error(error: &ffmpeg::Error) -> bool {
     )
 }
 
-fn probe_total_frames(path: &Path) -> YPlaneResult<Option<u64>> {
+fn probe_total_frames(path: &Path) -> FrameResult<Option<u64>> {
     let ictx = ffmpeg::format::input(path)
-        .map_err(|err| YPlaneError::backend_failure(BACKEND_NAME, err.to_string()))?;
+        .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
     let stream = ictx
         .streams()
         .best(ffmpeg::media::Type::Video)
-        .ok_or_else(|| YPlaneError::backend_failure(BACKEND_NAME, "no video stream found"))?;
+        .ok_or_else(|| FrameError::backend_failure(BACKEND_NAME, "no video stream found"))?;
     Ok(estimate_stream_total_frames(&stream))
 }
 
@@ -418,7 +440,7 @@ fn estimate_stream_total_frames(stream: &ffmpeg::format::stream::Stream) -> Opti
 pub fn boxed_ffmpeg<P: AsRef<Path>>(
     path: P,
     channel_capacity: Option<usize>,
-) -> YPlaneResult<DynYPlaneProvider> {
+) -> FrameResult<DynFrameProvider> {
     Ok(Box::new(FfmpegProvider::open(path, channel_capacity)?))
 }
 

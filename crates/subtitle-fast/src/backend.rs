@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use subtitle_fast_decoder::{Backend, Configuration};
-use subtitle_fast_types::YPlaneError;
+use subtitle_fast_types::FrameError;
 
 use crate::stage;
 
@@ -12,7 +12,7 @@ pub struct ExecutionPlan {
     pub pipeline: stage::PipelineConfig,
 }
 
-pub async fn run(plan: ExecutionPlan) -> Result<(), YPlaneError> {
+pub async fn run(plan: ExecutionPlan) -> Result<(), FrameError> {
     let ExecutionPlan {
         config,
         backend_locked,
@@ -21,12 +21,12 @@ pub async fn run(plan: ExecutionPlan) -> Result<(), YPlaneError> {
 
     let available = Configuration::available_backends();
     if available.is_empty() {
-        return Err(YPlaneError::configuration(
+        return Err(FrameError::configuration(
             "no decoding backend available; rebuild with a backend feature such as \"backend-ffmpeg\"",
         ));
     }
     if !available.contains(&config.backend) {
-        return Err(YPlaneError::unsupported(config.backend.as_str()));
+        return Err(FrameError::unsupported(config.backend.as_str()));
     }
 
     let mut attempt_config = config.clone();
@@ -101,7 +101,7 @@ pub async fn run_with_progress(
     mut plan: ExecutionPlan,
     handle_id: u64,
     pause_rx: tokio::sync::watch::Receiver<bool>,
-) -> Result<(), YPlaneError> {
+) -> Result<(), FrameError> {
     plan.pipeline.progress = crate::stage::progress_gui::progress_for_handle(handle_id);
     plan.pipeline.pause = Some(pause_rx);
     run(plan).await
@@ -119,7 +119,7 @@ pub fn display_available_backends() {
     }
 }
 
-pub fn parse_backend(value: &str) -> Result<Backend, YPlaneError> {
+pub fn parse_backend(value: &str) -> Result<Backend, FrameError> {
     use std::str::FromStr;
     Backend::from_str(value)
 }

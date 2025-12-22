@@ -1,10 +1,8 @@
 #[cfg(all(target_os = "windows", feature = "backend-mft"))]
-use crate::core::{
-    DynYPlaneProvider, YPlaneError, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
-};
+use crate::core::{DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider};
 
 #[cfg(all(target_os = "windows", feature = "backend-mft"))]
-use crate::core::{YPlaneFrame, spawn_stream_from_channel};
+use crate::core::{VideoFrame, spawn_stream_from_channel};
 
 #[cfg(all(target_os = "windows", feature = "backend-mft"))]
 #[allow(unexpected_cfgs)]
@@ -29,11 +27,14 @@ mod platform {
 
     #[repr(C)]
     struct CMftFrame {
-        data: *const u8,
-        data_len: usize,
+        y_data: *const u8,
+        y_len: usize,
+        y_stride: usize,
+        uv_data: *const u8,
+        uv_len: usize,
+        uv_stride: usize,
         width: u32,
         height: u32,
-        stride: usize,
         timestamp_seconds: f64,
         frame_index: u64,
     }
@@ -59,13 +60,10 @@ mod platform {
     }
 
     impl MftProvider {
-        pub fn open<P: AsRef<Path>>(
-            path: P,
-            channel_capacity: Option<usize>,
-        ) -> YPlaneResult<Self> {
+        pub fn open<P: AsRef<Path>>(path: P, channel_capacity: Option<usize>) -> FrameResult<Self> {
             let path = path.as_ref();
             if !path.exists() {
-                return Err(YPlaneError::Io(std::io::Error::new(
+                return Err(FrameError::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("input file {} does not exist", path.display()),
                 )));
@@ -80,12 +78,12 @@ mod platform {
         }
     }
 
-    impl YPlaneStreamProvider for MftProvider {
+    impl FrameStreamProvider for MftProvider {
         fn total_frames(&self) -> Option<u64> {
             self.total_frames
         }
 
-        fn into_stream(self: Box<Self>) -> YPlaneStream {
+        fn into_stream(self: Box<Self>) -> FrameStream {
             let provider = *self;
             let capacity = provider.channel_capacity;
             spawn_stream_from_channel(capacity, move |tx| {
@@ -96,7 +94,7 @@ mod platform {
         }
     }
 
-    fn decode_mft(path: PathBuf, tx: Sender<YPlaneResult<YPlaneFrame>>) -> YPlaneResult<()> {
+    fn decode_mft(path: PathBuf, tx: Sender<FrameResult<VideoFrame>>) -> FrameResult<()> {
         let c_path = cstring_from_path(&path)?;
         let mut context = DecodeContext::new(tx);
         let mut error_ptr: *mut c_char = ptr::null_mut();
@@ -111,17 +109,17 @@ mod platform {
         let bridge_error = take_bridge_string(error_ptr);
         if !ok {
             let message = bridge_error.unwrap_or_else(|| "decode failed".to_string());
-            return Err(YPlaneError::backend_failure(BACKEND_NAME, message));
+            return Err(FrameError::backend_failure(BACKEND_NAME, message));
         }
         if let Some(message) = bridge_error {
             if !message.is_empty() {
-                return Err(YPlaneError::backend_failure(BACKEND_NAME, message));
+                return Err(FrameError::backend_failure(BACKEND_NAME, message));
             }
         }
         Ok(())
     }
 
-    fn probe_total_frames(path: &Path) -> YPlaneResult<Option<u64>> {
+    fn probe_total_frames(path: &Path) -> FrameResult<Option<u64>> {
         let c_path = cstring_from_path(path)?;
         let mut result = CMftProbeResult {
             has_value: false,
@@ -132,11 +130,11 @@ mod platform {
         let bridge_error = take_bridge_string(result.error);
         if !ok {
             let message = bridge_error.unwrap_or_else(|| "probe failed".to_string());
-            return Err(YPlaneError::backend_failure(BACKEND_NAME, message));
+            return Err(FrameError::backend_failure(BACKEND_NAME, message));
         }
         if let Some(message) = bridge_error {
             if !message.is_empty() {
-                return Err(YPlaneError::backend_failure(BACKEND_NAME, message));
+                return Err(FrameError::backend_failure(BACKEND_NAME, message));
             }
         }
         Ok(if result.has_value {
@@ -146,9 +144,9 @@ mod platform {
         })
     }
 
-    fn cstring_from_path(path: &Path) -> YPlaneResult<CString> {
+    fn cstring_from_path(path: &Path) -> FrameResult<CString> {
         CString::new(path.to_string_lossy().as_bytes()).map_err(|err| {
-            YPlaneError::backend_failure(BACKEND_NAME, format!("invalid path encoding: {err}"))
+            FrameError::backend_failure(BACKEND_NAME, format!("invalid path encoding: {err}"))
         })
     }
 
@@ -162,19 +160,19 @@ mod platform {
     }
 
     struct DecodeContext {
-        tx: Sender<YPlaneResult<YPlaneFrame>>,
+        tx: Sender<FrameResult<VideoFrame>>,
     }
 
     impl DecodeContext {
-        fn new(tx: Sender<YPlaneResult<YPlaneFrame>>) -> Self {
+        fn new(tx: Sender<FrameResult<VideoFrame>>) -> Self {
             Self { tx }
         }
 
-        fn send_frame(&self, frame: YPlaneFrame) -> bool {
+        fn send_frame(&self, frame: VideoFrame) -> bool {
             self.tx.blocking_send(Ok(frame)).is_ok()
         }
 
-        fn send_error(&self, error: YPlaneError) {
+        fn send_error(&self, error: FrameError) {
             let _ = self.tx.blocking_send(Err(error));
         }
     }
@@ -185,36 +183,29 @@ mod platform {
         }
         let frame = unsafe { &*frame };
         let context = unsafe { &*(context as *mut DecodeContext) };
-        let expected_bytes = match frame.stride.checked_mul(frame.height as usize) {
-            Some(bytes) => bytes,
-            None => {
-                context.send_error(YPlaneError::backend_failure(
-                    BACKEND_NAME,
-                    "stride overflow when calculating plane length",
-                ));
-                return false;
-            }
-        };
-        let data = unsafe { slice::from_raw_parts(frame.data, frame.data_len) };
-        if data.len() < expected_bytes {
-            context.send_error(YPlaneError::backend_failure(
+        if frame.y_data.is_null() || frame.uv_data.is_null() {
+            context.send_error(FrameError::backend_failure(
                 BACKEND_NAME,
-                format!(
-                    "incomplete Y plane: have {} expected {} bytes",
-                    data.len(),
-                    expected_bytes
-                ),
+                "NV12 plane pointer is null",
             ));
             return false;
         }
-        let mut plane = Vec::with_capacity(expected_bytes);
-        plane.extend_from_slice(&data[..expected_bytes]);
+        let y_data = unsafe { slice::from_raw_parts(frame.y_data, frame.y_len) };
+        let uv_data = unsafe { slice::from_raw_parts(frame.uv_data, frame.uv_len) };
         let timestamp = if frame.timestamp_seconds.is_sign_negative() {
             None
         } else {
             Some(Duration::from_secs_f64(frame.timestamp_seconds))
         };
-        match YPlaneFrame::from_owned(frame.width, frame.height, frame.stride, timestamp, plane) {
+        match VideoFrame::from_nv12_owned(
+            frame.width,
+            frame.height,
+            frame.y_stride,
+            frame.uv_stride,
+            timestamp,
+            y_data.to_vec(),
+            uv_data.to_vec(),
+        ) {
             Ok(frame_value) => {
                 let frame_value = frame_value.with_frame_index(Some(frame.frame_index));
                 context.send_frame(frame_value)
@@ -229,14 +220,14 @@ mod platform {
     pub fn boxed_mft<P: AsRef<Path>>(
         path: P,
         channel_capacity: Option<usize>,
-    ) -> YPlaneResult<DynYPlaneProvider> {
+    ) -> FrameResult<DynFrameProvider> {
         Ok(Box::new(MftProvider::open(path, channel_capacity)?))
     }
 }
 
 #[cfg(not(target_os = "windows"))]
 mod platform {
-    use crate::{DynYPlaneProvider, YPlaneError, YPlaneResult, YPlaneStream, YPlaneStreamProvider};
+    use crate::{DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider};
     use std::path::Path;
 
     pub struct MftProvider;
@@ -245,13 +236,13 @@ mod platform {
         pub fn open<P: AsRef<Path>>(
             _path: P,
             _channel_capacity: Option<usize>,
-        ) -> YPlaneResult<Self> {
-            Err(YPlaneError::unsupported("mft"))
+        ) -> FrameResult<Self> {
+            Err(FrameError::unsupported("mft"))
         }
     }
 
-    impl YPlaneStreamProvider for MftProvider {
-        fn into_stream(self: Box<Self>) -> YPlaneStream {
+    impl FrameStreamProvider for MftProvider {
+        fn into_stream(self: Box<Self>) -> FrameStream {
             panic!("MFT backend is only available on Windows builds");
         }
     }
@@ -259,8 +250,8 @@ mod platform {
     pub fn boxed_mft<P: AsRef<Path>>(
         _path: P,
         _channel_capacity: Option<usize>,
-    ) -> YPlaneResult<DynYPlaneProvider> {
-        Err(YPlaneError::unsupported("mft"))
+    ) -> FrameResult<DynFrameProvider> {
+        Err(FrameError::unsupported("mft"))
     }
 }
 

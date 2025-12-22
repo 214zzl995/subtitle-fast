@@ -7,7 +7,7 @@ use std::str::FromStr;
 #[cfg(feature = "backend-ffmpeg")]
 use std::sync::OnceLock;
 
-use crate::core::{DynYPlaneProvider, YPlaneError, YPlaneResult};
+use crate::core::{DynFrameProvider, FrameError, FrameResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -23,7 +23,7 @@ pub enum Backend {
 }
 
 impl FromStr for Backend {
-    type Err = YPlaneError;
+    type Err = FrameError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
@@ -36,7 +36,7 @@ impl FromStr for Backend {
             "dxva" => Ok(Backend::Dxva),
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             "mft" => Ok(Backend::Mft),
-            other => Err(YPlaneError::configuration(format!(
+            other => Err(FrameError::configuration(format!(
                 "unknown backend '{other}'"
             ))),
         }
@@ -142,7 +142,7 @@ impl Default for Configuration {
 }
 
 impl Configuration {
-    pub fn from_env() -> YPlaneResult<Self> {
+    pub fn from_env() -> FrameResult<Self> {
         let mut config = Configuration::default();
         if let Ok(backend) = env::var("SUBFAST_BACKEND") {
             config.backend = Backend::from_str(&backend)?;
@@ -152,12 +152,12 @@ impl Configuration {
         }
         if let Ok(capacity) = env::var("SUBFAST_CHANNEL_CAPACITY") {
             let parsed: usize = capacity.parse().map_err(|_| {
-                YPlaneError::configuration(format!(
+                FrameError::configuration(format!(
                     "failed to parse SUBFAST_CHANNEL_CAPACITY='{capacity}' as a positive integer"
                 ))
             })?;
             let Some(value) = NonZeroUsize::new(parsed) else {
-                return Err(YPlaneError::configuration(
+                return Err(FrameError::configuration(
                     "SUBFAST_CHANNEL_CAPACITY must be greater than zero",
                 ));
             };
@@ -170,13 +170,13 @@ impl Configuration {
         compiled_backends()
     }
 
-    pub fn create_provider(&self) -> YPlaneResult<DynYPlaneProvider> {
+    pub fn create_provider(&self) -> FrameResult<DynFrameProvider> {
         let channel_capacity = self.channel_capacity.map(NonZeroUsize::get);
 
         match self.backend {
             Backend::Mock => {
                 if !github_ci_active() {
-                    Err(YPlaneError::unsupported("mock"))
+                    Err(FrameError::unsupported("mock"))
                 } else {
                     crate::backends::mock::boxed_mock(self.input.clone(), channel_capacity)
                 }
@@ -184,14 +184,14 @@ impl Configuration {
             #[cfg(feature = "backend-ffmpeg")]
             Backend::Ffmpeg => {
                 let path = self.input.clone().ok_or_else(|| {
-                    YPlaneError::configuration("FFmpeg backend requires SUBFAST_INPUT")
+                    FrameError::configuration("FFmpeg backend requires SUBFAST_INPUT")
                 })?;
                 crate::backends::ffmpeg::boxed_ffmpeg(path, channel_capacity)
             }
             #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
             Backend::VideoToolbox => {
                 let path = self.input.clone().ok_or_else(|| {
-                    YPlaneError::configuration(
+                    FrameError::configuration(
                         "VideoToolbox backend requires SUBFAST_INPUT to be set",
                     )
                 })?;
@@ -200,19 +200,19 @@ impl Configuration {
             #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
             Backend::Dxva => {
                 let path = self.input.clone().ok_or_else(|| {
-                    YPlaneError::configuration("DXVA backend requires SUBFAST_INPUT to be set")
+                    FrameError::configuration("DXVA backend requires SUBFAST_INPUT to be set")
                 })?;
                 crate::backends::dxva::boxed_dxva(path, channel_capacity)
             }
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             Backend::Mft => {
                 let path = self.input.clone().ok_or_else(|| {
-                    YPlaneError::configuration("MFT backend requires SUBFAST_INPUT to be set")
+                    FrameError::configuration("MFT backend requires SUBFAST_INPUT to be set")
                 })?;
                 crate::backends::mft::boxed_mft(path, channel_capacity)
             }
             #[allow(unreachable_patterns)]
-            other => Err(YPlaneError::unsupported(other.as_str())),
+            other => Err(FrameError::unsupported(other.as_str())),
         }
     }
 }

@@ -17,7 +17,7 @@ use super::lifecycle::RegionTimings;
 use super::ocr::{
     OcrEvent, OcrStageError, OcrStageResult, OcrTimings, OcredSubtitle, RegionBounds, region_bounds,
 };
-use subtitle_fast_types::{OcrResponse, YPlaneFrame};
+use subtitle_fast_types::{OcrResponse, VideoFrame};
 
 const WRITER_CHANNEL_CAPACITY: usize = 4;
 const ENV_EMPTY_OCR_DIR: &str = "SUBFAST_EMPTY_OCR_DIR";
@@ -279,7 +279,7 @@ fn save_empty_ocr_crop(
     dir: &Path,
     sequence: u64,
     bounds: RegionBounds,
-    frame: &YPlaneFrame,
+    frame: &VideoFrame,
     region_id: u64,
     start_frame: u64,
     start_ms: u64,
@@ -297,7 +297,7 @@ fn save_empty_ocr_crop(
     encode_grayscale_png(&path, width, height, &data)
 }
 
-fn crop_region(frame: &YPlaneFrame, bounds: RegionBounds) -> std::io::Result<(Vec<u8>, u32, u32)> {
+fn crop_region(frame: &VideoFrame, bounds: RegionBounds) -> std::io::Result<(Vec<u8>, u32, u32)> {
     let (left, top, right, bottom) = bounds;
     let width = right.saturating_sub(left);
     let height = bottom.saturating_sub(top);

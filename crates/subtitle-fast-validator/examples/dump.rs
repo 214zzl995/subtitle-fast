@@ -6,7 +6,7 @@ use std::thread;
 use image::{Rgb, RgbImage};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde_json::json;
-use subtitle_fast_types::YPlaneFrame;
+use subtitle_fast_types::VideoFrame;
 #[cfg(all(feature = "detector-vision", target_os = "macos"))]
 use subtitle_fast_validator::subtitle_detection::VisionTextDetector;
 use subtitle_fast_validator::subtitle_detection::projection_band::ProjectionBandDetector;
@@ -84,9 +84,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                         continue;
                     }
                 };
-
-                let frame =
-                    YPlaneFrame::from_owned(width as u32, height as u32, width, None, data)?;
+                let y_len = width * height;
+                let uv_rows = (height + 1) / 2;
+                let uv_len = width * uv_rows;
+                let y_plane = data[..y_len].to_vec();
+                let uv_plane = if data.len() >= y_len + uv_len {
+                    data[y_len..y_len + uv_len].to_vec()
+                } else {
+                    vec![128u8; uv_len]
+                };
+                let frame = VideoFrame::from_nv12_owned(
+                    width as u32,
+                    height as u32,
+                    width,
+                    width,
+                    None,
+                    y_plane,
+                    uv_plane,
+                )?;
                 let mut config = SubtitleDetectionConfig::for_frame(width, height, width);
                 config.roi = RoiConfig {
                     x: 0.0,
@@ -175,10 +190,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn resolution_from_len(len: usize) -> Option<(usize, usize)> {
-    PRESETS.iter().copied().find(|(w, h)| w * h == len)
+    PRESETS.iter().copied().find(|(w, h)| {
+        let y_len = w * h;
+        let uv_rows = (h + 1) / 2;
+        let uv_len = w * uv_rows;
+        len == y_len || len == y_len + uv_len
+    })
 }
 
-fn frame_to_image(frame: &YPlaneFrame) -> RgbImage {
+fn frame_to_image(frame: &VideoFrame) -> RgbImage {
     let width = frame.width();
     let height = frame.height();
     let stride = frame.stride();

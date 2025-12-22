@@ -22,11 +22,14 @@ typedef struct {
 } VideoToolboxProbeResult;
 
 typedef struct {
-    const uint8_t *data;
-    size_t data_len;
+    const uint8_t *y_data;
+    size_t y_len;
+    size_t y_stride;
+    const uint8_t *uv_data;
+    size_t uv_len;
+    size_t uv_stride;
     uint32_t width;
     uint32_t height;
-    size_t stride;
     double timestamp_seconds;
     uint64_t frame_index;
 } VideoToolboxFrame;
@@ -373,9 +376,9 @@ bool videotoolbox_decode(
             }
 
             size_t plane_count = CVPixelBufferGetPlaneCount(pixel_buffer);
-            if (plane_count == 0) {
+            if (plane_count < 2) {
                 if (out_error != NULL) {
-                    *out_error = vt_copy_c_string("expected planar pixel buffer for Y plane extraction");
+                    *out_error = vt_copy_c_string("expected NV12 pixel buffer with Y and UV planes");
                 }
                 CFRelease(sample);
                 return false;
@@ -390,12 +393,24 @@ bool videotoolbox_decode(
                 return false;
             }
 
-            const uint8_t *base = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 0);
-            size_t stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 0);
+            const uint8_t *y_base = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 0);
+            const uint8_t *uv_base = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 1);
+            size_t y_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 0);
+            size_t uv_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 1);
             size_t width = CVPixelBufferGetWidthOfPlane(pixel_buffer, 0);
             size_t height = CVPixelBufferGetHeightOfPlane(pixel_buffer, 0);
+            size_t uv_height = CVPixelBufferGetHeightOfPlane(pixel_buffer, 1);
 
-            if (height != 0 && stride > SIZE_MAX / height) {
+            if (y_base == NULL || uv_base == NULL) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("failed to access NV12 plane data");
+                }
+                CVPixelBufferUnlockBaseAddress(pixel_buffer, kCVPixelBufferLock_ReadOnly);
+                CFRelease(sample);
+                return false;
+            }
+
+            if (height != 0 && y_stride > SIZE_MAX / height) {
                 if (out_error != NULL) {
                     *out_error = vt_copy_c_string("calculated stride overflow for Y plane");
                 }
@@ -403,8 +418,17 @@ bool videotoolbox_decode(
                 CFRelease(sample);
                 return false;
             }
+            if (uv_height != 0 && uv_stride > SIZE_MAX / uv_height) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("calculated stride overflow for UV plane");
+                }
+                CVPixelBufferUnlockBaseAddress(pixel_buffer, kCVPixelBufferLock_ReadOnly);
+                CFRelease(sample);
+                return false;
+            }
 
-            size_t data_len = stride * height;
+            size_t y_len = y_stride * height;
+            size_t uv_len = uv_stride * uv_height;
             CMTime pts = CMSampleBufferGetPresentationTimeStamp(sample);
             Float64 timestamp_seconds = NAN;
             if (pts.timescale != 0) {
@@ -412,11 +436,14 @@ bool videotoolbox_decode(
             }
 
             VideoToolboxFrame frame;
-            frame.data = base;
-            frame.data_len = data_len;
+            frame.y_data = y_base;
+            frame.y_len = y_len;
+            frame.y_stride = y_stride;
+            frame.uv_data = uv_base;
+            frame.uv_len = uv_len;
+            frame.uv_stride = uv_stride;
             frame.width = (uint32_t)width;
             frame.height = (uint32_t)height;
-            frame.stride = stride;
             frame.timestamp_seconds = timestamp_seconds;
             frame.frame_index = frame_index;
 

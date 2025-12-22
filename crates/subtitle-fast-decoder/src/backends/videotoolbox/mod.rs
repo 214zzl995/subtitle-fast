@@ -1,10 +1,8 @@
 #[cfg(all(target_os = "macos", feature = "backend-videotoolbox"))]
-use crate::core::{
-    DynYPlaneProvider, YPlaneError, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
-};
+use crate::core::{DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider};
 
 #[cfg(target_os = "macos")]
-use crate::core::{YPlaneFrame, spawn_stream_from_channel};
+use crate::core::{VideoFrame, spawn_stream_from_channel};
 
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]
@@ -31,11 +29,14 @@ mod platform {
 
     #[repr(C)]
     struct CVTFrame {
-        data: *const u8,
-        data_len: usize,
+        y_data: *const u8,
+        y_len: usize,
+        y_stride: usize,
+        uv_data: *const u8,
+        uv_len: usize,
+        uv_stride: usize,
         width: u32,
         height: u32,
-        stride: usize,
         timestamp_seconds: f64,
         frame_index: u64,
     }
@@ -66,13 +67,10 @@ mod platform {
     }
 
     impl VideoToolboxProvider {
-        pub fn open<P: AsRef<Path>>(
-            path: P,
-            channel_capacity: Option<usize>,
-        ) -> YPlaneResult<Self> {
+        pub fn open<P: AsRef<Path>>(path: P, channel_capacity: Option<usize>) -> FrameResult<Self> {
             let path = path.as_ref();
             if !path.exists() {
-                return Err(YPlaneError::Io(std::io::Error::new(
+                return Err(FrameError::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("input file {} does not exist", path.display()),
                 )));
@@ -87,13 +85,13 @@ mod platform {
         }
     }
 
-    fn probe_total_frames(path: &Path) -> YPlaneResult<Option<u64>> {
+    fn probe_total_frames(path: &Path) -> FrameResult<Option<u64>> {
         match probe_total_frames_videotoolbox(path) {
             Ok(result) => Ok(result),
             Err(vt_err) => match probe_total_frames_mp4(path) {
                 Ok(Some(value)) => Ok(Some(value)),
                 Ok(None) => Err(vt_err),
-                Err(mp4_err) => Err(YPlaneError::backend_failure(
+                Err(mp4_err) => Err(FrameError::backend_failure(
                     "videotoolbox",
                     format!("{vt_err}; mp4 fallback failed: {mp4_err}"),
                 )),
@@ -101,7 +99,7 @@ mod platform {
         }
     }
 
-    fn probe_total_frames_mp4(path: &Path) -> YPlaneResult<Option<u64>> {
+    fn probe_total_frames_mp4(path: &Path) -> FrameResult<Option<u64>> {
         let file = File::open(path)?;
         let size = file.metadata()?.len();
         let reader = BufReader::new(file);
@@ -120,7 +118,7 @@ mod platform {
         };
 
         let count = reader.sample_count(track_id).map_err(|err| {
-            YPlaneError::backend_failure(
+            FrameError::backend_failure(
                 "videotoolbox",
                 format!("failed to query MP4 sample count: {err}"),
             )
@@ -133,7 +131,7 @@ mod platform {
         Ok(Some(count as u64))
     }
 
-    fn probe_total_frames_videotoolbox(path: &Path) -> YPlaneResult<Option<u64>> {
+    fn probe_total_frames_videotoolbox(path: &Path) -> FrameResult<Option<u64>> {
         let c_path = cstring_from_path(path)?;
         let mut result = CVTProbeResult {
             has_value: false,
@@ -144,12 +142,12 @@ mod platform {
         let error = take_bridge_string(result.error);
         if !ok {
             let message = error.unwrap_or_else(|| "videotoolbox probe failed".to_string());
-            return Err(YPlaneError::backend_failure("videotoolbox", message));
+            return Err(FrameError::backend_failure("videotoolbox", message));
         }
         if let Some(message) = error
             && !message.is_empty()
         {
-            return Err(YPlaneError::backend_failure("videotoolbox", message));
+            return Err(FrameError::backend_failure("videotoolbox", message));
         }
         if result.has_value {
             Ok(Some(result.value))
@@ -158,9 +156,9 @@ mod platform {
         }
     }
 
-    fn cstring_from_path(path: &Path) -> YPlaneResult<CString> {
+    fn cstring_from_path(path: &Path) -> FrameResult<CString> {
         CString::new(path.to_string_lossy().as_bytes()).map_err(|err| {
-            YPlaneError::backend_failure("videotoolbox", format!("invalid path encoding: {err}"))
+            FrameError::backend_failure("videotoolbox", format!("invalid path encoding: {err}"))
         })
     }
 
@@ -173,12 +171,12 @@ mod platform {
         Some(message)
     }
 
-    impl YPlaneStreamProvider for VideoToolboxProvider {
+    impl FrameStreamProvider for VideoToolboxProvider {
         fn total_frames(&self) -> Option<u64> {
             self.total_frames
         }
 
-        fn into_stream(self: Box<Self>) -> YPlaneStream {
+        fn into_stream(self: Box<Self>) -> FrameStream {
             let path = self.input.clone();
             let capacity = self.channel_capacity;
             spawn_stream_from_channel(capacity, move |tx| {
@@ -191,8 +189,8 @@ mod platform {
 
     fn decode_videotoolbox(
         path: PathBuf,
-        tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>,
-    ) -> YPlaneResult<()> {
+        tx: mpsc::Sender<FrameResult<VideoFrame>>,
+    ) -> FrameResult<()> {
         let c_path = cstring_from_path(&path)?;
         let mut context = Box::new(DecodeContext::new(tx));
         let mut error_ptr: *mut c_char = ptr::null_mut();
@@ -209,26 +207,26 @@ mod platform {
         let error = take_bridge_string(error_ptr);
         if !ok {
             let message = error.unwrap_or_else(|| "videotoolbox decode failed".to_string());
-            return Err(YPlaneError::backend_failure("videotoolbox", message));
+            return Err(FrameError::backend_failure("videotoolbox", message));
         }
         if let Some(message) = error
             && !message.is_empty()
         {
-            return Err(YPlaneError::backend_failure("videotoolbox", message));
+            return Err(FrameError::backend_failure("videotoolbox", message));
         }
         Ok(())
     }
 
     struct DecodeContext {
-        sender: mpsc::Sender<YPlaneResult<YPlaneFrame>>,
+        sender: mpsc::Sender<FrameResult<VideoFrame>>,
     }
 
     impl DecodeContext {
-        fn new(sender: mpsc::Sender<YPlaneResult<YPlaneFrame>>) -> Self {
+        fn new(sender: mpsc::Sender<FrameResult<VideoFrame>>) -> Self {
             Self { sender }
         }
 
-        fn send(&self, message: YPlaneResult<YPlaneFrame>) -> bool {
+        fn send(&self, message: FrameResult<VideoFrame>) -> bool {
             self.sender.blocking_send(message).is_ok()
         }
     }
@@ -240,16 +238,16 @@ mod platform {
         let frame = unsafe { &*frame };
         let context = unsafe { &*(ctx as *const DecodeContext) };
 
-        if frame.data.is_null() {
-            let _ = context.send(Err(YPlaneError::backend_failure(
+        if frame.y_data.is_null() || frame.uv_data.is_null() {
+            let _ = context.send(Err(FrameError::backend_failure(
                 "videotoolbox",
                 "frame missing pixel data",
             )));
             return false;
         }
 
-        let data = unsafe { slice::from_raw_parts(frame.data, frame.data_len) };
-        let buffer = data.to_vec();
+        let y_data = unsafe { slice::from_raw_parts(frame.y_data, frame.y_len) };
+        let uv_data = unsafe { slice::from_raw_parts(frame.uv_data, frame.uv_len) };
 
         let timestamp = if frame.timestamp_seconds.is_finite() && frame.timestamp_seconds >= 0.0 {
             Some(Duration::from_secs_f64(frame.timestamp_seconds))
@@ -257,12 +255,14 @@ mod platform {
             None
         };
 
-        let y_frame = match YPlaneFrame::from_owned(
+        let y_frame = match VideoFrame::from_nv12_owned(
             frame.width,
             frame.height,
-            frame.stride,
+            frame.y_stride,
+            frame.uv_stride,
             timestamp,
-            buffer,
+            y_data.to_vec(),
+            uv_data.to_vec(),
         ) {
             Ok(value) => value.with_frame_index(Some(frame.frame_index)),
             Err(err) => {
@@ -280,9 +280,9 @@ mod platform {
     pub fn boxed_videotoolbox<P: AsRef<Path>>(
         path: P,
         channel_capacity: Option<usize>,
-    ) -> YPlaneResult<DynYPlaneProvider> {
+    ) -> FrameResult<DynFrameProvider> {
         VideoToolboxProvider::open(path, channel_capacity)
-            .map(|provider| Box::new(provider) as DynYPlaneProvider)
+            .map(|provider| Box::new(provider) as DynFrameProvider)
     }
 }
 
@@ -294,13 +294,13 @@ mod platform {
     pub struct VideoToolboxProvider;
 
     impl VideoToolboxProvider {
-        pub fn open<P: AsRef<Path>>(_path: P) -> YPlaneResult<Self> {
-            Err(YPlaneError::unsupported("videotoolbox"))
+        pub fn open<P: AsRef<Path>>(_path: P) -> FrameResult<Self> {
+            Err(FrameError::unsupported("videotoolbox"))
         }
     }
 
-    impl YPlaneStreamProvider for VideoToolboxProvider {
-        fn into_stream(self: Box<Self>) -> YPlaneStream {
+    impl FrameStreamProvider for VideoToolboxProvider {
+        fn into_stream(self: Box<Self>) -> FrameStream {
             panic!("VideoToolbox backend is only available on macOS builds");
         }
     }
@@ -308,8 +308,8 @@ mod platform {
     pub fn boxed_videotoolbox<P: AsRef<Path>>(
         _path: P,
         _channel_capacity: Option<usize>,
-    ) -> YPlaneResult<DynYPlaneProvider> {
-        Err(YPlaneError::unsupported("videotoolbox"))
+    ) -> FrameResult<DynFrameProvider> {
+        Err(FrameError::unsupported("videotoolbox"))
     }
 }
 

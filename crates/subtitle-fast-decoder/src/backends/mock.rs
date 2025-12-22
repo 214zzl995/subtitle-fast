@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
 use crate::core::{
-    DynYPlaneProvider, YPlaneFrame, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
+    DynFrameProvider, FrameResult, FrameStream, FrameStreamProvider, VideoFrame,
     spawn_stream_from_channel,
 };
 
@@ -35,7 +35,7 @@ impl MockProvider {
         }
     }
 
-    fn emit_frames(&self, tx: Sender<YPlaneResult<YPlaneFrame>>) {
+    fn emit_frames(&self, tx: Sender<FrameResult<VideoFrame>>) {
         for index in 0..self.frame_count {
             if tx.is_closed() {
                 break;
@@ -45,9 +45,19 @@ impl MockProvider {
                 let value = ((row + index) % 256) as u8;
                 chunk.fill(value);
             }
+            let uv_rows = (self.height as usize + 1) / 2;
+            let uv_stride = self.stride;
+            let uv_plane = vec![128u8; uv_stride * uv_rows];
             let timestamp = Some(Duration::from_millis((index * 16) as u64));
-            let frame =
-                YPlaneFrame::from_owned(self.width, self.height, self.stride, timestamp, buffer);
+            let frame = VideoFrame::from_nv12_owned(
+                self.width,
+                self.height,
+                self.stride,
+                uv_stride,
+                timestamp,
+                buffer,
+                uv_plane,
+            );
             if tx.blocking_send(frame).is_err() {
                 break;
             }
@@ -58,12 +68,12 @@ impl MockProvider {
     }
 }
 
-impl YPlaneStreamProvider for MockProvider {
+impl FrameStreamProvider for MockProvider {
     fn total_frames(&self) -> Option<u64> {
         Some(self.frame_count as u64)
     }
 
-    fn into_stream(self: Box<Self>) -> YPlaneStream {
+    fn into_stream(self: Box<Self>) -> FrameStream {
         let provider = *self;
         let capacity = provider.channel_capacity;
         spawn_stream_from_channel(capacity, move |tx| {
@@ -75,7 +85,7 @@ impl YPlaneStreamProvider for MockProvider {
 pub fn boxed_mock(
     path: Option<PathBuf>,
     channel_capacity: Option<usize>,
-) -> YPlaneResult<DynYPlaneProvider> {
+) -> FrameResult<DynFrameProvider> {
     Ok(Box::new(MockProvider::open(path, channel_capacity)))
 }
 
@@ -94,5 +104,6 @@ mod tests {
         assert_eq!(frame.width(), 640);
         assert_eq!(frame.height(), 360);
         assert_eq!(frame.data().len(), 640 * 360);
+        assert_eq!(frame.uv_plane().len(), 640 * 180);
     }
 }
