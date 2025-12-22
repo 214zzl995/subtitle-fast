@@ -1,15 +1,30 @@
 use crate::gui::icons::{Icon, icon_sm};
-use crate::gui::state::AppState;
+use crate::gui::state::{AppState, PLAYBACK_BUFFER_CAPACITY, PlaybackFrame, PlaybackSession};
 use crate::gui::theme::AppTheme;
+use futures_util::StreamExt;
 use gpui::prelude::*;
 use gpui::*;
 use gpui::{InteractiveElement, MouseButton};
+use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+use subtitle_fast_decoder::{Configuration, FrameError, FrameResult, VideoFrame};
+use tokio::sync::mpsc;
 
 pub struct ControlPanel {
     state: Entity<AppState>,
     theme: AppTheme,
     state_subscription: Option<Subscription>,
 }
+
+enum DecoderMessage {
+    TotalFrames(Option<u64>),
+    Frame(FrameResult<VideoFrame>),
+}
+
+const DEFAULT_FRAME_MS: f64 = 33.333;
+const BACKPRESSURE_WAIT_MS: u64 = 8;
 
 impl ControlPanel {
     pub fn new(state: Entity<AppState>) -> Self {
@@ -94,14 +109,21 @@ impl ControlPanel {
         duration: f64,
         playing: bool,
     ) -> Div {
-        let state = self.state.clone();
+        let state_snapshot = self.state.read(cx);
         let progress = if duration > 0.0 {
             (playhead / duration).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let total_frames = 214918u32;
-        let current_frame = (progress * total_frames as f64).round() as u32;
+        let total_frames = state_snapshot.playback_total_frames();
+        let decoded_frames = state_snapshot.playback_decoded_frames();
+        let current_frame = state_snapshot
+            .playback_current_frame_index()
+            .unwrap_or_else(|| decoded_frames.saturating_sub(1));
+        let frame_label = match total_frames {
+            Some(total) => format!("Frame {}/{}", current_frame, total),
+            None => format!("Frame {}", current_frame),
+        };
 
         div()
             .flex()
@@ -137,15 +159,12 @@ impl ControlPanel {
                             ))
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(move |_, _, _, cx| {
-                                    state.update(cx, |state, cx| {
-                                        state.toggle_playing();
-                                        cx.notify();
-                                    });
+                                cx.listener(|this, _, _, cx| {
+                                    this.toggle_playback(cx);
                                 }),
                             ),
                     )
-                    .child(self.render_progress_bar(cx, progress, duration).flex_1())
+                    .child(self.render_progress_bar(progress).flex_1())
                     .child(
                         div()
                             .text_xs()
@@ -158,48 +177,20 @@ impl ControlPanel {
                     ),
             )
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(self.theme.text_tertiary())
-                            .child(format!("Frame {}/{}", current_frame, total_frames)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(self.jump_button(cx, "-1f", -33.0))
-                            .child(self.jump_button(cx, "-7f", -233.0))
-                            .child(self.jump_button(cx, "-7s", -7000.0))
-                            .child(self.jump_button(cx, "+7s", 7000.0)),
-                    ),
+                div().flex().items_center().justify_between().child(
+                    div()
+                        .text_xs()
+                        .text_color(self.theme.text_tertiary())
+                        .child(frame_label),
+                ),
             )
     }
 
-    fn render_progress_bar(&self, cx: &mut Context<Self>, progress: f64, _duration: f64) -> Div {
-        let state = self.state.clone();
-
+    fn render_progress_bar(&self, progress: f64) -> Div {
         div()
             .relative()
             .w_full()
             .h(px(12.0))
-            .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |_, _event: &MouseDownEvent, _window, cx| {
-                    let click_ratio = 0.5;
-                    state.update(cx, |state, cx| {
-                        let new_time = click_ratio * state.duration_ms();
-                        state.set_playhead_ms(new_time);
-                        cx.notify();
-                    });
-                }),
-            )
             .child(
                 div()
                     .absolute()
@@ -237,30 +228,32 @@ impl ControlPanel {
             )
     }
 
-    fn jump_button(&self, cx: &mut Context<Self>, label: &str, delta_ms: f64) -> Div {
+    fn toggle_playback(&mut self, cx: &mut Context<Self>) {
         let state = self.state.clone();
-        div()
-            .px(px(8.0))
-            .py(px(3.0))
-            .rounded_full()
-            .bg(self.theme.surface_elevated())
-            .border_1()
-            .border_color(self.theme.border())
-            .text_xs()
-            .text_color(self.theme.text_secondary())
-            .cursor_pointer()
-            .hover(|s| s.bg(self.theme.surface_hover()))
-            .child(label.to_string())
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |_, _, _, cx| {
-                    state.update(cx, |state, cx| {
-                        let current = state.playhead_ms();
-                        state.set_playhead_ms(current + delta_ms);
-                        cx.notify();
-                    });
-                }),
-            )
+        let session = state.update(cx, |state, cx| {
+            if state.get_active_file().is_none() {
+                state.set_error_message(Some(
+                    "Please select a video before starting playback".to_string(),
+                ));
+                state.set_playing(false);
+                cx.notify();
+                return None;
+            }
+
+            let now_playing = !state.is_playing();
+            state.set_playing(now_playing);
+            let session = if now_playing {
+                state.start_playback_session()
+            } else {
+                None
+            };
+            cx.notify();
+            session
+        });
+
+        if let Some(session) = session {
+            self.spawn_decoder(session, cx);
+        }
     }
 
     fn render_selection_section(&self, cx: &mut Context<Self>, highlight_enabled: bool) -> Div {
@@ -452,5 +445,158 @@ impl ControlPanel {
         let minutes = total_secs / 60;
         let seconds = total_secs % 60;
         format!("{:02}:{:02}", minutes, seconds)
+    }
+
+    fn spawn_decoder(&self, session: PlaybackSession, cx: &mut Context<Self>) {
+        let state = self.state.clone();
+        let (tx, rx) = mpsc::channel::<DecoderMessage>(PLAYBACK_BUFFER_CAPACITY);
+        let path = session.path.clone();
+        let session_id = session.session_id;
+
+        thread::spawn(move || {
+            let config = Configuration {
+                input: Some(path),
+                channel_capacity: NonZeroUsize::new(PLAYBACK_BUFFER_CAPACITY),
+                ..Default::default()
+            };
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    let _ =
+                        tx.blocking_send(DecoderMessage::Frame(Err(FrameError::configuration(
+                            format!("Failed to start decoder runtime: {err}"),
+                        ))));
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                let provider = match config.create_provider() {
+                    Ok(provider) => provider,
+                    Err(err) => {
+                        let _ = tx.send(DecoderMessage::Frame(Err(err))).await;
+                        return;
+                    }
+                };
+                let total_frames = provider.total_frames();
+                let _ = tx.send(DecoderMessage::TotalFrames(total_frames)).await;
+                let mut stream = provider.into_stream();
+                while let Some(frame) = stream.next().await {
+                    if tx.send(DecoderMessage::Frame(frame)).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        });
+
+        cx.spawn(move |_this, cx: &mut AsyncApp| {
+            let mut async_app = (*cx).clone();
+            async move {
+                let mut receiver = rx;
+                let mut last_timestamp_ms: Option<f64> = None;
+                loop {
+                    let active_session_id =
+                        match state.read_with(&async_app, |state, _| state.playback_session_id()) {
+                            Ok(active) => active,
+                            Err(_) => break,
+                        };
+                    if active_session_id != session_id {
+                        break;
+                    }
+                    let buffer_len =
+                        match state.read_with(&async_app, |state, _| state.playback_buffer_len()) {
+                            Ok(len) => len,
+                            Err(_) => break,
+                        };
+                    if buffer_len >= PLAYBACK_BUFFER_CAPACITY {
+                        Timer::after(Duration::from_millis(BACKPRESSURE_WAIT_MS)).await;
+                        continue;
+                    }
+
+                    let message = receiver.recv().await;
+                    let Some(message) = message else {
+                        let _ = state.update(&mut async_app, |state, cx| {
+                            state.mark_playback_finished(session_id);
+                            cx.notify();
+                        });
+                        break;
+                    };
+
+                    match message {
+                        DecoderMessage::TotalFrames(total) => {
+                            let _ = state.update(&mut async_app, |state, cx| {
+                                state.set_playback_total_frames(session_id, total);
+                                cx.notify();
+                            });
+                        }
+                        DecoderMessage::Frame(result) => match result {
+                            Ok(frame) => {
+                                let timestamp_ms = frame
+                                    .timestamp()
+                                    .map(|ts| ts.as_secs_f64() * 1000.0)
+                                    .or_else(|| {
+                                        frame
+                                            .frame_index()
+                                            .map(|index| index as f64 * DEFAULT_FRAME_MS)
+                                    })
+                                    .unwrap_or_else(|| {
+                                        let next =
+                                            last_timestamp_ms.unwrap_or(0.0) + DEFAULT_FRAME_MS;
+                                        next
+                                    });
+                                last_timestamp_ms = Some(timestamp_ms);
+
+                                let image = match RenderImage::from_nv12(
+                                    frame.width(),
+                                    frame.height(),
+                                    frame.y_stride(),
+                                    frame.uv_stride(),
+                                    frame.y_plane().to_vec(),
+                                    frame.uv_plane().to_vec(),
+                                ) {
+                                    Ok(image) => Arc::new(image),
+                                    Err(err) => {
+                                        let _ = state.update(&mut async_app, |state, cx| {
+                                            let message =
+                                                format!("Failed to render NV12 frame: {err}");
+                                            state.set_playback_error(
+                                                session_id,
+                                                Some(message.clone()),
+                                            );
+                                            state.set_error_message(Some(message));
+                                            cx.notify();
+                                        });
+                                        break;
+                                    }
+                                };
+
+                                let playback_frame =
+                                    PlaybackFrame::new(timestamp_ms, frame.frame_index(), image);
+                                let _ = state.update(&mut async_app, |state, cx| {
+                                    if state.push_playback_frame(session_id, playback_frame) {
+                                        if timestamp_ms > state.duration_ms() {
+                                            state.set_duration_ms(timestamp_ms);
+                                        }
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                            Err(err) => {
+                                let _ = state.update(&mut async_app, |state, cx| {
+                                    let message = format!("Decoder error: {err}");
+                                    state.set_playback_error(session_id, Some(message.clone()));
+                                    state.set_error_message(Some(message));
+                                    cx.notify();
+                                });
+                                break;
+                            }
+                        },
+                    }
+                }
+            }
+        })
+        .detach();
     }
 }

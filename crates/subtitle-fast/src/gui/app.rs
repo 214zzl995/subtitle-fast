@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
+use std::time::{Duration, Instant};
 
 use crate::gui::components::*;
 use crate::gui::icons::{Icon, icon_sm};
@@ -68,6 +69,7 @@ pub struct MainWindow {
     control_panel: Option<Entity<ControlPanel>>,
     status_panel: Option<Entity<StatusPanel>>,
     subtitle_list: Option<Entity<SubtitleList>>,
+    playback_loop_started: bool,
 }
 
 impl MainWindow {
@@ -80,6 +82,7 @@ impl MainWindow {
             control_panel: None,
             status_panel: None,
             subtitle_list: None,
+            playback_loop_started: false,
         }
     }
 }
@@ -88,6 +91,7 @@ impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_theme_listener(window, cx);
         self.ensure_children(cx);
+        self.ensure_playback_loop(cx);
 
         let (
             theme,
@@ -338,6 +342,49 @@ impl MainWindow {
             let state = self.state.clone();
             self.subtitle_list = Some(cx.new(|_| SubtitleList::new(state)));
         }
+    }
+
+    fn ensure_playback_loop(&mut self, cx: &mut Context<Self>) {
+        if self.playback_loop_started {
+            return;
+        }
+        self.playback_loop_started = true;
+        let state = self.state.clone();
+        cx.spawn(|_this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut async_app = (*cx).clone();
+            async move {
+                let mut last_tick = Instant::now();
+                loop {
+                    Timer::after(Duration::from_millis(16)).await;
+                    let now = Instant::now();
+                    let delta_ms = (now - last_tick).as_secs_f64() * 1000.0;
+                    last_tick = now;
+                    let updated = state.update(&mut async_app, |state, cx| {
+                        let is_playing = state.is_playing();
+                        if is_playing {
+                            let next_time = state.playhead_ms() + delta_ms;
+                            let duration = state.duration_ms();
+                            if !state.playback_is_decoding() && next_time >= duration {
+                                state.set_playhead_ms(duration);
+                                state.set_playing(false);
+                            } else if state.playback_is_decoding() {
+                                state.set_playhead_ms_unclamped(next_time);
+                            } else {
+                                state.set_playhead_ms(next_time);
+                            }
+                        }
+                        let advanced = state.advance_playback();
+                        if is_playing || advanced {
+                            cx.notify();
+                        }
+                    });
+                    if updated.is_err() {
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
     }
 
     fn render_sidebar_titlebar(&self, theme: AppTheme, titlebar_height: Pixels) -> Div {

@@ -4,6 +4,7 @@ use crate::gui::theme::AppTheme;
 use gpui::prelude::*;
 use gpui::*;
 use gpui::{InteractiveElement, MouseButton};
+use std::sync::Arc;
 
 pub struct PreviewPanel {
     state: Entity<AppState>,
@@ -31,6 +32,9 @@ impl Render for PreviewPanel {
         let roi = state.get_roi();
         let selection_visible = state.selection_visible();
         let highlight_enabled = state.highlight_enabled();
+        let playback_image = state.playback_current_image();
+        let playback_loading = state.playback_is_loading();
+        let playback_error = state.playback_error();
 
         div()
             .flex()
@@ -119,6 +123,9 @@ impl Render for PreviewPanel {
                                     roi,
                                     selection_visible,
                                     highlight_enabled,
+                                    playback_image,
+                                    playback_loading,
+                                    playback_error,
                                 )
                             } else {
                                 self.render_empty_state()
@@ -233,6 +240,9 @@ impl PreviewPanel {
         roi: Option<crate::gui::state::RoiSelection>,
         selection_visible: bool,
         highlight_enabled: bool,
+        playback_image: Option<Arc<RenderImage>>,
+        playback_loading: bool,
+        playback_error: Option<String>,
     ) -> Div {
         let overlay = roi.unwrap_or(crate::gui::state::RoiSelection {
             x: 0.15,
@@ -241,11 +251,18 @@ impl PreviewPanel {
             height: 0.25,
         });
 
-        div()
+        let mut container = div()
             .relative()
             .w_full()
             .h_full()
             .bg(hsla(0.0, 0.0, 0.02, 1.0))
+            .child(match playback_image {
+                Some(image) => div()
+                    .w_full()
+                    .h_full()
+                    .child(img(image).object_fit(ObjectFit::Contain).w_full().h_full()),
+                None => self.render_playback_placeholder(playback_loading, playback_error),
+            })
             .child(
                 div()
                     .absolute()
@@ -254,19 +271,13 @@ impl PreviewPanel {
                     .text_xs()
                     .text_color(self.theme.text_tertiary())
                     .child(format!("{}", file.path.display())),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(12.0))
-                    .bottom(px(12.0))
-                    .text_sm()
-                    .text_color(self.theme.text_primary())
-                    .child("Sample subtitle text\nfor demonstration purposes"),
-            )
-            .when(selection_visible, |div| {
-                div.child(self.render_selection_overlay(overlay, highlight_enabled))
-            })
+            );
+
+        if selection_visible {
+            container = container.child(self.render_selection_overlay(overlay, highlight_enabled));
+        }
+
+        container
     }
 
     fn render_empty_state(&self) -> Div {
@@ -284,6 +295,33 @@ impl PreviewPanel {
                     .text_sm()
                     .text_color(self.theme.text_tertiary())
                     .child("No video selected"),
+            )
+    }
+
+    fn render_playback_placeholder(&self, loading: bool, error: Option<String>) -> Div {
+        let message = if let Some(error) = error {
+            format!("Playback error\n{error}")
+        } else if loading {
+            "Loading preview...".to_string()
+        } else {
+            "Press play to start preview".to_string()
+        };
+
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(6.0))
+            .child(icon_sm(Icon::Film, self.theme.text_tertiary()))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(self.theme.text_tertiary())
+                    .text_align(TextAlign::Center)
+                    .child(message),
             )
     }
 

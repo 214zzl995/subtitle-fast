@@ -1,7 +1,8 @@
-use gpui::WindowAppearance;
+use gpui::{RenderImage, WindowAppearance};
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::backend::ExecutionPlan;
 use crate::gui::components::AnimatedPanelState;
@@ -77,6 +78,64 @@ pub struct RoiSelection {
     pub height: f32,
 }
 
+pub const PLAYBACK_BUFFER_CAPACITY: usize = 48;
+
+#[derive(Clone)]
+pub struct PlaybackFrame {
+    timestamp_ms: f64,
+    frame_index: Option<u64>,
+    image: Arc<RenderImage>,
+}
+
+impl PlaybackFrame {
+    pub fn new(timestamp_ms: f64, frame_index: Option<u64>, image: Arc<RenderImage>) -> Self {
+        Self {
+            timestamp_ms,
+            frame_index,
+            image,
+        }
+    }
+}
+
+struct PlaybackState {
+    session_id: u64,
+    active_file_id: Option<FileId>,
+    decoding: bool,
+    loading: bool,
+    total_frames: Option<u64>,
+    decoded_frames: u64,
+    buffer: VecDeque<PlaybackFrame>,
+    buffer_start_ms: Option<f64>,
+    buffer_end_ms: Option<f64>,
+    current_frame: Option<PlaybackFrame>,
+    error: Option<String>,
+}
+
+impl PlaybackState {
+    fn new() -> Self {
+        Self {
+            session_id: 0,
+            active_file_id: None,
+            decoding: false,
+            loading: false,
+            total_frames: None,
+            decoded_frames: 0,
+            buffer: VecDeque::new(),
+            buffer_start_ms: None,
+            buffer_end_ms: None,
+            current_frame: None,
+            error: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PlaybackSession {
+    pub session_id: u64,
+    pub file_id: FileId,
+    pub path: PathBuf,
+}
+
 pub struct AppState {
     files: RwLock<HashMap<FileId, TrackedFile>>,
     active_file_id: RwLock<Option<FileId>>,
@@ -95,6 +154,7 @@ pub struct AppState {
     playhead_ms: RwLock<f64>,
     duration_ms: RwLock<f64>,
     playing: RwLock<bool>,
+    playback: RwLock<PlaybackState>,
 
     left_sidebar_panel: RwLock<AnimatedPanelState>,
 
@@ -126,6 +186,7 @@ impl AppState {
             playhead_ms: RwLock::new(2000.0),
             duration_ms: RwLock::new(30000.0),
             playing: RwLock::new(false),
+            playback: RwLock::new(PlaybackState::new()),
             left_sidebar_panel: RwLock::new(AnimatedPanelState::new()),
             left_sidebar_width: RwLock::new(LEFT_SIDEBAR_DEFAULT_WIDTH),
             right_sidebar_width: RwLock::new(RIGHT_SIDEBAR_DEFAULT_WIDTH),
@@ -150,6 +211,8 @@ impl AppState {
 
         self.files.write().insert(id, file);
         *self.active_file_id.write() = Some(id);
+        self.reset_playback_for_file(Some(id));
+        self.set_playing(false);
         id
     }
 
@@ -157,6 +220,8 @@ impl AppState {
         self.files.write().remove(&id);
         if *self.active_file_id.read() == Some(id) {
             *self.active_file_id.write() = None;
+            self.reset_playback_for_file(None);
+            self.set_playing(false);
         }
     }
 
@@ -169,7 +234,12 @@ impl AppState {
     }
 
     pub fn set_active_file(&self, id: FileId) {
-        *self.active_file_id.write() = Some(id);
+        let mut active = self.active_file_id.write();
+        if *active != Some(id) {
+            *active = Some(id);
+            self.reset_playback_for_file(Some(id));
+            self.set_playing(false);
+        }
     }
 
     pub fn get_active_file_id(&self) -> Option<FileId> {
@@ -273,6 +343,10 @@ impl AppState {
         *self.playhead_ms.write() = clamped;
     }
 
+    pub fn set_playhead_ms_unclamped(&self, value: f64) {
+        *self.playhead_ms.write() = value.max(0.0);
+    }
+
     pub fn duration_ms(&self) -> f64 {
         *self.duration_ms.read()
     }
@@ -288,6 +362,189 @@ impl AppState {
     pub fn toggle_playing(&self) {
         let mut guard = self.playing.write();
         *guard = !*guard;
+    }
+
+    pub fn set_playing(&self, value: bool) {
+        *self.playing.write() = value;
+    }
+
+    pub fn start_playback_session(&self) -> Option<PlaybackSession> {
+        let file = self.get_active_file()?;
+        let mut playback = self.playback.write();
+        if playback.decoding && playback.active_file_id == Some(file.id) {
+            return None;
+        }
+        playback.session_id = playback.session_id.wrapping_add(1);
+        playback.active_file_id = Some(file.id);
+        playback.decoding = true;
+        playback.loading = true;
+        playback.total_frames = None;
+        playback.decoded_frames = 0;
+        playback.buffer.clear();
+        playback.buffer_start_ms = None;
+        playback.buffer_end_ms = None;
+        playback.current_frame = None;
+        playback.error = None;
+        let session_id = playback.session_id;
+        drop(playback);
+        self.set_playhead_ms(0.0);
+        self.set_duration_ms(1.0);
+        self.set_error_message(None);
+        Some(PlaybackSession {
+            session_id,
+            file_id: file.id,
+            path: file.path.clone(),
+        })
+    }
+
+    pub fn reset_playback_for_file(&self, file_id: Option<FileId>) {
+        let mut playback = self.playback.write();
+        playback.session_id = playback.session_id.wrapping_add(1);
+        playback.active_file_id = file_id;
+        playback.decoding = false;
+        playback.loading = false;
+        playback.total_frames = None;
+        playback.decoded_frames = 0;
+        playback.buffer.clear();
+        playback.buffer_start_ms = None;
+        playback.buffer_end_ms = None;
+        playback.current_frame = None;
+        playback.error = None;
+        drop(playback);
+        self.set_playhead_ms(0.0);
+        self.set_duration_ms(1.0);
+    }
+
+    pub fn mark_playback_finished(&self, session_id: u64) {
+        let mut playback = self.playback.write();
+        if playback.session_id != session_id {
+            return;
+        }
+        playback.decoding = false;
+        playback.loading = false;
+    }
+
+    pub fn set_playback_total_frames(&self, session_id: u64, total: Option<u64>) {
+        let mut playback = self.playback.write();
+        if playback.session_id != session_id {
+            return;
+        }
+        playback.total_frames = total;
+    }
+
+    pub fn push_playback_frame(&self, session_id: u64, frame: PlaybackFrame) -> bool {
+        let mut playback = self.playback.write();
+        if playback.session_id != session_id {
+            return false;
+        }
+        playback.decoded_frames = playback.decoded_frames.saturating_add(1);
+        playback.loading = false;
+        if playback.buffer.len() >= PLAYBACK_BUFFER_CAPACITY {
+            playback.buffer.pop_front();
+        }
+        playback.buffer.push_back(frame);
+        playback.buffer_start_ms = playback.buffer.front().map(|frame| frame.timestamp_ms);
+        playback.buffer_end_ms = playback.buffer.back().map(|frame| frame.timestamp_ms);
+        true
+    }
+
+    pub fn advance_playback(&self) -> bool {
+        let playhead = self.playhead_ms();
+        let mut playback = self.playback.write();
+        let mut updated = false;
+        while let Some(front) = playback.buffer.front() {
+            if front.timestamp_ms <= playhead {
+                playback.current_frame = playback.buffer.pop_front();
+                updated = true;
+            } else {
+                break;
+            }
+        }
+        if updated {
+            if let Some(front) = playback.buffer.front() {
+                playback.buffer_start_ms = Some(front.timestamp_ms);
+                playback.buffer_end_ms = playback.buffer.back().map(|frame| frame.timestamp_ms);
+            } else {
+                playback.buffer_start_ms = None;
+                playback.buffer_end_ms = None;
+            }
+        }
+        updated
+    }
+
+    pub fn playback_session_id(&self) -> u64 {
+        self.playback.read().session_id
+    }
+
+    pub fn playback_active_file_id(&self) -> Option<FileId> {
+        self.playback.read().active_file_id
+    }
+
+    pub fn playback_is_decoding(&self) -> bool {
+        self.playback.read().decoding
+    }
+
+    pub fn playback_is_loading(&self) -> bool {
+        self.playback.read().loading
+    }
+
+    pub fn playback_total_frames(&self) -> Option<u64> {
+        self.playback.read().total_frames
+    }
+
+    pub fn playback_decoded_frames(&self) -> u64 {
+        self.playback.read().decoded_frames
+    }
+
+    pub fn playback_buffer_len(&self) -> usize {
+        self.playback.read().buffer.len()
+    }
+
+    pub fn playback_current_image(&self) -> Option<Arc<RenderImage>> {
+        self.playback
+            .read()
+            .current_frame
+            .as_ref()
+            .map(|frame| frame.image.clone())
+    }
+
+    pub fn playback_current_frame_index(&self) -> Option<u64> {
+        self.playback
+            .read()
+            .current_frame
+            .as_ref()
+            .and_then(|frame| frame.frame_index)
+    }
+
+    pub fn playback_buffer_range(&self) -> Option<(f64, f64)> {
+        let playback = self.playback.read();
+        let current = playback
+            .current_frame
+            .as_ref()
+            .map(|frame| frame.timestamp_ms);
+        let start = playback.buffer_start_ms.or(current);
+        let end = playback
+            .buffer_end_ms
+            .or(current)
+            .or(playback.buffer.back().map(|frame| frame.timestamp_ms));
+        match (start, end) {
+            (Some(start), Some(end)) => Some((start, end)),
+            _ => None,
+        }
+    }
+
+    pub fn playback_error(&self) -> Option<String> {
+        self.playback.read().error.clone()
+    }
+
+    pub fn set_playback_error(&self, session_id: u64, error: Option<String>) {
+        let mut playback = self.playback.write();
+        if playback.session_id != session_id {
+            return;
+        }
+        playback.error = error;
+        playback.decoding = false;
+        playback.loading = false;
     }
 
     pub fn left_sidebar_panel_state(&self) -> AnimatedPanelState {
