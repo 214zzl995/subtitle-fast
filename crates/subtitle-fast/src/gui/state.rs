@@ -2,7 +2,6 @@ use gpui::WindowAppearance;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use crate::backend::ExecutionPlan;
 use crate::gui::components::AnimatedPanelState;
@@ -111,8 +110,8 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
+    pub fn new() -> Self {
+        Self {
             files: RwLock::new(HashMap::new()),
             active_file_id: RwLock::new(None),
             next_file_id: RwLock::new(1),
@@ -135,7 +134,7 @@ impl AppState {
             resize_start_x: RwLock::new(0.0),
             resize_start_width: RwLock::new(0.0),
             current_theme: RwLock::new(AppTheme::dark()),
-        })
+        }
     }
 
     pub fn add_file(&self, path: PathBuf) -> FileId {

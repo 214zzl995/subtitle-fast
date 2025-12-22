@@ -4,24 +4,32 @@ use crate::gui::theme::AppTheme;
 use gpui::prelude::*;
 use gpui::*;
 use gpui::{InteractiveElement, MouseButton};
-use std::sync::Arc;
 
 pub struct Sidebar {
-    state: Arc<AppState>,
+    state: Entity<AppState>,
     theme: AppTheme,
+    state_subscription: Option<Subscription>,
 }
 
 impl Sidebar {
-    pub fn new(state: Arc<AppState>, theme: AppTheme) -> Self {
-        Self { state, theme }
+    pub fn new(state: Entity<AppState>) -> Self {
+        Self {
+            state,
+            theme: AppTheme::dark(),
+            state_subscription: None,
+        }
     }
 }
 
 impl Render for Sidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let files = self.state.get_files();
+        self.ensure_state_subscription(cx);
+        let state = self.state.read(cx);
+        self.theme = state.get_theme();
+
+        let files = state.get_files();
         let is_empty = files.is_empty();
-        let active_id = self.state.get_active_file_id();
+        let active_id = state.get_active_file_id();
 
         div()
             .flex()
@@ -83,12 +91,24 @@ impl Render for Sidebar {
 }
 
 impl Sidebar {
+    fn ensure_state_subscription(&mut self, cx: &mut Context<Self>) {
+        if self.state_subscription.is_some() {
+            return;
+        }
+
+        let state = self.state.clone();
+        self.state_subscription = Some(cx.observe(&state, |_, _, cx| {
+            cx.notify();
+        }));
+    }
+
     fn render_file_item(
         &self,
         file: TrackedFile,
         active_id: Option<crate::gui::state::FileId>,
         cx: &mut Context<Self>,
     ) -> Div {
+        let state = self.state.clone();
         let is_active = active_id == Some(file.id);
         let file_name = file
             .path
@@ -99,6 +119,7 @@ impl Sidebar {
 
         let progress = file.progress;
         let status = file.status;
+        let file_id = file.id;
         let file_icon = if is_active {
             Icon::PlaySquare
         } else {
@@ -177,9 +198,11 @@ impl Sidebar {
             )
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.state.set_active_file(file.id);
-                    cx.notify();
+                cx.listener(move |_, _, _, cx| {
+                    state.update(cx, |state, cx| {
+                        state.set_active_file(file_id);
+                        cx.notify();
+                    });
                 }),
             )
     }

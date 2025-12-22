@@ -4,22 +4,30 @@ use crate::gui::theme::AppTheme;
 use gpui::InteractiveElement;
 use gpui::prelude::*;
 use gpui::*;
-use std::sync::Arc;
 
 pub struct SubtitleList {
-    state: Arc<AppState>,
+    state: Entity<AppState>,
     theme: AppTheme,
+    state_subscription: Option<Subscription>,
 }
 
 impl SubtitleList {
-    pub fn new(state: Arc<AppState>, theme: AppTheme) -> Self {
-        Self { state, theme }
+    pub fn new(state: Entity<AppState>) -> Self {
+        Self {
+            state,
+            theme: AppTheme::dark(),
+            state_subscription: None,
+        }
     }
 }
 
 impl Render for SubtitleList {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let subtitles = self.state.get_subtitles();
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_state_subscription(cx);
+        let state = self.state.read(cx);
+        self.theme = state.get_theme();
+
+        let subtitles = state.get_subtitles();
 
         div()
             .flex()
@@ -83,6 +91,17 @@ impl Render for SubtitleList {
 }
 
 impl SubtitleList {
+    fn ensure_state_subscription(&mut self, cx: &mut Context<Self>) {
+        if self.state_subscription.is_some() {
+            return;
+        }
+
+        let state = self.state.clone();
+        self.state_subscription = Some(cx.observe(&state, |_, _, cx| {
+            cx.notify();
+        }));
+    }
+
     fn render_subtitle_item(&self, cue: crate::gui::state::SubtitleCue) -> Div {
         div()
             .flex()

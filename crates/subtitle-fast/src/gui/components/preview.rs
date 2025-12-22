@@ -4,25 +4,33 @@ use crate::gui::theme::AppTheme;
 use gpui::prelude::*;
 use gpui::*;
 use gpui::{InteractiveElement, MouseButton};
-use std::sync::Arc;
 
 pub struct PreviewPanel {
-    state: Arc<AppState>,
+    state: Entity<AppState>,
     theme: AppTheme,
+    state_subscription: Option<Subscription>,
 }
 
 impl PreviewPanel {
-    pub fn new(state: Arc<AppState>, theme: AppTheme) -> Self {
-        Self { state, theme }
+    pub fn new(state: Entity<AppState>) -> Self {
+        Self {
+            state,
+            theme: AppTheme::dark(),
+            state_subscription: None,
+        }
     }
 }
 
 impl Render for PreviewPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let file = self.state.get_active_file();
-        let roi = self.state.get_roi();
-        let selection_visible = self.state.selection_visible();
-        let highlight_enabled = self.state.highlight_enabled();
+        self.ensure_state_subscription(cx);
+        let state = self.state.read(cx);
+        self.theme = state.get_theme();
+
+        let file = state.get_active_file();
+        let roi = state.get_roi();
+        let selection_visible = state.selection_visible();
+        let highlight_enabled = state.highlight_enabled();
 
         div()
             .flex()
@@ -121,6 +129,17 @@ impl Render for PreviewPanel {
 }
 
 impl PreviewPanel {
+    fn ensure_state_subscription(&mut self, cx: &mut Context<Self>) {
+        if self.state_subscription.is_some() {
+            return;
+        }
+
+        let state = self.state.clone();
+        self.state_subscription = Some(cx.observe(&state, |_, _, cx| {
+            cx.notify();
+        }));
+    }
+
     fn icon_toggle(
         &self,
         cx: &mut Context<Self>,
@@ -128,6 +147,7 @@ impl PreviewPanel {
         active: bool,
         toggle: impl Fn(&AppState) + 'static,
     ) -> Div {
+        let state = self.state.clone();
         div()
             .flex()
             .items_center()
@@ -152,9 +172,11 @@ impl PreviewPanel {
             ))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    toggle(&this.state);
-                    cx.notify();
+                cx.listener(move |_, _, _, cx| {
+                    state.update(cx, |state, cx| {
+                        toggle(state);
+                        cx.notify();
+                    });
                 }),
             )
     }

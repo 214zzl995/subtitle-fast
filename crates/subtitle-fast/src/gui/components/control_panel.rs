@@ -4,36 +4,41 @@ use crate::gui::theme::AppTheme;
 use gpui::prelude::*;
 use gpui::*;
 use gpui::{InteractiveElement, MouseButton};
-use std::sync::Arc;
 
 pub struct ControlPanel {
-    state: Arc<AppState>,
+    state: Entity<AppState>,
     theme: AppTheme,
+    state_subscription: Option<Subscription>,
 }
 
 impl ControlPanel {
-    pub fn new(state: Arc<AppState>, theme: AppTheme) -> Self {
-        Self { state, theme }
+    pub fn new(state: Entity<AppState>) -> Self {
+        Self {
+            state,
+            theme: AppTheme::dark(),
+            state_subscription: None,
+        }
     }
 }
 
 impl Render for ControlPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let threshold = self.state.get_threshold();
-        let tolerance = self.state.get_tolerance();
-        let roi = self
-            .state
-            .get_roi()
-            .unwrap_or(crate::gui::state::RoiSelection {
-                x: 0.15,
-                y: 0.75,
-                width: 0.70,
-                height: 0.25,
-            });
-        let playhead = self.state.playhead_ms();
-        let duration = self.state.duration_ms();
-        let playing = self.state.is_playing();
-        let highlight = self.state.highlight_enabled();
+        self.ensure_state_subscription(cx);
+        let state = self.state.read(cx);
+        self.theme = state.get_theme();
+
+        let threshold = state.get_threshold();
+        let tolerance = state.get_tolerance();
+        let roi = state.get_roi().unwrap_or(crate::gui::state::RoiSelection {
+            x: 0.15,
+            y: 0.75,
+            width: 0.70,
+            height: 0.25,
+        });
+        let playhead = state.playhead_ms();
+        let duration = state.duration_ms();
+        let playing = state.is_playing();
+        let highlight = state.highlight_enabled();
 
         div()
             .flex()
@@ -71,6 +76,17 @@ impl Render for ControlPanel {
 }
 
 impl ControlPanel {
+    fn ensure_state_subscription(&mut self, cx: &mut Context<Self>) {
+        if self.state_subscription.is_some() {
+            return;
+        }
+
+        let state = self.state.clone();
+        self.state_subscription = Some(cx.observe(&state, |_, _, cx| {
+            cx.notify();
+        }));
+    }
+
     fn render_playback_bar(
         &self,
         cx: &mut Context<Self>,
@@ -78,6 +94,7 @@ impl ControlPanel {
         duration: f64,
         playing: bool,
     ) -> Div {
+        let state = self.state.clone();
         let progress = if duration > 0.0 {
             (playhead / duration).clamp(0.0, 1.0)
         } else {
@@ -120,9 +137,11 @@ impl ControlPanel {
                             ))
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.state.toggle_playing();
-                                    cx.notify();
+                                cx.listener(move |_, _, _, cx| {
+                                    state.update(cx, |state, cx| {
+                                        state.toggle_playing();
+                                        cx.notify();
+                                    });
                                 }),
                             ),
                     )
@@ -163,7 +182,7 @@ impl ControlPanel {
     }
 
     fn render_progress_bar(&self, cx: &mut Context<Self>, progress: f64, _duration: f64) -> Div {
-        let _state = Arc::clone(&self.state);
+        let state = self.state.clone();
 
         div()
             .relative()
@@ -172,11 +191,13 @@ impl ControlPanel {
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+                cx.listener(move |_, _event: &MouseDownEvent, _window, cx| {
                     let click_ratio = 0.5;
-                    let new_time = click_ratio * this.state.duration_ms();
-                    this.state.set_playhead_ms(new_time);
-                    cx.notify();
+                    state.update(cx, |state, cx| {
+                        let new_time = click_ratio * state.duration_ms();
+                        state.set_playhead_ms(new_time);
+                        cx.notify();
+                    });
                 }),
             )
             .child(
@@ -217,6 +238,7 @@ impl ControlPanel {
     }
 
     fn jump_button(&self, cx: &mut Context<Self>, label: &str, delta_ms: f64) -> Div {
+        let state = self.state.clone();
         div()
             .px(px(8.0))
             .py(px(3.0))
@@ -231,10 +253,12 @@ impl ControlPanel {
             .child(label.to_string())
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    let current = this.state.playhead_ms();
-                    this.state.set_playhead_ms(current + delta_ms);
-                    cx.notify();
+                cx.listener(move |_, _, _, cx| {
+                    state.update(cx, |state, cx| {
+                        let current = state.playhead_ms();
+                        state.set_playhead_ms(current + delta_ms);
+                        cx.notify();
+                    });
                 }),
             )
     }
@@ -306,6 +330,7 @@ impl ControlPanel {
         active: bool,
         toggle: impl Fn(&AppState) + 'static,
     ) -> Div {
+        let state = self.state.clone();
         let icon_color = if active {
             self.theme.accent()
         } else {
@@ -331,9 +356,11 @@ impl ControlPanel {
             )
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    toggle(&this.state);
-                    cx.notify();
+                cx.listener(move |_, _, _, cx| {
+                    state.update(cx, |state, cx| {
+                        toggle(state);
+                        cx.notify();
+                    });
                 }),
             )
     }

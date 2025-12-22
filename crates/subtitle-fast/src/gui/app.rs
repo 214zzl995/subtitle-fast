@@ -1,6 +1,5 @@
 use gpui::prelude::*;
 use gpui::*;
-use std::sync::Arc;
 
 use crate::gui::components::*;
 use crate::gui::icons::{Icon, icon_sm};
@@ -26,12 +25,12 @@ fn macos_titlebar_collapsed_width() -> f32 {
 }
 
 pub struct SubtitleFastApp {
-    state: Arc<AppState>,
+    state: Entity<AppState>,
 }
 
 impl SubtitleFastApp {
-    pub fn new(_cx: &mut App) -> Self {
-        let state = AppState::new();
+    pub fn new(cx: &mut App) -> Self {
+        let state = cx.new(|_| AppState::new());
         Self { state }
     }
 
@@ -53,7 +52,7 @@ impl SubtitleFastApp {
                     window_min_size: Some(size(px(1150.0), px(720.0))),
                     ..Default::default()
                 },
-                |_, cx| cx.new(|_| MainWindow::new(Arc::clone(&self.state))),
+                |_, cx| cx.new(|_| MainWindow::new(self.state.clone())),
             )
             .unwrap();
 
@@ -62,15 +61,25 @@ impl SubtitleFastApp {
 }
 
 pub struct MainWindow {
-    state: Arc<AppState>,
+    state: Entity<AppState>,
     appearance_subscription: Option<Subscription>,
+    sidebar: Option<Entity<Sidebar>>,
+    preview: Option<Entity<PreviewPanel>>,
+    control_panel: Option<Entity<ControlPanel>>,
+    status_panel: Option<Entity<StatusPanel>>,
+    subtitle_list: Option<Entity<SubtitleList>>,
 }
 
 impl MainWindow {
-    pub fn new(state: Arc<AppState>) -> Self {
+    pub fn new(state: Entity<AppState>) -> Self {
         Self {
             state,
             appearance_subscription: None,
+            sidebar: None,
+            preview: None,
+            control_panel: None,
+            status_panel: None,
+            subtitle_list: None,
         }
     }
 }
@@ -78,12 +87,32 @@ impl MainWindow {
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_theme_listener(window, cx);
+        self.ensure_children(cx);
 
-        let theme = self.state.get_theme();
-
-        let sidebar_panel_state = self.state.left_sidebar_panel_state();
-        let sidebar_collapsed = sidebar_panel_state.is_collapsed();
-        let max_width = self.state.left_sidebar_width();
+        let (
+            theme,
+            sidebar_panel_state,
+            sidebar_collapsed,
+            max_width,
+            right_sidebar_width,
+            is_resizing,
+        ) = {
+            let state = self.state.read(cx);
+            let theme = state.get_theme();
+            let sidebar_panel_state = state.left_sidebar_panel_state();
+            let sidebar_collapsed = sidebar_panel_state.is_collapsed();
+            let max_width = state.left_sidebar_width();
+            let right_sidebar_width = state.right_sidebar_width();
+            let is_resizing = state.is_resizing();
+            (
+                theme,
+                sidebar_panel_state,
+                sidebar_collapsed,
+                max_width,
+                right_sidebar_width,
+                is_resizing,
+            )
+        };
         let animation_duration = std::time::Duration::from_millis(200);
         let titlebar_height = if cfg!(target_os = "macos") {
             px(MACOS_TITLEBAR_HEIGHT)
@@ -100,11 +129,15 @@ impl Render for MainWindow {
             .with_collapsed_width(0.0)
             .with_duration(animation_duration);
 
-        let sidebar = cx.new(|_| Sidebar::new(Arc::clone(&self.state), theme));
-        let preview = cx.new(|_| PreviewPanel::new(Arc::clone(&self.state), theme));
-        let control_panel = cx.new(|_| ControlPanel::new(Arc::clone(&self.state), theme));
-        let status_panel = cx.new(|_| StatusPanel::new(Arc::clone(&self.state), theme));
-        let subtitle_list = cx.new(|_| SubtitleList::new(Arc::clone(&self.state), theme));
+        let full_size_style = StyleRefinement::default().w_full().h_full();
+        let sidebar =
+            AnyView::from(self.sidebar.as_ref().unwrap().clone()).cached(full_size_style.clone());
+        let preview =
+            AnyView::from(self.preview.as_ref().unwrap().clone()).cached(full_size_style.clone());
+        let control_panel = AnyView::from(self.control_panel.as_ref().unwrap().clone());
+        let status_panel = AnyView::from(self.status_panel.as_ref().unwrap().clone());
+        let subtitle_list =
+            AnyView::from(self.subtitle_list.as_ref().unwrap().clone()).cached(full_size_style);
 
         div()
             .relative()
@@ -113,19 +146,34 @@ impl Render for MainWindow {
             .w_full()
             .h_full()
             .bg(theme.background())
-            .when(self.state.is_resizing(), |d| {
-                d.cursor(CursorStyle::ResizeLeftRight)
-            })
+            .when(is_resizing, |d| d.cursor(CursorStyle::ResizeLeftRight))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                if this.state.update_resize(f32::from(event.position.x)) {
+                let mouse_x = f32::from(event.position.x);
+                let state = this.state.clone();
+                let changed = state.update(cx, |state, state_cx| {
+                    if state.update_resize(mouse_x) {
+                        state_cx.notify();
+                        return true;
+                    }
+                    false
+                });
+                if changed {
                     cx.notify();
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    if this.state.is_resizing() {
-                        this.state.finish_resize();
+                    let state = this.state.clone();
+                    let changed = state.update(cx, |state, state_cx| {
+                        if state.is_resizing() {
+                            state.finish_resize();
+                            state_cx.notify();
+                            return true;
+                        }
+                        false
+                    });
+                    if changed {
                         cx.notify();
                     }
                 }),
@@ -210,7 +258,7 @@ impl Render for MainWindow {
                                     .relative()
                                     .flex()
                                     .flex_col()
-                                    .w(px(self.state.right_sidebar_width()))
+                                    .w(px(right_sidebar_width))
                                     .h_full()
                                     .gap(px(1.0))
                                     .child(self.render_resize_handle_right(theme, cx))
@@ -237,16 +285,59 @@ impl MainWindow {
             return;
         }
 
-        self.state
-            .update_theme_from_window_appearance(window.appearance());
+        let appearance = window.appearance();
+        let state = self.state.clone();
+        let changed = state.update(cx, |state, state_cx| {
+            if state.update_theme_from_window_appearance(appearance) {
+                state_cx.notify();
+                return true;
+            }
+            false
+        });
+        if changed {
+            cx.notify();
+        }
 
-        let state = Arc::clone(&self.state);
+        let this = cx.weak_entity();
         self.appearance_subscription =
             Some(cx.observe_window_appearance(window, move |_, window, cx| {
-                if state.update_theme_from_window_appearance(window.appearance()) {
-                    cx.notify();
+                let appearance = window.appearance();
+                let updated = state.update(cx, |state, state_cx| {
+                    if state.update_theme_from_window_appearance(appearance) {
+                        state_cx.notify();
+                        return true;
+                    }
+                    false
+                });
+                if updated {
+                    let _ = this.update(cx, |_, cx| {
+                        cx.notify();
+                    });
                 }
             }));
+    }
+
+    fn ensure_children(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar.is_none() {
+            let state = self.state.clone();
+            self.sidebar = Some(cx.new(|_| Sidebar::new(state)));
+        }
+        if self.preview.is_none() {
+            let state = self.state.clone();
+            self.preview = Some(cx.new(|_| PreviewPanel::new(state)));
+        }
+        if self.control_panel.is_none() {
+            let state = self.state.clone();
+            self.control_panel = Some(cx.new(|_| ControlPanel::new(state)));
+        }
+        if self.status_panel.is_none() {
+            let state = self.state.clone();
+            self.status_panel = Some(cx.new(|_| StatusPanel::new(state)));
+        }
+        if self.subtitle_list.is_none() {
+            let state = self.state.clone();
+            self.subtitle_list = Some(cx.new(|_| SubtitleList::new(state)));
+        }
     }
 
     fn render_sidebar_titlebar(&self, theme: AppTheme, titlebar_height: Pixels) -> Div {
@@ -537,7 +628,11 @@ impl MainWindow {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    this.state.toggle_sidebar();
+                    let state = this.state.clone();
+                    state.update(cx, |state, state_cx| {
+                        state.toggle_sidebar();
+                        state_cx.notify();
+                    });
                     cx.notify();
                 }),
             )
@@ -576,20 +671,26 @@ impl MainWindow {
                             match result {
                                 Ok(Some(paths)) => {
                                     let _ = this.update(&mut async_app, |this, cx| {
-                                        for path in paths {
-                                            this.state.add_file(path);
-                                        }
-                                        this.state.set_error_message(None);
-                                        cx.notify();
+                                        let state = this.state.clone();
+                                        state.update(cx, |state, cx| {
+                                            for path in paths {
+                                                state.add_file(path);
+                                            }
+                                            state.set_error_message(None);
+                                            cx.notify();
+                                        });
                                     });
                                 }
                                 Ok(None) => {}
                                 Err(err) => {
                                     let _ = this.update(&mut async_app, |this, cx| {
-                                        this.state.set_error_message(Some(format!(
-                                            "Failed to open file picker: {err}"
-                                        )));
-                                        cx.notify();
+                                        let state = this.state.clone();
+                                        state.update(cx, |state, cx| {
+                                            state.set_error_message(Some(format!(
+                                                "Failed to open file picker: {err}"
+                                            )));
+                                            cx.notify();
+                                        });
                                     });
                                 }
                             }
@@ -601,7 +702,7 @@ impl MainWindow {
     }
 
     fn render_resize_handle_left(&self, theme: AppTheme, cx: &mut Context<Self>) -> Div {
-        let is_resizing = self.state.is_resizing_left();
+        let is_resizing = self.state.read(cx).is_resizing_left();
 
         div()
             .absolute()
@@ -617,14 +718,19 @@ impl MainWindow {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    this.state.start_resize_left(f32::from(event.position.x));
+                    let mouse_x = f32::from(event.position.x);
+                    let state = this.state.clone();
+                    state.update(cx, |state, state_cx| {
+                        state.start_resize_left(mouse_x);
+                        state_cx.notify();
+                    });
                     cx.notify();
                 }),
             )
     }
 
     fn render_resize_handle_right(&self, theme: AppTheme, cx: &mut Context<Self>) -> Div {
-        let is_resizing = self.state.is_resizing_right();
+        let is_resizing = self.state.read(cx).is_resizing_right();
 
         div()
             .absolute()
@@ -640,7 +746,12 @@ impl MainWindow {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    this.state.start_resize_right(f32::from(event.position.x));
+                    let mouse_x = f32::from(event.position.x);
+                    let state = this.state.clone();
+                    state.update(cx, |state, state_cx| {
+                        state.start_resize_right(mouse_x);
+                        state_cx.notify();
+                    });
                     cx.notify();
                 }),
             )

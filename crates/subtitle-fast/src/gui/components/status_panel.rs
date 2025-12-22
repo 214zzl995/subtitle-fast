@@ -5,24 +5,32 @@ use gpui::prelude::*;
 use gpui::*;
 use gpui::{InteractiveElement, MouseButton};
 use gpui_component::Icon as IconComponent;
-use std::sync::Arc;
 
 pub struct StatusPanel {
-    state: Arc<AppState>,
+    state: Entity<AppState>,
     theme: AppTheme,
+    state_subscription: Option<Subscription>,
 }
 
 impl StatusPanel {
-    pub fn new(state: Arc<AppState>, theme: AppTheme) -> Self {
-        Self { state, theme }
+    pub fn new(state: Entity<AppState>) -> Self {
+        Self {
+            state,
+            theme: AppTheme::dark(),
+            state_subscription: None,
+        }
     }
 }
 
 impl Render for StatusPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let metrics = self.state.get_metrics();
-        let active_file = self.state.get_active_file();
-        let error = self.state.get_error_message();
+        self.ensure_state_subscription(cx);
+        let state = self.state.read(cx);
+        self.theme = state.get_theme();
+
+        let metrics = state.get_metrics();
+        let active_file = state.get_active_file();
+        let error = state.get_error_message();
 
         let status = active_file
             .as_ref()
@@ -147,6 +155,17 @@ impl Render for StatusPanel {
 }
 
 impl StatusPanel {
+    fn ensure_state_subscription(&mut self, cx: &mut Context<Self>) {
+        if self.state_subscription.is_some() {
+            return;
+        }
+
+        let state = self.state.clone();
+        self.state_subscription = Some(cx.observe(&state, |_, _, cx| {
+            cx.notify();
+        }));
+    }
+
     fn metric_row(&self, icon: Icon, label: &str, value: String, unit: Option<&str>) -> Div {
         let text_size = px(9.0);
 
@@ -195,6 +214,7 @@ impl StatusPanel {
     }
 
     fn render_action_buttons(&self, cx: &mut Context<Self>, status: FileStatus) -> Div {
+        let state = self.state.clone();
         let is_running = matches!(status, FileStatus::Detecting | FileStatus::Paused);
 
         let primary_label = match status {
@@ -209,32 +229,36 @@ impl StatusPanel {
             _ => Icon::Play,
         };
 
-        let primary_action = cx.listener(|this, _, _, cx| {
-            if let Some(file) = this.state.get_active_file() {
-                let new_status = match file.status {
-                    FileStatus::Detecting => FileStatus::Paused,
-                    FileStatus::Paused => FileStatus::Detecting,
-                    _ => FileStatus::Detecting,
-                };
-                this.state.update_file_status(file.id, new_status);
-                this.state
-                    .update_file_progress(file.id, (file.progress + 0.05).min(1.0));
-                this.state.set_error_message(None);
-            } else {
-                this.state.set_error_message(Some(
-                    "Please select a video before starting detection".to_string(),
-                ));
-            }
-            cx.notify();
+        let primary_action = cx.listener(move |_, _, _, cx| {
+            state.update(cx, |state, cx| {
+                if let Some(file) = state.get_active_file() {
+                    let new_status = match file.status {
+                        FileStatus::Detecting => FileStatus::Paused,
+                        FileStatus::Paused => FileStatus::Detecting,
+                        _ => FileStatus::Detecting,
+                    };
+                    state.update_file_status(file.id, new_status);
+                    state.update_file_progress(file.id, (file.progress + 0.05).min(1.0));
+                    state.set_error_message(None);
+                } else {
+                    state.set_error_message(Some(
+                        "Please select a video before starting detection".to_string(),
+                    ));
+                }
+                cx.notify();
+            });
         });
 
-        let cancel_action = cx.listener(|this, _, _, cx| {
-            if let Some(file) = this.state.get_active_file() {
-                this.state.update_file_status(file.id, FileStatus::Idle);
-                this.state.update_file_progress(file.id, 0.0);
-                this.state.set_error_message(None);
-            }
-            cx.notify();
+        let state = self.state.clone();
+        let cancel_action = cx.listener(move |_, _, _, cx| {
+            state.update(cx, |state, cx| {
+                if let Some(file) = state.get_active_file() {
+                    state.update_file_status(file.id, FileStatus::Idle);
+                    state.update_file_progress(file.id, 0.0);
+                    state.set_error_message(None);
+                }
+                cx.notify();
+            });
         });
 
         div()
