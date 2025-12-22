@@ -70,6 +70,7 @@ pub struct MainWindow {
     status_panel: Option<Entity<StatusPanel>>,
     subtitle_list: Option<Entity<SubtitleList>>,
     playback_loop_started: bool,
+    last_active_file_id: Option<crate::gui::state::FileId>,
 }
 
 impl MainWindow {
@@ -83,6 +84,7 @@ impl MainWindow {
             status_panel: None,
             subtitle_list: None,
             playback_loop_started: false,
+            last_active_file_id: None,
         }
     }
 }
@@ -92,6 +94,18 @@ impl Render for MainWindow {
         self.ensure_theme_listener(window, cx);
         self.ensure_children(cx);
         self.ensure_playback_loop(cx);
+
+        let current_active_file_id = self.state.read(cx).get_active_file_id();
+        if self.last_active_file_id != current_active_file_id {
+            self.last_active_file_id = current_active_file_id;
+            if current_active_file_id.is_some() {
+                if let Some(control_panel) = &self.control_panel {
+                    control_panel.update(cx, |panel, cx| {
+                        panel.init_decoder(cx);
+                    });
+                }
+            }
+        }
 
         let (
             theme,
@@ -726,6 +740,11 @@ impl MainWindow {
                                             state.set_error_message(None);
                                             cx.notify();
                                         });
+                                        if let Some(control_panel) = &this.control_panel {
+                                            control_panel.update(cx, |panel, cx| {
+                                                panel.init_decoder(cx);
+                                            });
+                                        }
                                     });
                                 }
                                 Ok(None) => {}

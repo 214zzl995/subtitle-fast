@@ -211,8 +211,6 @@ impl AppState {
 
         self.files.write().insert(id, file);
         *self.active_file_id.write() = Some(id);
-        self.reset_playback_for_file(Some(id));
-        self.set_playing(false);
         id
     }
 
@@ -233,12 +231,13 @@ impl AppState {
         self.files.read().get(&id).cloned()
     }
 
-    pub fn set_active_file(&self, id: FileId) {
+    pub fn set_active_file(&self, id: FileId) -> bool {
         let mut active = self.active_file_id.write();
         if *active != Some(id) {
             *active = Some(id);
-            self.reset_playback_for_file(Some(id));
-            self.set_playing(false);
+            true
+        } else {
+            false
         }
     }
 
@@ -369,6 +368,35 @@ impl AppState {
     }
 
     pub fn start_playback_session(&self) -> Option<PlaybackSession> {
+        let file = self.get_active_file()?;
+        let mut playback = self.playback.write();
+        if playback.decoding && playback.active_file_id == Some(file.id) {
+            return None;
+        }
+        playback.session_id = playback.session_id.wrapping_add(1);
+        playback.active_file_id = Some(file.id);
+        playback.decoding = true;
+        playback.loading = true;
+        playback.total_frames = None;
+        playback.decoded_frames = 0;
+        playback.buffer.clear();
+        playback.buffer_start_ms = None;
+        playback.buffer_end_ms = None;
+        playback.current_frame = None;
+        playback.error = None;
+        let session_id = playback.session_id;
+        drop(playback);
+        self.set_playhead_ms(0.0);
+        self.set_duration_ms(1.0);
+        self.set_error_message(None);
+        Some(PlaybackSession {
+            session_id,
+            file_id: file.id,
+            path: file.path.clone(),
+        })
+    }
+
+    pub fn init_playback_for_file(&self) -> Option<PlaybackSession> {
         let file = self.get_active_file()?;
         let mut playback = self.playback.write();
         if playback.decoding && playback.active_file_id == Some(file.id) {

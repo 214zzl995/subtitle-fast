@@ -256,6 +256,19 @@ impl ControlPanel {
         }
     }
 
+    pub fn init_decoder(&mut self, cx: &mut Context<Self>) {
+        let state = self.state.clone();
+        let session = state.update(cx, |state, cx| {
+            let session = state.init_playback_for_file();
+            cx.notify();
+            session
+        });
+
+        if let Some(session) = session {
+            self.spawn_decoder(session, cx);
+        }
+    }
+
     fn render_selection_section(&self, cx: &mut Context<Self>, highlight_enabled: bool) -> Div {
         div()
             .flex()
