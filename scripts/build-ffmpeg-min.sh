@@ -56,16 +56,19 @@ THREAD_FLAG="--enable-pthreads"
 CONFIGURE_TOOLCHAIN=()
 EXTRA_CFLAGS_DEFAULT="-fPIC -O3"
 EXTRA_LDFLAGS_DEFAULT="-fPIC"
+EXTRA_LIBS_DEFAULT=""
 
 if [[ "${FFMPEG_TOOLCHAIN}" == "msvc" ]]; then
     THREAD_FLAG="--enable-w32threads"
     CONFIGURE_TOOLCHAIN=(--toolchain=msvc --arch="${FFMPEG_ARCH}" --target-os="${FFMPEG_TARGET_OS}")
     EXTRA_CFLAGS_DEFAULT="-O2"
     EXTRA_LDFLAGS_DEFAULT=""
+    EXTRA_LIBS_DEFAULT="-lbcrypt"
 fi
 
 EXTRA_CFLAGS="${EXTRA_CFLAGS:-${EXTRA_CFLAGS_DEFAULT}}"
 EXTRA_LDFLAGS="${EXTRA_LDFLAGS:-${EXTRA_LDFLAGS_DEFAULT}}"
+EXTRA_LIBS="${EXTRA_LIBS:-${EXTRA_LIBS_DEFAULT}}"
 
 TARBALL="${BUILD_DIR}/ffmpeg-${FFMPEG_VERSION}.tar.gz"
 SOURCE_DIR="${BUILD_DIR}/FFmpeg-n${FFMPEG_VERSION}"
@@ -127,6 +130,10 @@ CONFIGURE_ARGS=(
 
 if [[ -n "${EXTRA_LDFLAGS}" ]]; then
     CONFIGURE_ARGS+=(--extra-ldflags="${EXTRA_LDFLAGS}")
+fi
+
+if [[ -n "${EXTRA_LIBS}" ]]; then
+    CONFIGURE_ARGS+=(--extra-libs="${EXTRA_LIBS}")
 fi
 
 if [[ ${#CONFIGURE_TOOLCHAIN[@]} -gt 0 ]]; then

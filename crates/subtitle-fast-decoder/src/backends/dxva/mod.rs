@@ -130,6 +130,10 @@ mod platform {
         let mut result = CDxvaProbeResult {
             has_value: false,
             value: 0,
+            duration_seconds: 0.0,
+            fps: 0.0,
+            width: 0,
+            height: 0,
             error: ptr::null_mut(),
         };
         let ok = unsafe { dxva_probe_total_frames(c_path.as_ptr(), &mut result) };

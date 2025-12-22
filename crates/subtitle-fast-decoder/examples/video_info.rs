@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use subtitle_fast_decoder::{Backend, Configuration};
 
 const VIDEO_FILE: &str = "demo/video1_30s.mp4";
-const BACKEND: Backend = Backend::FFmpeg;
+const BACKEND: Backend = Backend::Dxva;
 
 #[tokio::main]
 async fn main() {
