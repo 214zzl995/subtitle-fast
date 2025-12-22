@@ -520,11 +520,66 @@ extern "C"
 
         UINT32 frame_rate_num = 0;
         UINT32 frame_rate_den = 0;
-        hr = MFGetAttributeRatio(
+        HRESULT fr_hr = MFGetAttributeRatio(
             media_type.Get(),
             MF_MT_FRAME_RATE,
             &frame_rate_num,
             &frame_rate_den);
+        
+        if (SUCCEEDED(fr_hr) && frame_rate_num > 0 && frame_rate_den > 0 && duration > 0)
+        {
+            UINT64 frame_duration = static_cast<UINT64>(
+                (static_cast<double>(frame_rate_den) / static_cast<double>(frame_rate_num)) * 10000000.0);
+            
+            UINT64 seek_offset = 1 * 10000000ULL;
+            if (duration > seek_offset)
+            {
+                PROPVARIANT seek_pos;
+                PropVariantInit(&seek_pos);
+                seek_pos.vt = VT_I8;
+                seek_pos.hVal.QuadPart = static_cast<LONGLONG>(duration - seek_offset);
+                
+                HRESULT seek_hr = reader->SetCurrentPosition(GUID_NULL, seek_pos);
+                PropVariantClear(&seek_pos);
+                
+                if (SUCCEEDED(seek_hr))
+                {
+                    LONGLONG last_timestamp = 0;
+                    bool found_frame = false;
+                    
+                    for (int max_reads = 0; max_reads < 2000; ++max_reads)
+                    {
+                        DWORD stream_index = 0;
+                        DWORD flags = 0;
+                        LONGLONG timestamp = 0;
+                        ComPtr<IMFSample> sample;
+                        HRESULT rd_hr = reader->ReadSample(
+                            static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),
+                            0,
+                            &stream_index,
+                            &flags,
+                            &timestamp,
+                            &sample);
+                        
+                        if (FAILED(rd_hr) || (flags & MF_SOURCE_READERF_ENDOFSTREAM))
+                        {
+                            break;
+                        }
+                        
+                        if (sample && timestamp >= 0)
+                        {
+                            last_timestamp = timestamp;
+                            found_frame = true;
+                        }
+                    }
+                    
+                    if (found_frame && last_timestamp > 0)
+                    {
+                        duration = static_cast<UINT64>(last_timestamp) + frame_duration;
+                    }
+                }
+            }
+        }
 
         if (width > 0) { result->width = width; }
         if (height > 0) { result->height = height; }
@@ -544,7 +599,7 @@ extern "C"
         }
 
         double fps = std::numeric_limits<double>::quiet_NaN();
-        if (SUCCEEDED(hr) && frame_rate_den != 0)
+        if (SUCCEEDED(fr_hr) && frame_rate_den != 0)
         {
             fps = static_cast<double>(frame_rate_num) / static_cast<double>(frame_rate_den);
             if (std::isfinite(fps) && fps > 0.0)
