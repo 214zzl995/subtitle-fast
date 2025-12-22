@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use subtitle_fast_types::PlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 #[cfg(all(feature = "detector-vision", target_os = "macos"))]
 use subtitle_fast_validator::subtitle_detection::VisionTextDetector;
 use subtitle_fast_validator::subtitle_detection::projection_band::ProjectionBandDetector;
@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 };
                 let frame =
-                    PlaneFrame::from_owned(width as u32, height as u32, width, None, data)?;
+                    YPlaneFrame::from_owned(width as u32, height as u32, width, None, data)?;
                 let mut config = SubtitleDetectionConfig::for_frame(width, height, width);
                 config.roi = RoiConfig {
                     x: 0.0,

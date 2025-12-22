@@ -8,7 +8,7 @@ use subtitle_fast_comparator::pipeline::{
     ops::percentile, ops::percentile_in_place, ops::sobel_magnitude,
     preprocess::extract_masked_patch,
 };
-use subtitle_fast_types::{PlaneFrame, RoiConfig};
+use subtitle_fast_types::{RoiConfig, YPlaneFrame};
 
 pub const DEFAULT_TARGET: u8 = 235;
 pub const DEFAULT_DELTA: u8 = 12;
@@ -83,7 +83,7 @@ pub struct FeatureDiag {
     pub sampled_points: usize,
 }
 
-pub fn load_frame(path: &Path, width: usize, height: usize) -> Result<PlaneFrame, Box<dyn Error>> {
+pub fn load_frame(path: &Path, width: usize, height: usize) -> Result<YPlaneFrame, Box<dyn Error>> {
     let data = fs::read(path)?;
     let expected = width
         .checked_mul(height)
@@ -99,7 +99,7 @@ pub fn load_frame(path: &Path, width: usize, height: usize) -> Result<PlaneFrame
         )
         .into());
     }
-    Ok(PlaneFrame::from_owned(
+    Ok(YPlaneFrame::from_owned(
         width as u32,
         height as u32,
         width,
@@ -172,7 +172,7 @@ fn normalize_region(region: &Region, frame: &FrameInfo, already_normalized: bool
 
 #[allow(dead_code)]
 pub fn mask_stats(
-    frame: &PlaneFrame,
+    frame: &YPlaneFrame,
     roi: &RoiConfig,
     settings: PreprocessSettings,
 ) -> Option<(usize, usize, f32, f32)> {
@@ -226,7 +226,7 @@ pub fn mask_stats(
 
 #[allow(dead_code)]
 pub fn debug_features(
-    frame: &PlaneFrame,
+    frame: &YPlaneFrame,
     roi: &RoiConfig,
     settings: PreprocessSettings,
 ) -> Option<FeatureDiag> {

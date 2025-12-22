@@ -9,7 +9,7 @@ decoder, receive an async stream of frames, and can switch backends when the pre
    backend to try, which input to open, and how many frames to buffer.
 2. **Instantiate a backend** – the crate exposes factory helpers that negotiate with FFmpeg, VideoToolbox, D3D11/DXVA on
    Windows, Windows Media Foundation, or a lightweight mock backend compiled for CI.
-3. **Stream frames** – once a backend is active it produces `PlaneFrame` values containing luma data, dimensions, stride,
+3. **Stream frames** – once a backend is active it produces `YPlaneFrame` values containing luma data, dimensions, stride,
    timestamps, and (when available) frame indices. Frames are delivered through an async stream that respects backpressure.
 
 If a backend fails to initialise (for example because the platform libraries are missing), callers can fall back to another

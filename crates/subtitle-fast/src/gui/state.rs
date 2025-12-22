@@ -1,4 +1,4 @@
-use gpui::{Image, WindowAppearance};
+use gpui::WindowAppearance;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,7 +10,6 @@ use crate::gui::theme::AppTheme;
 use crate::settings::EffectiveSettings;
 use crate::stage::PipelineConfig;
 use subtitle_fast_types::RoiConfig;
-use tokio::sync::mpsc::UnboundedSender;
 
 const LEFT_SIDEBAR_MIN_WIDTH: f32 = 225.0;
 const LEFT_SIDEBAR_MAX_WIDTH: f32 = 400.0;
@@ -71,19 +70,6 @@ pub struct SubtitleCue {
     pub text: String,
 }
 
-#[derive(Clone)]
-pub struct PreviewWorkerHandle {
-    pub file_id: FileId,
-    pub sender: UnboundedSender<PreviewCommand>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum PreviewCommand {
-    Play,
-    Pause,
-    SeekMs(f64),
-}
-
 #[derive(Clone, Debug)]
 pub struct RoiSelection {
     pub x: f32,
@@ -110,12 +96,6 @@ pub struct AppState {
     playhead_ms: RwLock<f64>,
     duration_ms: RwLock<f64>,
     playing: RwLock<bool>,
-
-    preview_image: RwLock<Option<Arc<Image>>>,
-    preview_frame_index: RwLock<Option<u64>>,
-    preview_total_frames: RwLock<Option<u64>>,
-    preview_aspect_ratio: RwLock<Option<f32>>,
-    preview_worker: RwLock<Option<PreviewWorkerHandle>>,
 
     left_sidebar_panel: RwLock<AnimatedPanelState>,
 
@@ -147,11 +127,6 @@ impl AppState {
             playhead_ms: RwLock::new(2000.0),
             duration_ms: RwLock::new(30000.0),
             playing: RwLock::new(false),
-            preview_image: RwLock::new(None),
-            preview_frame_index: RwLock::new(None),
-            preview_total_frames: RwLock::new(None),
-            preview_aspect_ratio: RwLock::new(None),
-            preview_worker: RwLock::new(None),
             left_sidebar_panel: RwLock::new(AnimatedPanelState::new()),
             left_sidebar_width: RwLock::new(LEFT_SIDEBAR_DEFAULT_WIDTH),
             right_sidebar_width: RwLock::new(RIGHT_SIDEBAR_DEFAULT_WIDTH),
@@ -278,9 +253,6 @@ impl AppState {
     pub fn toggle_selection_visibility(&self) {
         let mut guard = self.selection_visible.write();
         *guard = !*guard;
-        let enabled = *guard;
-        drop(guard);
-        self.debug_event(format!("selection visible -> {enabled}"));
     }
 
     pub fn highlight_enabled(&self) -> bool {
@@ -290,9 +262,6 @@ impl AppState {
     pub fn toggle_highlight(&self) {
         let mut guard = self.highlight_enabled.write();
         *guard = !*guard;
-        let enabled = *guard;
-        drop(guard);
-        self.debug_event(format!("highlight -> {enabled}"));
     }
 
     pub fn playhead_ms(&self) -> f64 {
@@ -320,84 +289,6 @@ impl AppState {
     pub fn toggle_playing(&self) {
         let mut guard = self.playing.write();
         *guard = !*guard;
-    }
-
-    pub fn set_playing(&self, playing: bool) {
-        *self.playing.write() = playing;
-    }
-
-    pub fn set_preview_worker(&self, worker: Option<PreviewWorkerHandle>) {
-        *self.preview_worker.write() = worker;
-    }
-
-    pub fn preview_worker(&self) -> Option<PreviewWorkerHandle> {
-        self.preview_worker.read().clone()
-    }
-
-    pub fn send_preview_command(&self, command: PreviewCommand) {
-        if let Some(worker) = self.preview_worker() {
-            let _ = worker.sender.send(command);
-            self.debug_event(format!("preview cmd -> {command:?}"));
-        } else {
-            self.debug_event(format!("preview cmd dropped -> {command:?}"));
-        }
-    }
-
-    pub fn debug_event(&self, message: impl Into<String>) {
-        eprintln!("[ui] {}", message.into());
-    }
-
-    pub fn preview_image(&self) -> Option<Arc<Image>> {
-        self.preview_image.read().clone()
-    }
-
-    pub fn preview_frame_index(&self) -> Option<u64> {
-        *self.preview_frame_index.read()
-    }
-
-    pub fn preview_total_frames(&self) -> Option<u64> {
-        *self.preview_total_frames.read()
-    }
-
-    pub fn set_preview_total_frames(&self, total: Option<u64>) {
-        *self.preview_total_frames.write() = total;
-    }
-
-    pub fn preview_aspect_ratio(&self) -> Option<f32> {
-        *self.preview_aspect_ratio.read()
-    }
-
-    pub fn set_preview_aspect_ratio(&self, ratio: Option<f32>) {
-        *self.preview_aspect_ratio.write() = ratio;
-    }
-
-    pub fn update_preview_frame(
-        &self,
-        image: Option<Arc<Image>>,
-        frame_index: Option<u64>,
-        timestamp: Option<std::time::Duration>,
-    ) {
-        *self.preview_image.write() = image;
-        *self.preview_frame_index.write() = frame_index;
-        if let Some(timestamp) = timestamp {
-            let ms = timestamp.as_secs_f64() * 1000.0;
-            let mut duration = self.duration_ms.write();
-            if ms > *duration {
-                *duration = ms;
-            }
-            drop(duration);
-            *self.playhead_ms.write() = ms;
-        }
-    }
-
-    pub fn reset_preview_state(&self) {
-        *self.preview_image.write() = None;
-        *self.preview_frame_index.write() = None;
-        *self.preview_total_frames.write() = None;
-        *self.preview_aspect_ratio.write() = None;
-        *self.playhead_ms.write() = 0.0;
-        *self.duration_ms.write() = 1.0;
-        *self.playing.write() = false;
     }
 
     pub fn left_sidebar_panel_state(&self) -> AnimatedPanelState {

@@ -16,10 +16,6 @@ impl StatusPanel {
     pub fn new(state: Arc<AppState>, theme: AppTheme) -> Self {
         Self { state, theme }
     }
-
-    pub fn set_theme(&mut self, theme: AppTheme) {
-        self.theme = theme;
-    }
 }
 
 impl Render for StatusPanel {
@@ -224,13 +220,10 @@ impl StatusPanel {
                 this.state
                     .update_file_progress(file.id, (file.progress + 0.05).min(1.0));
                 this.state.set_error_message(None);
-                this.state
-                    .debug_event(format!("detect primary -> {new_status:?}"));
             } else {
                 this.state.set_error_message(Some(
                     "Please select a video before starting detection".to_string(),
                 ));
-                this.state.debug_event("detect primary -> no file");
             }
             cx.notify();
         });
@@ -240,7 +233,6 @@ impl StatusPanel {
                 this.state.update_file_status(file.id, FileStatus::Idle);
                 this.state.update_file_progress(file.id, 0.0);
                 this.state.set_error_message(None);
-                this.state.debug_event("detect cancel");
             }
             cx.notify();
         });

@@ -5,7 +5,7 @@ use crate::detection::SubtitleDetectionPipeline;
 use crate::subtitle_detection::RoiConfig;
 use crate::subtitle_detection::SubtitleDetectionError;
 use crate::subtitle_detection::SubtitleDetectionResult;
-use subtitle_fast_types::PlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 
 #[derive(Clone)]
 /// Validates sampled subtitle frames and optional detection pipelines.
@@ -23,14 +23,14 @@ impl FrameValidator {
 
     pub async fn process_frame(
         &self,
-        frame: PlaneFrame,
+        frame: YPlaneFrame,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
         self.process_frame_with_roi(frame, None).await
     }
 
     pub async fn process_frame_with_roi(
         &self,
-        frame: PlaneFrame,
+        frame: YPlaneFrame,
         roi: Option<RoiConfig>,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
         self.operations.process_frame(frame, roi).await
@@ -54,7 +54,7 @@ impl ProcessingOperations {
 
     async fn process_frame(
         &self,
-        frame: PlaneFrame,
+        frame: YPlaneFrame,
         roi: Option<RoiConfig>,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
         if let Some(pipeline) = self.detection.as_ref() {

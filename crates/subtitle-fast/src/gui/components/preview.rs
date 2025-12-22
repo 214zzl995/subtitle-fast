@@ -15,10 +15,6 @@ impl PreviewPanel {
     pub fn new(state: Arc<AppState>, theme: AppTheme) -> Self {
         Self { state, theme }
     }
-
-    pub fn set_theme(&mut self, theme: AppTheme) {
-        self.theme = theme;
-    }
 }
 
 impl Render for PreviewPanel {
@@ -103,9 +99,6 @@ impl Render for PreviewPanel {
                     .child(
                         div()
                             .relative()
-                            .flex()
-                            .items_center()
-                            .justify_center()
                             .flex_1()
                             .rounded(px(12.0))
                             .border_1()
@@ -225,38 +218,12 @@ impl PreviewPanel {
             width: 0.70,
             height: 0.25,
         });
-        let preview_image = self.state.preview_image();
-        let has_preview_image = preview_image.is_some();
-        let aspect_ratio = self.state.preview_aspect_ratio();
 
-        let mut container = div()
+        div()
             .relative()
+            .w_full()
+            .h_full()
             .bg(hsla(0.0, 0.0, 0.02, 1.0))
-            .overflow_hidden();
-        if let Some(ratio) = aspect_ratio {
-            container.style().aspect_ratio = Some(ratio);
-            container = container.w_full().max_w_full().max_h_full();
-        } else {
-            container = container.w_full().h_full();
-        }
-
-        container
-            .when_some(preview_image, |div, image| {
-                div.child(img(image).w_full().h_full().object_fit(ObjectFit::Contain))
-            })
-            .when(!has_preview_image, |container| {
-                container.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w_full()
-                        .h_full()
-                        .text_sm()
-                        .text_color(self.theme.text_tertiary())
-                        .child("Decoding preview..."),
-                )
-            })
             .child(
                 div()
                     .absolute()

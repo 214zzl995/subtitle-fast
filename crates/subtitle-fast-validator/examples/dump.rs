@@ -6,7 +6,7 @@ use std::thread;
 use image::{Rgb, RgbImage};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde_json::json;
-use subtitle_fast_types::PlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 #[cfg(all(feature = "detector-vision", target_os = "macos"))]
 use subtitle_fast_validator::subtitle_detection::VisionTextDetector;
 use subtitle_fast_validator::subtitle_detection::projection_band::ProjectionBandDetector;
@@ -85,7 +85,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 };
 
-                let frame = PlaneFrame::from_owned(width as u32, height as u32, width, None, data)?;
+                let frame =
+                    YPlaneFrame::from_owned(width as u32, height as u32, width, None, data)?;
                 let mut config = SubtitleDetectionConfig::for_frame(width, height, width);
                 config.roi = RoiConfig {
                     x: 0.0,
@@ -177,7 +178,7 @@ fn resolution_from_len(len: usize) -> Option<(usize, usize)> {
     PRESETS.iter().copied().find(|(w, h)| w * h == len)
 }
 
-fn frame_to_image(frame: &PlaneFrame) -> RgbImage {
+fn frame_to_image(frame: &YPlaneFrame) -> RgbImage {
     let width = frame.width();
     let height = frame.height();
     let stride = frame.stride();

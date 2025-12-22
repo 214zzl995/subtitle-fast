@@ -10,7 +10,7 @@ use super::{
     SubtitleDetectionConfig, SubtitleDetectionError, SubtitleDetectionResult, SubtitleDetector,
     log_region_debug,
 };
-use subtitle_fast_types::PlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 
 const RLSA_H_GAP: usize = 200;
 const RLSA_V_GAP: usize = 20;
@@ -58,7 +58,7 @@ impl SubtitleDetector for IntegralBandDetector {
 
     fn detect(
         &self,
-        frame: &PlaneFrame,
+        frame: &YPlaneFrame,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
         let y_plane = frame.data();
         if y_plane.len() < self.required_len {

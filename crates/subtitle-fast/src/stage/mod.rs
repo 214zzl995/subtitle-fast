@@ -95,7 +95,7 @@ pub async fn run_pipeline(
             initial_total_frames,
         )
     } else {
-        StreamBundle::new(Box::pin(initial_stream), initial_total_frames)
+        StreamBundle::new(initial_stream, initial_total_frames)
     };
 
     let sorted = FrameSorter::new().attach(paused_stream);

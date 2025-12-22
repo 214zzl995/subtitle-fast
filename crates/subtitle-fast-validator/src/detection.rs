@@ -4,7 +4,7 @@ use crate::subtitle_detection::{
     SubtitleDetectionResult, SubtitleDetector, SubtitleDetectorKind, build_detector,
 };
 use std::time::Duration;
-use subtitle_fast_types::PlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 use tokio::sync::Mutex;
 
 static REGION_MARGIN_PX: u32 = 5;
@@ -27,7 +27,7 @@ impl SubtitleDetectionPipeline {
 
     pub async fn process(
         &self,
-        frame: &PlaneFrame,
+        frame: &YPlaneFrame,
         roi: Option<RoiConfig>,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
         let mut detection = if self.enabled {
@@ -82,7 +82,7 @@ impl SubtitleDetectionState {
 
     fn process_frame(
         &mut self,
-        frame: &PlaneFrame,
+        frame: &YPlaneFrame,
         roi_override: Option<RoiConfig>,
     ) -> Result<SubtitleDetectionResult, SubtitleDetectionError> {
         if !self.options.enabled {
@@ -198,7 +198,7 @@ fn inflate_regions(
     }
 }
 
-fn frame_identifier(frame: &PlaneFrame) -> u64 {
+fn frame_identifier(frame: &YPlaneFrame) -> u64 {
     frame
         .frame_index()
         .or_else(|| frame.timestamp().map(duration_millis))

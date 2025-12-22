@@ -1,5 +1,5 @@
 use std::env;
-use subtitle_fast_types::PlaneFrame;
+use subtitle_fast_types::YPlaneFrame;
 use thiserror::Error;
 
 pub use subtitle_fast_types::{DetectionRegion, RoiConfig, SubtitleDetectionResult};
@@ -248,8 +248,10 @@ impl SubtitleDetectorKind {
 }
 
 pub trait SubtitleDetector: Send + Sync {
-    fn detect(&self, frame: &PlaneFrame)
-    -> Result<SubtitleDetectionResult, SubtitleDetectionError>;
+    fn detect(
+        &self,
+        frame: &YPlaneFrame,
+    ) -> Result<SubtitleDetectionResult, SubtitleDetectionError>;
 
     fn ensure_available(config: &SubtitleDetectionConfig) -> Result<(), SubtitleDetectionError>
     where

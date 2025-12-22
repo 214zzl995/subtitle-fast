@@ -3,7 +3,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use subtitle_fast_decoder::{Backend, Configuration, RawFrameFormat};
+use subtitle_fast_decoder::{Backend, Configuration};
 use tokio_stream::StreamExt;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -19,7 +19,6 @@ async fn ffmpeg_backend_requires_asset() {
     let config = Configuration {
         backend: Backend::Ffmpeg,
         input: Some(asset),
-        output_format: RawFrameFormat::Y,
         ..Configuration::default()
     };
     let provider = match config.create_provider() {

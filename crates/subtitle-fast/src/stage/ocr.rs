@@ -10,7 +10,7 @@ use super::lifecycle::{
     CompletedRegion, LifecycleEvent, LifecycleResult, RegionLifecycleError, RegionTimings,
 };
 use subtitle_fast_ocr::{LumaPlane, OcrEngine, OcrError, OcrRequest};
-use subtitle_fast_types::{OcrRegion, OcrResponse, PlaneFrame, RoiConfig};
+use subtitle_fast_types::{OcrRegion, OcrResponse, RoiConfig, YPlaneFrame};
 
 const OCR_CHANNEL_CAPACITY: usize = 4;
 
@@ -163,7 +163,7 @@ impl OcrWorker {
     }
 }
 
-fn roi_to_region(roi: &RoiConfig, frame: &PlaneFrame) -> OcrRegion {
+fn roi_to_region(roi: &RoiConfig, frame: &YPlaneFrame) -> OcrRegion {
     let width = frame.width().max(1) as f32;
     let height = frame.height().max(1) as f32;
     let left = (roi.x * width).clamp(0.0, width);
@@ -185,7 +185,7 @@ fn roi_to_region(roi: &RoiConfig, frame: &PlaneFrame) -> OcrRegion {
     }
 }
 
-pub(crate) fn region_bounds(region: &OcrRegion, frame: &PlaneFrame) -> Option<RegionBounds> {
+pub(crate) fn region_bounds(region: &OcrRegion, frame: &YPlaneFrame) -> Option<RegionBounds> {
     let frame_w = frame.width() as usize;
     let frame_h = frame.height() as usize;
     if frame_w == 0 || frame_h == 0 {
@@ -213,11 +213,11 @@ pub(crate) fn region_bounds(region: &OcrRegion, frame: &PlaneFrame) -> Option<Re
 #[cfg(test)]
 mod tests {
     use super::roi_to_region;
-    use subtitle_fast_types::{PlaneFrame, RoiConfig};
+    use subtitle_fast_types::{RoiConfig, YPlaneFrame};
 
     #[test]
     fn roi_to_region_clamps_to_bounds() {
-        let frame = PlaneFrame::from_owned(100, 50, 100, None, vec![0; 5000]).unwrap();
+        let frame = YPlaneFrame::from_owned(100, 50, 100, None, vec![0; 5000]).unwrap();
         let roi = RoiConfig {
             x: -0.2,
             y: 0.5,

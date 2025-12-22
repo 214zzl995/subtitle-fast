@@ -1,5 +1,5 @@
 use crate::gui::icons::{Icon, icon_sm};
-use crate::gui::state::{AppState, PreviewCommand};
+use crate::gui::state::AppState;
 use crate::gui::theme::AppTheme;
 use gpui::prelude::*;
 use gpui::*;
@@ -9,20 +9,11 @@ use std::sync::Arc;
 pub struct ControlPanel {
     state: Arc<AppState>,
     theme: AppTheme,
-    progress_bounds: Option<Bounds<Pixels>>,
 }
 
 impl ControlPanel {
     pub fn new(state: Arc<AppState>, theme: AppTheme) -> Self {
-        Self {
-            state,
-            theme,
-            progress_bounds: None,
-        }
-    }
-
-    pub fn set_theme(&mut self, theme: AppTheme) {
-        self.theme = theme;
+        Self { state, theme }
     }
 }
 
@@ -92,14 +83,8 @@ impl ControlPanel {
         } else {
             0.0
         };
-        let total_frames = self.state.preview_total_frames().unwrap_or(0);
-        let current_frame = self.state.preview_frame_index().unwrap_or_else(|| {
-            if total_frames > 0 {
-                (progress * total_frames as f64).round() as u64
-            } else {
-                0
-            }
-        });
+        let total_frames = 214918u32;
+        let current_frame = (progress * total_frames as f64).round() as u32;
 
         div()
             .flex()
@@ -136,16 +121,7 @@ impl ControlPanel {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
-                                    let was_playing = this.state.is_playing();
-                                    this.state.debug_event(format!(
-                                        "play button click (was={was_playing})"
-                                    ));
                                     this.state.toggle_playing();
-                                    if this.state.is_playing() {
-                                        this.state.send_preview_command(PreviewCommand::Play);
-                                    } else {
-                                        this.state.send_preview_command(PreviewCommand::Pause);
-                                    }
                                     cx.notify();
                                 }),
                             ),
@@ -187,7 +163,7 @@ impl ControlPanel {
     }
 
     fn render_progress_bar(&self, cx: &mut Context<Self>, progress: f64, _duration: f64) -> Div {
-        let view = cx.entity();
+        let _state = Arc::clone(&self.state);
 
         div()
             .relative()
@@ -196,28 +172,10 @@ impl ControlPanel {
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
-                    let click_x = f32::from(event.position.x);
-                    let click_y = f32::from(event.position.y);
-                    this.state
-                        .debug_event(format!("progress click at {click_x:.1},{click_y:.1}"));
-                    let click_ratio = this
-                        .progress_bounds
-                        .and_then(|bounds| {
-                            let width = bounds.size.width;
-                            if width > px(0.0) {
-                                let local_x =
-                                    (event.position.x - bounds.left()).clamp(px(0.0), width);
-                                Some(local_x.to_f64() / width.to_f64())
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or(progress);
+                cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+                    let click_ratio = 0.5;
                     let new_time = click_ratio * this.state.duration_ms();
                     this.state.set_playhead_ms(new_time);
-                    this.state
-                        .send_preview_command(PreviewCommand::SeekMs(new_time));
                     cx.notify();
                 }),
             )
@@ -256,22 +214,9 @@ impl ControlPanel {
                     .shadow_sm()
                     .hover(|s| s.top(px(0.0)).ml(px(-6.0)).w(px(12.0)).h(px(12.0))),
             )
-            .child(
-                canvas(
-                    move |bounds, _, cx| {
-                        let _ = view.update(cx, |view, _| view.progress_bounds = Some(bounds));
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .size_full(),
-            )
     }
 
     fn jump_button(&self, cx: &mut Context<Self>, label: &str, delta_ms: f64) -> Div {
-        let label_text = label.to_string();
-        let log_label = label_text.clone();
-
         div()
             .px(px(8.0))
             .py(px(3.0))
@@ -283,17 +228,12 @@ impl ControlPanel {
             .text_color(self.theme.text_secondary())
             .cursor_pointer()
             .hover(|s| s.bg(self.theme.surface_hover()))
-            .child(label_text)
+            .child(label.to_string())
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
-                    this.state
-                        .debug_event(format!("jump button {log_label} ({delta_ms}ms)"));
                     let current = this.state.playhead_ms();
-                    let next = current + delta_ms;
-                    this.state.set_playhead_ms(next);
-                    this.state
-                        .send_preview_command(PreviewCommand::SeekMs(next));
+                    this.state.set_playhead_ms(current + delta_ms);
                     cx.notify();
                 }),
             )

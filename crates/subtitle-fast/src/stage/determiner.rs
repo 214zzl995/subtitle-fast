@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use super::StreamBundle;
 use super::detector::{DetectionSample, DetectionSampleResult, DetectorError};
-use subtitle_fast_types::{DetectionRegion, PlaneFrame, RoiConfig};
+use subtitle_fast_types::{DetectionRegion, RoiConfig, YPlaneFrame};
 
 const REGION_DETERMINER_CHANNEL_CAPACITY: usize = 4;
 const IOU_THRESHOLD: f32 = 0.05;
@@ -204,7 +204,7 @@ struct PersistentRegion {
     roi: RoiConfig,
 }
 
-fn region_to_roi(region: &DetectionRegion, frame: &PlaneFrame) -> RoiConfig {
+fn region_to_roi(region: &DetectionRegion, frame: &YPlaneFrame) -> RoiConfig {
     let fw = frame.width().max(1) as f32;
     let fh = frame.height().max(1) as f32;
     let x0 = (region.x / fw).clamp(0.0, 1.0);

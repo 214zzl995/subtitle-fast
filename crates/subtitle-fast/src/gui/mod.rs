@@ -1,7 +1,6 @@
 pub mod app;
 pub mod assets;
 pub mod components;
-pub mod frame_image;
 pub mod icons;
 pub mod state;
 pub mod theme;

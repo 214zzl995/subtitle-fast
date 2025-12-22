@@ -6,7 +6,7 @@ use futures_util::{StreamExt, stream::unfold};
 use tokio::sync::mpsc;
 
 use super::StreamBundle;
-use subtitle_fast_types::{PlaneFrame, YPlaneError, YPlaneResult};
+use subtitle_fast_types::{YPlaneError, YPlaneFrame, YPlaneResult};
 
 const SAMPLER_CHANNEL_CAPACITY: usize = 1;
 const DEFAULT_POOL_CAPACITY: usize = 24;
@@ -46,7 +46,7 @@ impl SamplerContext {
 
 pub struct SampledFrame {
     frame_index: u64,
-    frame: Arc<PlaneFrame>,
+    frame: Arc<YPlaneFrame>,
     history: FrameHistory,
     context: Arc<SamplerContext>,
 }
@@ -54,7 +54,7 @@ pub struct SampledFrame {
 impl SampledFrame {
     fn new(
         frame_index: u64,
-        frame: Arc<PlaneFrame>,
+        frame: Arc<YPlaneFrame>,
         history: FrameHistory,
         context: Arc<SamplerContext>,
     ) -> Self {
@@ -66,11 +66,11 @@ impl SampledFrame {
         }
     }
 
-    pub fn frame(&self) -> &PlaneFrame {
+    pub fn frame(&self) -> &YPlaneFrame {
         self.frame.as_ref()
     }
 
-    pub fn frame_handle(&self) -> Arc<PlaneFrame> {
+    pub fn frame_handle(&self) -> Arc<YPlaneFrame> {
         Arc::clone(&self.frame)
     }
 
@@ -100,7 +100,7 @@ impl FrameSampler {
 impl FrameSampler {
     pub fn attach(
         self,
-        input: StreamBundle<YPlaneResult<PlaneFrame>>,
+        input: StreamBundle<YPlaneResult<YPlaneFrame>>,
     ) -> StreamBundle<SamplerResult> {
         let StreamBundle {
             stream,
@@ -162,7 +162,7 @@ impl SamplerWorker {
 
     async fn handle_frame(
         &mut self,
-        frame: PlaneFrame,
+        frame: YPlaneFrame,
         tx: &mpsc::Sender<SamplerResult>,
     ) -> Result<(), ()> {
         self.processed = self.processed.saturating_add(1);
@@ -411,11 +411,11 @@ struct FpsObservation {
 struct PoolEntry {
     frame_index: u64,
     frame_type: FrameType,
-    frame: Arc<PlaneFrame>,
+    frame: Arc<YPlaneFrame>,
 }
 
 impl PoolEntry {
-    fn new(frame_index: u64, frame_type: FrameType, frame: Arc<PlaneFrame>) -> Self {
+    fn new(frame_index: u64, frame_type: FrameType, frame: Arc<YPlaneFrame>) -> Self {
         Self {
             frame_index,
             frame_type,
@@ -423,7 +423,7 @@ impl PoolEntry {
         }
     }
 
-    fn frame_handle(&self) -> Arc<PlaneFrame> {
+    fn frame_handle(&self) -> Arc<YPlaneFrame> {
         Arc::clone(&self.frame)
     }
 }
@@ -449,15 +449,15 @@ impl FrameHistory {
 pub struct HistoryRecord {
     pub frame_index: u64,
     pub frame_type: FrameType,
-    frame: Arc<PlaneFrame>,
+    frame: Arc<YPlaneFrame>,
 }
 
 impl HistoryRecord {
-    pub fn frame(&self) -> &PlaneFrame {
+    pub fn frame(&self) -> &YPlaneFrame {
         &self.frame
     }
 
-    pub fn frame_handle(&self) -> Arc<PlaneFrame> {
+    pub fn frame_handle(&self) -> Arc<YPlaneFrame> {
         Arc::clone(&self.frame)
     }
 }
@@ -470,7 +470,7 @@ mod tests {
     async fn sampled_history_includes_current_frame() {
         let mut worker = SamplerWorker::new(1);
         let (tx, mut rx) = mpsc::channel(1);
-        let frame = PlaneFrame::from_owned(2, 2, 2, Some(Duration::from_millis(0)), vec![0; 4])
+        let frame = YPlaneFrame::from_owned(2, 2, 2, Some(Duration::from_millis(0)), vec![0; 4])
             .expect("frame");
 
         worker
@@ -499,9 +499,9 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
 
         let frame_a =
-            PlaneFrame::from_owned(2, 2, 2, Some(Duration::from_millis(0)), vec![1; 4]).unwrap();
+            YPlaneFrame::from_owned(2, 2, 2, Some(Duration::from_millis(0)), vec![1; 4]).unwrap();
         let frame_b =
-            PlaneFrame::from_owned(2, 2, 2, Some(Duration::from_millis(10)), vec![2; 4]).unwrap();
+            YPlaneFrame::from_owned(2, 2, 2, Some(Duration::from_millis(10)), vec![2; 4]).unwrap();
 
         worker
             .handle_frame(frame_a, &tx)

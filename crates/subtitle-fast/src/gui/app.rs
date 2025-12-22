@@ -1,16 +1,11 @@
 use gpui::prelude::*;
 use gpui::*;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use crate::gui::components::*;
-use crate::gui::frame_image::frame_to_image;
 use crate::gui::icons::{Icon, icon_sm};
-use crate::gui::state::{AppState, PreviewCommand, PreviewWorkerHandle};
+use crate::gui::state::AppState;
 use crate::gui::theme::AppTheme;
-use subtitle_fast_decoder::Configuration;
-use subtitle_fast_types::{PlaneFrame, RawFrameFormat};
-use tokio_stream::StreamExt;
 
 const SIDEBAR_TOGGLE_SIZE: f32 = 26.0;
 const SIDEBAR_TOGGLE_PADDING_X: f32 = 10.0;
@@ -69,12 +64,6 @@ impl SubtitleFastApp {
 pub struct MainWindow {
     state: Arc<AppState>,
     appearance_subscription: Option<Subscription>,
-    sidebar: Option<Entity<Sidebar>>,
-    preview: Option<Entity<PreviewPanel>>,
-    control_panel: Option<Entity<ControlPanel>>,
-    status_panel: Option<Entity<StatusPanel>>,
-    subtitle_list: Option<Entity<SubtitleList>>,
-    theme_is_dark: Option<bool>,
 }
 
 impl MainWindow {
@@ -82,12 +71,6 @@ impl MainWindow {
         Self {
             state,
             appearance_subscription: None,
-            sidebar: None,
-            preview: None,
-            control_panel: None,
-            status_panel: None,
-            subtitle_list: None,
-            theme_is_dark: None,
         }
     }
 }
@@ -95,10 +78,8 @@ impl MainWindow {
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_theme_listener(window, cx);
-        self.ensure_preview_worker(cx);
 
         let theme = self.state.get_theme();
-        self.ensure_child_views(theme, cx);
 
         let sidebar_panel_state = self.state.left_sidebar_panel_state();
         let sidebar_collapsed = sidebar_panel_state.is_collapsed();
@@ -119,23 +100,11 @@ impl Render for MainWindow {
             .with_collapsed_width(0.0)
             .with_duration(animation_duration);
 
-        let sidebar = self.sidebar.as_ref().expect("sidebar view missing").clone();
-        let preview = self.preview.as_ref().expect("preview view missing").clone();
-        let control_panel = self
-            .control_panel
-            .as_ref()
-            .expect("control panel view missing")
-            .clone();
-        let status_panel = self
-            .status_panel
-            .as_ref()
-            .expect("status panel view missing")
-            .clone();
-        let subtitle_list = self
-            .subtitle_list
-            .as_ref()
-            .expect("subtitle list view missing")
-            .clone();
+        let sidebar = cx.new(|_| Sidebar::new(Arc::clone(&self.state), theme));
+        let preview = cx.new(|_| PreviewPanel::new(Arc::clone(&self.state), theme));
+        let control_panel = cx.new(|_| ControlPanel::new(Arc::clone(&self.state), theme));
+        let status_panel = cx.new(|_| StatusPanel::new(Arc::clone(&self.state), theme));
+        let subtitle_list = cx.new(|_| SubtitleList::new(Arc::clone(&self.state), theme));
 
         div()
             .relative()
@@ -280,94 +249,13 @@ impl MainWindow {
             }));
     }
 
-    fn ensure_child_views(&mut self, theme: AppTheme, cx: &mut Context<Self>) {
-        if self.sidebar.is_none() {
-            self.sidebar = Some(cx.new(|_| Sidebar::new(Arc::clone(&self.state), theme)));
-            self.preview = Some(cx.new(|_| PreviewPanel::new(Arc::clone(&self.state), theme)));
-            self.control_panel =
-                Some(cx.new(|_| ControlPanel::new(Arc::clone(&self.state), theme)));
-            self.status_panel = Some(cx.new(|_| StatusPanel::new(Arc::clone(&self.state), theme)));
-            self.subtitle_list =
-                Some(cx.new(|_| SubtitleList::new(Arc::clone(&self.state), theme)));
-            self.theme_is_dark = Some(theme.is_dark);
-            return;
-        }
-
-        if self.theme_is_dark != Some(theme.is_dark) {
-            if let Some(sidebar) = &self.sidebar {
-                let _ = sidebar.update(cx, |view, cx| {
-                    view.set_theme(theme);
-                    cx.notify();
-                });
-            }
-            if let Some(preview) = &self.preview {
-                let _ = preview.update(cx, |view, cx| {
-                    view.set_theme(theme);
-                    cx.notify();
-                });
-            }
-            if let Some(control_panel) = &self.control_panel {
-                let _ = control_panel.update(cx, |view, cx| {
-                    view.set_theme(theme);
-                    cx.notify();
-                });
-            }
-            if let Some(status_panel) = &self.status_panel {
-                let _ = status_panel.update(cx, |view, cx| {
-                    view.set_theme(theme);
-                    cx.notify();
-                });
-            }
-            if let Some(subtitle_list) = &self.subtitle_list {
-                let _ = subtitle_list.update(cx, |view, cx| {
-                    view.set_theme(theme);
-                    cx.notify();
-                });
-            }
-            self.theme_is_dark = Some(theme.is_dark);
-        }
-    }
-
-    fn ensure_preview_worker(&mut self, cx: &mut Context<Self>) {
-        let active = self.state.get_active_file();
-        let existing = self.state.preview_worker();
-
-        match (active, existing) {
-            (None, Some(_)) => {
-                self.state.set_preview_worker(None);
-                self.state.reset_preview_state();
-                cx.notify();
-            }
-            (Some(file), Some(worker)) if worker.file_id == file.id => {}
-            (Some(file), _) => {
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                let handle = PreviewWorkerHandle {
-                    file_id: file.id,
-                    sender: tx,
-                };
-                self.state.set_preview_worker(Some(handle));
-                self.state.reset_preview_state();
-
-                let state = Arc::clone(&self.state);
-                cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-                    let async_app = (*cx).clone();
-                    async move {
-                        run_preview_worker(state, file, rx, this, async_app).await;
-                    }
-                })
-                .detach();
-                cx.notify();
-            }
-            (None, None) => {}
-        }
-    }
-
     fn render_sidebar_titlebar(&self, theme: AppTheme, titlebar_height: Pixels) -> Div {
         div()
             .relative()
             .h(titlebar_height)
             .w_full()
             .bg(theme.titlebar_bg())
+            .window_control_area(WindowControlArea::Drag)
     }
 
     fn render_controls_titlebar(
@@ -412,7 +300,8 @@ impl MainWindow {
             .items_center()
             .h(titlebar_height)
             .w_full()
-            .bg(theme.titlebar_bg());
+            .bg(theme.titlebar_bg())
+            .window_control_area(WindowControlArea::Drag);
 
         titlebar
             .child(
@@ -670,8 +559,7 @@ impl MainWindow {
             .child(icon_sm(Icon::Upload, theme.text_secondary()))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.state.debug_event("file picker click");
+                cx.listener(|_this, _, _, cx| {
                     let receiver = cx.prompt_for_paths(PathPromptOptions {
                         files: true,
                         directories: false,
@@ -757,184 +645,4 @@ impl MainWindow {
                 }),
             )
     }
-}
-
-async fn run_preview_worker(
-    state: Arc<AppState>,
-    file: crate::gui::state::TrackedFile,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<PreviewCommand>,
-    window: WeakEntity<MainWindow>,
-    async_app: AsyncApp,
-) {
-    run_preview_loop(&state, &file, &mut rx, &window, &async_app).await;
-}
-
-async fn frame_to_image_async(frame: PlaneFrame) -> Result<Arc<Image>, String> {
-    let task = gpui::background_executor().spawn(async move { frame_to_image(&frame) });
-    task.await.map_err(|err| err.to_string())
-}
-
-async fn run_preview_loop(
-    state: &AppState,
-    file: &crate::gui::state::TrackedFile,
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<PreviewCommand>,
-    window: &WeakEntity<MainWindow>,
-    async_app: &AsyncApp,
-) {
-    let mut config = Configuration::default();
-    config.input = Some(file.path.clone());
-    let mut output_format = RawFrameFormat::NV12;
-    let mut tried_luma_fallback = false;
-
-    let needs_luma_fallback = |message: &str| {
-        let message = message.to_ascii_lowercase();
-        message.contains("nv12") && (message.contains("uv") || message.contains("buffer"))
-    };
-
-    'preview: loop {
-        config.output_format = output_format;
-        let provider = match config.create_provider() {
-            Ok(provider) => provider,
-            Err(err) => {
-                if !tried_luma_fallback && output_format == RawFrameFormat::NV12 {
-                    output_format = RawFrameFormat::Y;
-                    tried_luma_fallback = true;
-                    continue 'preview;
-                }
-                state.set_error_message(Some(format!("Failed to start preview decoder: {err}")));
-                notify_ui(window, async_app);
-                return;
-            }
-        };
-
-        let total_frames = provider.total_frames();
-        state.set_preview_total_frames(total_frames);
-        notify_ui(window, async_app);
-
-        let mut stream = provider.into_stream();
-        let resume_ms = state.playhead_ms();
-        if resume_ms.is_finite() && resume_ms > 0.0 {
-            let _ = stream.seek_to_time(std::time::Duration::from_millis(resume_ms as u64));
-        }
-
-        let mut paused = !state.is_playing();
-        let mut needs_frame = true;
-
-        loop {
-            tokio::select! {
-                command = rx.recv() => {
-                    match command {
-                        Some(command) => {
-                            let needs_seek_frame = matches!(command, PreviewCommand::SeekMs(_));
-                            if let ControlFlow::Break(()) = handle_preview_command(
-                                state,
-                                window,
-                                async_app,
-                                &stream,
-                                command,
-                                &mut paused,
-                            ) {
-                                return;
-                            }
-                            if paused && needs_seek_frame {
-                                needs_frame = true;
-                            }
-                        }
-                        None => return,
-                    }
-                }
-                frame = stream.next(), if !paused || needs_frame => {
-                    match frame {
-                        Some(Ok(frame)) => {
-                            let height = frame.height();
-                            if height > 0 {
-                                let ratio = frame.width() as f32 / height as f32;
-                                if ratio.is_finite() && ratio > 0.0 {
-                                    state.set_preview_aspect_ratio(Some(ratio));
-                                }
-                            }
-
-                            let frame_index = frame.frame_index();
-                            let timestamp = frame.timestamp();
-                            match frame_to_image_async(frame).await {
-                                Ok(image) => {
-                                    state.update_preview_frame(Some(image), frame_index, timestamp);
-                                }
-                                Err(message) => {
-                                    if !tried_luma_fallback
-                                        && output_format == RawFrameFormat::NV12
-                                        && needs_luma_fallback(&message)
-                                    {
-                                        output_format = RawFrameFormat::Y;
-                                        tried_luma_fallback = true;
-                                        state.set_error_message(None);
-                                        notify_ui(window, async_app);
-                                        continue 'preview;
-                                    }
-                                    state.set_error_message(Some(format!("Preview frame error: {message}")));
-                                }
-                            }
-                            needs_frame = false;
-                            notify_ui(window, async_app);
-                        }
-                        Some(Err(err)) => {
-                            let message = err.to_string();
-                            if !tried_luma_fallback
-                                && output_format == RawFrameFormat::NV12
-                                && needs_luma_fallback(&message)
-                            {
-                                output_format = RawFrameFormat::Y;
-                                tried_luma_fallback = true;
-                                state.set_error_message(None);
-                                notify_ui(window, async_app);
-                                continue 'preview;
-                            }
-                            state.set_error_message(Some(format!("Preview decode error: {message}")));
-                            notify_ui(window, async_app);
-                            return;
-                        }
-                        None => return,
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn handle_preview_command(
-    state: &AppState,
-    window: &WeakEntity<MainWindow>,
-    async_app: &AsyncApp,
-    stream: &subtitle_fast_decoder::PlaneStreamHandle,
-    command: PreviewCommand,
-    paused: &mut bool,
-) -> ControlFlow<()> {
-    match command {
-        PreviewCommand::Play => {
-            *paused = false;
-            state.set_playing(true);
-            notify_ui(window, async_app);
-        }
-        PreviewCommand::Pause => {
-            *paused = true;
-            state.set_playing(false);
-            notify_ui(window, async_app);
-        }
-        PreviewCommand::SeekMs(ms) => {
-            if let Err(err) =
-                stream.seek_to_time(std::time::Duration::from_millis(ms.max(0.0) as u64))
-            {
-                state.set_error_message(Some(format!("Preview seek error: {err}")));
-                notify_ui(window, async_app);
-            }
-        }
-    }
-    ControlFlow::Continue(())
-}
-
-fn notify_ui(window: &WeakEntity<MainWindow>, async_app: &AsyncApp) {
-    let mut async_app = async_app.clone();
-    let _ = window.update(&mut async_app, |_, cx| {
-        cx.notify();
-    });
 }

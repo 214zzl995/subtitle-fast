@@ -1,7 +1,7 @@
 use std::cell::UnsafeCell;
 
 use rayon::prelude::*;
-use subtitle_fast_types::{PlaneFrame, RoiConfig};
+use subtitle_fast_types::{RoiConfig, YPlaneFrame};
 
 use crate::comparators::SubtitleComparator;
 use crate::pipeline::{ComparisonReport, FeatureBlob, PreprocessSettings, ReportMetric};
@@ -24,7 +24,7 @@ impl BitsetCoverComparator {
         Self { settings }
     }
 
-    fn build_features(&self, frame: &PlaneFrame, roi: &RoiConfig) -> Option<BitsetFeatures> {
+    fn build_features(&self, frame: &YPlaneFrame, roi: &RoiConfig) -> Option<BitsetFeatures> {
         let (x0, y0, x1, y1) = roi_bounds(frame, roi)?;
         let width = x1 - x0;
         let height = y1 - y0;
@@ -130,7 +130,7 @@ impl SubtitleComparator for BitsetCoverComparator {
         TAG
     }
 
-    fn extract(&self, frame: &PlaneFrame, roi: &RoiConfig) -> Option<FeatureBlob> {
+    fn extract(&self, frame: &YPlaneFrame, roi: &RoiConfig) -> Option<FeatureBlob> {
         let features = self.build_features(frame, roi)?;
         Some(FeatureBlob::new(TAG, features))
     }
@@ -219,7 +219,7 @@ struct ScratchSlices<'a> {
     tmp_b: &'a mut [u64],
 }
 
-fn roi_bounds(frame: &PlaneFrame, roi: &RoiConfig) -> Option<(usize, usize, usize, usize)> {
+fn roi_bounds(frame: &YPlaneFrame, roi: &RoiConfig) -> Option<(usize, usize, usize, usize)> {
     let frame_w = frame.width() as usize;
     let frame_h = frame.height() as usize;
     if frame_w == 0 || frame_h == 0 {
@@ -464,7 +464,7 @@ fn should_parallel(total_words: usize) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 fn pack_mask_bits_fast(
-    frame: &PlaneFrame,
+    frame: &YPlaneFrame,
     x0: usize,
     y0: usize,
     width: usize,
