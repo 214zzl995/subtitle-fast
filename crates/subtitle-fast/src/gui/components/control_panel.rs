@@ -19,7 +19,7 @@ pub struct ControlPanel {
 }
 
 enum DecoderMessage {
-    TotalFrames(Option<u64>),
+    Metadata(subtitle_fast_decoder::VideoMetadata),
     Frame(FrameResult<VideoFrame>),
 }
 
@@ -494,9 +494,7 @@ impl ControlPanel {
                     }
                 };
                 let metadata = provider.metadata();
-                let _ = tx
-                    .send(DecoderMessage::TotalFrames(metadata.total_frames))
-                    .await;
+                let _ = tx.send(DecoderMessage::Metadata(metadata)).await;
                 let mut stream = provider.into_stream();
                 while let Some(frame) = stream.next().await {
                     if tx.send(DecoderMessage::Frame(frame)).await.is_err() {
@@ -540,9 +538,13 @@ impl ControlPanel {
                     };
 
                     match message {
-                        DecoderMessage::TotalFrames(total) => {
+                        DecoderMessage::Metadata(metadata) => {
                             let _ = state.update(&mut async_app, |state, cx| {
-                                state.set_playback_total_frames(session_id, total);
+                                state.set_playback_total_frames(session_id, metadata.total_frames);
+                                if let Some(duration) = metadata.duration {
+                                    let duration_ms = duration.as_secs_f64() * 1000.0;
+                                    state.set_duration_ms(duration_ms);
+                                }
                                 cx.notify();
                             });
                         }
