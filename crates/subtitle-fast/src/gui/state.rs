@@ -476,19 +476,21 @@ impl AppState {
         true
     }
 
-    pub fn advance_playback(&self) -> bool {
+    pub fn advance_playback(&self) -> Vec<Arc<RenderImage>> {
         let playhead = self.playhead_ms();
         let mut playback = self.playback.write();
-        let mut updated = false;
+        let mut consumed_images = Vec::new();
         while let Some(front) = playback.buffer.front() {
             if front.timestamp_ms <= playhead {
+                if let Some(old_current) = playback.current_frame.take() {
+                    consumed_images.push(old_current.image.clone());
+                }
                 playback.current_frame = playback.buffer.pop_front();
-                updated = true;
             } else {
                 break;
             }
         }
-        if updated {
+        if !consumed_images.is_empty() {
             if let Some(front) = playback.buffer.front() {
                 playback.buffer_start_ms = Some(front.timestamp_ms);
                 playback.buffer_end_ms = playback.buffer.back().map(|frame| frame.timestamp_ms);
@@ -497,8 +499,9 @@ impl AppState {
                 playback.buffer_end_ms = None;
             }
         }
-        updated
+        consumed_images
     }
+
 
     pub fn playback_session_id(&self) -> u64 {
         self.playback.read().session_id
