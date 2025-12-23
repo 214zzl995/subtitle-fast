@@ -672,6 +672,8 @@ impl BladeRenderer {
                 continue;
             }
 
+            println!("Preparing NV12 Texture: {}x{}", frame.width, frame.height);
+
             let (y_texture, y_view) = create_nv12_texture(
                 &self.gpu,
                 "nv12 y",
@@ -690,44 +692,121 @@ impl BladeRenderer {
             self.command_encoder.init_texture(y_texture);
             self.command_encoder.init_texture(uv_texture);
 
-            let y_data = self
-                .instance_belt
-                .alloc_bytes(frame.y_plane.as_ref(), &self.gpu);
-            transfers.copy_buffer_to_texture(
-                y_data,
-                frame.y_stride as u32,
-                gpu::TexturePiece {
-                    texture: y_texture,
-                    mip_level: 0,
-                    array_layer: 0,
-                    origin: [0, 0, 0],
-                },
-                gpu::Extent {
-                    width: frame.width,
-                    height: frame.height,
-                    depth: 1,
-                },
+            const ALIGNMENT: u32 = 256;
+            fn align_stride(width: u32, bytes_per_pixel: u32) -> u32 {
+                let stride = width * bytes_per_pixel;
+                (stride + ALIGNMENT - 1) & !(ALIGNMENT - 1)
+            }
+
+            // Upload Y plane
+            let y_stride_target = align_stride(frame.width, 1);
+            println!(
+                "Y Stride Target: {}, Original: {}",
+                y_stride_target, frame.y_stride
             );
 
-            let uv_data = self
-                .instance_belt
-                .alloc_bytes(frame.uv_plane.as_ref(), &self.gpu);
-            transfers.copy_buffer_to_texture(
-                uv_data,
-                frame.uv_stride as u32,
-                gpu::TexturePiece {
-                    texture: uv_texture,
-                    mip_level: 0,
-                    array_layer: 0,
-                    origin: [0, 0, 0],
-                },
-                gpu::Extent {
-                    width: frame.uv_width(),
-                    height: frame.uv_height(),
-                    depth: 1,
-                },
+            if y_stride_target != frame.y_stride as u32 {
+                let mut aligned_y = Vec::with_capacity((y_stride_target * frame.height) as usize);
+                for i in 0..frame.height {
+                    let start = (i as usize) * frame.y_stride;
+                    let end = start + frame.width as usize;
+                    aligned_y.extend_from_slice(&frame.y_plane[start..end]);
+                    aligned_y.extend(
+                        std::iter::repeat(0).take((y_stride_target - frame.width) as usize),
+                    );
+                }
+                let y_data = self.instance_belt.alloc_bytes(&aligned_y, &self.gpu);
+                transfers.copy_buffer_to_texture(
+                    y_data,
+                    y_stride_target,
+                    gpu::TexturePiece {
+                        texture: y_texture,
+                        mip_level: 0,
+                        array_layer: 0,
+                        origin: [0, 0, 0],
+                    },
+                    gpu::Extent {
+                        width: frame.width,
+                        height: frame.height,
+                        depth: 1,
+                    },
+                );
+            } else {
+                let y_data = self
+                    .instance_belt
+                    .alloc_bytes(frame.y_plane.as_ref(), &self.gpu);
+                transfers.copy_buffer_to_texture(
+                    y_data,
+                    frame.y_stride as u32,
+                    gpu::TexturePiece {
+                        texture: y_texture,
+                        mip_level: 0,
+                        array_layer: 0,
+                        origin: [0, 0, 0],
+                    },
+                    gpu::Extent {
+                        width: frame.width,
+                        height: frame.height,
+                        depth: 1,
+                    },
+                );
+            }
+
+            // Upload UV plane
+            let uv_stride_target = align_stride(frame.uv_width() * 2, 1);
+            println!(
+                "UV Stride Target: {}, Original: {}",
+                uv_stride_target, frame.uv_stride
             );
 
+            if uv_stride_target != frame.uv_stride as u32 {
+                let mut aligned_uv =
+                    Vec::with_capacity((uv_stride_target * frame.uv_height()) as usize);
+                let row_bytes = frame.uv_width() as usize * 2;
+                for i in 0..frame.uv_height() {
+                    let start = (i as usize) * frame.uv_stride;
+                    let end = start + row_bytes;
+                    aligned_uv.extend_from_slice(&frame.uv_plane[start..end]);
+                    aligned_uv
+                        .extend(std::iter::repeat(0).take((uv_stride_target as usize) - row_bytes));
+                }
+
+                let uv_data = self.instance_belt.alloc_bytes(&aligned_uv, &self.gpu);
+                transfers.copy_buffer_to_texture(
+                    uv_data,
+                    uv_stride_target,
+                    gpu::TexturePiece {
+                        texture: uv_texture,
+                        mip_level: 0,
+                        array_layer: 0,
+                        origin: [0, 0, 0],
+                    },
+                    gpu::Extent {
+                        width: frame.uv_width(),
+                        height: frame.uv_height(),
+                        depth: 1,
+                    },
+                );
+            } else {
+                let uv_data = self
+                    .instance_belt
+                    .alloc_bytes(frame.uv_plane.as_ref(), &self.gpu);
+                transfers.copy_buffer_to_texture(
+                    uv_data,
+                    frame.uv_stride as u32,
+                    gpu::TexturePiece {
+                        texture: uv_texture,
+                        mip_level: 0,
+                        array_layer: 0,
+                        origin: [0, 0, 0],
+                    },
+                    gpu::Extent {
+                        width: frame.uv_width(),
+                        height: frame.uv_height(),
+                        depth: 1,
+                    },
+                );
+            }
             self.nv12_cache.insert(
                 *image_id,
                 Nv12SurfaceTextures {
