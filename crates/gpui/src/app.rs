@@ -2065,7 +2065,6 @@ impl App {
     }
 
     /// Removes an image from the sprite atlas on all windows.
-    /// Automatically handles both RGBA and NV12 images.
     ///
     /// If the current window is being updated, it will be removed from `App.windows`, you can use `current_window` to specify the current window.
     /// This is a no-op if the image is not in the sprite atlas.

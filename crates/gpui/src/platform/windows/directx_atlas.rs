@@ -21,8 +21,6 @@ struct DirectXAtlasState {
     device_context: ID3D11DeviceContext,
     monochrome_textures: AtlasTextureList<DirectXAtlasTexture>,
     polychrome_textures: AtlasTextureList<DirectXAtlasTexture>,
-    nv12_y_textures: AtlasTextureList<DirectXAtlasTexture>,
-    nv12_uv_textures: AtlasTextureList<DirectXAtlasTexture>,
     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
 }
 
@@ -42,8 +40,6 @@ impl DirectXAtlas {
             device_context: device_context.clone(),
             monochrome_textures: Default::default(),
             polychrome_textures: Default::default(),
-            nv12_y_textures: Default::default(),
-            nv12_uv_textures: Default::default(),
             tiles_by_key: Default::default(),
         }))
     }
@@ -67,8 +63,6 @@ impl DirectXAtlas {
         lock.device_context = device_context.clone();
         lock.monochrome_textures = AtlasTextureList::default();
         lock.polychrome_textures = AtlasTextureList::default();
-        lock.nv12_y_textures = AtlasTextureList::default();
-        lock.nv12_uv_textures = AtlasTextureList::default();
         lock.tiles_by_key.clear();
     }
 }
@@ -108,8 +102,6 @@ impl PlatformAtlas for DirectXAtlas {
         let textures = match id.kind {
             AtlasTextureKind::Monochrome => &mut lock.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut lock.polychrome_textures,
-            AtlasTextureKind::Nv12Y => &mut lock.nv12_y_textures,
-            AtlasTextureKind::Nv12UV => &mut lock.nv12_uv_textures,
         };
 
         let Some(texture_slot) = textures.textures.get_mut(id.index as usize) else {
@@ -138,8 +130,6 @@ impl DirectXAtlasState {
             let textures = match texture_kind {
                 AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
                 AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
-                AtlasTextureKind::Nv12Y => &mut self.nv12_y_textures,
-                AtlasTextureKind::Nv12UV => &mut self.nv12_uv_textures,
             };
 
             if let Some(tile) = textures
@@ -185,16 +175,6 @@ impl DirectXAtlasState {
                 bind_flag = D3D11_BIND_SHADER_RESOURCE;
                 bytes_per_pixel = 4;
             }
-            AtlasTextureKind::Nv12Y => {
-                pixel_format = DXGI_FORMAT_R8_UNORM;
-                bind_flag = D3D11_BIND_SHADER_RESOURCE;
-                bytes_per_pixel = 1;
-            }
-            AtlasTextureKind::Nv12UV => {
-                pixel_format = DXGI_FORMAT_R8G8_UNORM;
-                bind_flag = D3D11_BIND_SHADER_RESOURCE;
-                bytes_per_pixel = 2;
-            }
         }
         let texture_desc = D3D11_TEXTURE2D_DESC {
             Width: size.width.0 as u32,
@@ -224,8 +204,6 @@ impl DirectXAtlasState {
         let texture_list = match kind {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
-            AtlasTextureKind::Nv12Y => &mut self.nv12_y_textures,
-            AtlasTextureKind::Nv12UV => &mut self.nv12_uv_textures,
         };
         let index = texture_list.free_list.pop();
         let view = unsafe {
@@ -259,8 +237,6 @@ impl DirectXAtlasState {
         let textures = match id.kind {
             crate::AtlasTextureKind::Monochrome => &self.monochrome_textures,
             crate::AtlasTextureKind::Polychrome => &self.polychrome_textures,
-            crate::AtlasTextureKind::Nv12Y => &self.nv12_y_textures,
-            crate::AtlasTextureKind::Nv12UV => &self.nv12_uv_textures,
         };
         textures[id.index as usize].as_ref().unwrap()
     }

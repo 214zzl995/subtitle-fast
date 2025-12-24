@@ -38,10 +38,10 @@ pub(crate) mod scap_screen_capture;
 use crate::{
     Action, AnyWindowHandle, App, AsyncWindowContext, BackgroundExecutor, Bounds,
     DEFAULT_WINDOW_SIZE, DevicePixels, DispatchEventResult, Font, FontId, FontMetrics, FontRun,
-    ForegroundExecutor, GlyphId, GpuSpecs, ImageSource, Keymap, LineLayout, Nv12Plane, Pixels,
-    PlatformInput, Point, RenderGlyphParams, RenderImage, RenderImageParams, RenderNv12Params,
-    RenderSvgParams, Scene, ShapedGlyph, ShapedRun, SharedString, Size, SvgRenderer, SvgSize,
-    SystemWindowTab, Task, TaskLabel, Window, WindowControlArea, hash, point, px, size,
+    ForegroundExecutor, GlyphId, GpuSpecs, ImageSource, Keymap, LineLayout, Pixels, PlatformInput,
+    Point, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Scene, ShapedGlyph,
+    ShapedRun, SharedString, Size, SvgRenderer, SvgSize, SystemWindowTab, Task, TaskLabel, Window,
+    WindowControlArea, hash, point, px, size,
 };
 use anyhow::Result;
 use async_task::Runnable;
@@ -716,7 +716,6 @@ pub(crate) enum AtlasKey {
     Glyph(RenderGlyphParams),
     Svg(RenderSvgParams),
     Image(RenderImageParams),
-    Nv12(RenderNv12Params),
 }
 
 impl AtlasKey {
@@ -738,10 +737,6 @@ impl AtlasKey {
             }
             AtlasKey::Svg(_) => AtlasTextureKind::Monochrome,
             AtlasKey::Image(_) => AtlasTextureKind::Polychrome,
-            AtlasKey::Nv12(params) => match params.plane {
-                Nv12Plane::Y => AtlasTextureKind::Nv12Y,
-                Nv12Plane::UV => AtlasTextureKind::Nv12UV,
-            },
         }
     }
 }
@@ -761,12 +756,6 @@ impl From<RenderSvgParams> for AtlasKey {
 impl From<RenderImageParams> for AtlasKey {
     fn from(params: RenderImageParams) -> Self {
         Self::Image(params)
-    }
-}
-
-impl From<RenderNv12Params> for AtlasKey {
-    fn from(params: RenderNv12Params) -> Self {
-        Self::Nv12(params)
     }
 }
 
@@ -843,8 +832,6 @@ pub(crate) struct AtlasTextureId {
 pub(crate) enum AtlasTextureKind {
     Monochrome = 0,
     Polychrome = 1,
-    Nv12Y = 2,
-    Nv12UV = 3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

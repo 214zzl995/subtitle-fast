@@ -8,16 +8,16 @@ use crate::{
     FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero,
     KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId,
     LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent,
-    MouseMoveEvent, MouseUpEvent, Nv12Plane, PaintSurface, PaintSurfaceSource, Path, Pixels,
-    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PolychromeSprite, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage,
-    RenderImageParams, RenderNv12Params, RenderSvgParams, Replay, ResizeEdge,
-    SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow,
-    SharedString, Size, StrikethroughStyle, Style, SubscriberSet, Subscription, SystemWindowTab,
-    SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextStyle, TextStyleRefinement,
-    TransformationMatrix, Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
-    point, prelude::*, px, rems, size, transparent_black,
+    MouseMoveEvent, MouseUpEvent, PaintSurface, PaintSurfaceSource, Path, Pixels, PlatformAtlas,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite,
+    PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams,
+    RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X,
+    SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size, StrikethroughStyle,
+    Style, SubscriberSet, Subscription, SystemWindowTab, SystemWindowTabController, TabStopMap,
+    TaffyLayoutEngine, Task, TextStyle, TextStyleRefinement, TransformationMatrix, Underline,
+    UnderlineStyle, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControls,
+    WindowDecorations, WindowOptions, WindowParams, WindowTextSystem, point, prelude::*, px, rems,
+    size, transparent_black,
 };
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
@@ -3207,30 +3207,16 @@ impl Window {
     }
 
     /// Removes an image from the sprite atlas.
-    /// Automatically handles both RGBA and NV12 images.
     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
-        if data.nv12_frame().is_some() {
-            // NV12: remove Y and UV plane textures
-            let y_params = RenderNv12Params {
+        for frame_index in 0..data.frame_count() {
+            let params = RenderImageParams {
                 image_id: data.id,
-                plane: Nv12Plane::Y,
+                frame_index,
             };
-            let uv_params = RenderNv12Params {
-                image_id: data.id,
-                plane: Nv12Plane::UV,
-            };
-            self.sprite_atlas.remove(&y_params.into());
-            self.sprite_atlas.remove(&uv_params.into());
-        } else {
-            // RGBA: remove all frame textures
-            for frame_index in 0..data.frame_count() {
-                let params = RenderImageParams {
-                    image_id: data.id,
-                    frame_index,
-                };
-                self.sprite_atlas.remove(&params.clone().into());
-            }
+
+            self.sprite_atlas.remove(&params.clone().into());
         }
+
         Ok(())
     }
 

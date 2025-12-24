@@ -166,14 +166,6 @@ impl BladeAtlasState {
                 format = gpu::TextureFormat::Bgra8Unorm;
                 usage = gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE;
             }
-            AtlasTextureKind::Nv12Y => {
-                format = gpu::TextureFormat::R8Unorm;
-                usage = gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE;
-            }
-            AtlasTextureKind::Nv12UV => {
-                format = gpu::TextureFormat::Rg8Unorm;
-                usage = gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE;
-            }
         }
 
         let raw = self.gpu.create_texture(gpu::TextureDesc {
@@ -272,8 +264,6 @@ impl BladeAtlasState {
 struct BladeAtlasStorage {
     monochrome_textures: AtlasTextureList<BladeAtlasTexture>,
     polychrome_textures: AtlasTextureList<BladeAtlasTexture>,
-    nv12_y_textures: AtlasTextureList<BladeAtlasTexture>,
-    nv12_uv_textures: AtlasTextureList<BladeAtlasTexture>,
 }
 
 impl ops::Index<AtlasTextureKind> for BladeAtlasStorage {
@@ -282,8 +272,6 @@ impl ops::Index<AtlasTextureKind> for BladeAtlasStorage {
         match kind {
             crate::AtlasTextureKind::Monochrome => &self.monochrome_textures,
             crate::AtlasTextureKind::Polychrome => &self.polychrome_textures,
-            crate::AtlasTextureKind::Nv12Y => &self.nv12_y_textures,
-            crate::AtlasTextureKind::Nv12UV => &self.nv12_uv_textures,
         }
     }
 }
@@ -293,8 +281,6 @@ impl ops::IndexMut<AtlasTextureKind> for BladeAtlasStorage {
         match kind {
             crate::AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             crate::AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
-            crate::AtlasTextureKind::Nv12Y => &mut self.nv12_y_textures,
-            crate::AtlasTextureKind::Nv12UV => &mut self.nv12_uv_textures,
         }
     }
 }
@@ -305,8 +291,6 @@ impl ops::Index<AtlasTextureId> for BladeAtlasStorage {
         let textures = match id.kind {
             crate::AtlasTextureKind::Monochrome => &self.monochrome_textures,
             crate::AtlasTextureKind::Polychrome => &self.polychrome_textures,
-            crate::AtlasTextureKind::Nv12Y => &self.nv12_y_textures,
-            crate::AtlasTextureKind::Nv12UV => &self.nv12_uv_textures,
         };
         textures[id.index as usize].as_ref().unwrap()
     }
@@ -318,12 +302,6 @@ impl BladeAtlasStorage {
             texture.destroy(gpu);
         }
         for mut texture in self.polychrome_textures.drain().flatten() {
-            texture.destroy(gpu);
-        }
-        for mut texture in self.nv12_y_textures.drain().flatten() {
-            texture.destroy(gpu);
-        }
-        for mut texture in self.nv12_uv_textures.drain().flatten() {
             texture.destroy(gpu);
         }
     }
