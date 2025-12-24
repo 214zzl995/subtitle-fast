@@ -76,7 +76,7 @@ fn link_windows_media_deps() {
             "ole32",
             "d3d11",
             "dxgi",
-            "bcrypt", 
+            "bcrypt",
         ] {
             println!("cargo:rustc-link-lib={lib}");
         }

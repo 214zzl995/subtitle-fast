@@ -36,12 +36,13 @@ use crate::InspectorElementRegistry;
 use crate::{
     Action, ActionBuildError, ActionRegistry, Any, AnyView, AnyWindowHandle, AppContext, Asset,
     AssetSource, BackgroundExecutor, Bounds, ClipboardItem, CursorStyle, DispatchPhase, DisplayId,
-    EventEmitter, FocusHandle, FocusMap, ForegroundExecutor, Global, KeyBinding, KeyContext,
-    Keymap, Keystroke, LayoutId, Menu, MenuItem, OwnedMenu, PathPromptOptions, Pixels, Platform,
-    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point, PromptBuilder,
-    PromptButton, PromptHandle, PromptLevel, Render, RenderImage, RenderablePromptHandle,
-    Reservation, ScreenCaptureSource, SharedString, SubscriberSet, Subscription, SvgRenderer, Task,
-    TextSystem, Window, WindowAppearance, WindowHandle, WindowId, WindowInvalidator,
+    EventEmitter, FocusHandle, FocusMap, ForegroundExecutor, Global, ImageId, KeyBinding,
+    KeyContext, Keymap, Keystroke, LayoutId, Menu, MenuItem, OwnedMenu, PathPromptOptions, Pixels,
+    Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point,
+    PromptBuilder, PromptButton, PromptHandle, PromptLevel, Render, RenderImage,
+    RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString, SubscriberSet,
+    Subscription, SvgRenderer, Task, TextSystem, Window, WindowAppearance, WindowHandle, WindowId,
+    WindowInvalidator,
     colors::{Colors, GlobalColors},
     current_platform, hash, init_app_menus,
 };
@@ -2077,6 +2078,20 @@ impl App {
         // remove the texture from the current window
         if let Some(window) = current_window {
             _ = window.drop_image(image);
+        }
+    }
+
+    /// Removes an NV12 image from the renderer cache on all windows.
+    ///
+    /// If the current window is being updated, it will be removed from `App.windows`, you can use
+    /// `current_window` to specify the current window.
+    pub fn drop_nv12_image(&mut self, image_id: ImageId, current_window: Option<&mut Window>) {
+        for window in self.windows.values_mut().flatten() {
+            window.drop_nv12_image(image_id);
+        }
+
+        if let Some(window) = current_window {
+            window.drop_nv12_image(image_id);
         }
     }
 

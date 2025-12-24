@@ -1,8 +1,8 @@
 use super::metal_atlas::MetalAtlas;
 use crate::{
-    AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, MonochromeSprite, PaintSurface,
-    PaintSurfaceSource, Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene,
-    Shadow, Size, Surface, Underline, point, size,
+    AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, ImageId, MonochromeSprite,
+    PaintSurface, PaintSurfaceSource, Path, Point, PolychromeSprite, PrimitiveBatch, Quad,
+    ScaledPixels, Scene, Shadow, Size, Surface, Underline, point, size,
 };
 use anyhow::Result;
 use block::ConcreteBlock;
@@ -25,7 +25,7 @@ use metal::{
 use objc::{self, msg_send, sel, sel_impl};
 use parking_lot::Mutex;
 
-use std::{cell::Cell, ffi::c_void, mem, ptr, sync::Arc};
+use std::{cell::Cell, collections::HashMap, ffi::c_void, mem, ptr, sync::Arc};
 
 // Exported to metal
 pub(crate) type PointF = crate::Point<f32>;
@@ -117,6 +117,14 @@ pub(crate) struct MetalRenderer {
     path_intermediate_texture: Option<metal::Texture>,
     path_intermediate_msaa_texture: Option<metal::Texture>,
     path_sample_count: u32,
+    nv12_textures: HashMap<ImageId, Nv12SurfaceTextures>,
+}
+
+struct Nv12SurfaceTextures {
+    y_texture: metal::Texture,
+    uv_texture: metal::Texture,
+    width: u32,
+    height: u32,
 }
 
 #[repr(C)]
@@ -274,6 +282,7 @@ impl MetalRenderer {
             path_intermediate_texture: None,
             path_intermediate_msaa_texture: None,
             path_sample_count: PATH_SAMPLE_COUNT,
+            nv12_textures: HashMap::new(),
         }
     }
 
@@ -287,6 +296,10 @@ impl MetalRenderer {
 
     pub fn sprite_atlas(&self) -> &Arc<MetalAtlas> {
         &self.sprite_atlas
+    }
+
+    pub fn drop_nv12_image(&mut self, image_id: ImageId) {
+        self.nv12_textures.remove(&image_id);
     }
 
     pub fn set_presents_with_transaction(&mut self, presents_with_transaction: bool) {
@@ -1160,29 +1173,52 @@ impl MetalRenderer {
                     command_encoder.draw_primitives(metal::MTLPrimitiveType::Triangle, 0, 6);
                     *instance_offset = next_offset;
                 }
-                PaintSurfaceSource::Nv12 { frame, .. } => {
+                PaintSurfaceSource::Nv12 { image_id, frame } => {
                     let texture_size = size(
                         DevicePixels::from(frame.width as i32),
                         DevicePixels::from(frame.height as i32),
                     );
 
-                    let y_descriptor = metal::TextureDescriptor::new();
-                    y_descriptor.set_width(frame.width as u64);
-                    y_descriptor.set_height(frame.height as u64);
-                    y_descriptor.set_pixel_format(MTLPixelFormat::R8Unorm);
-                    y_descriptor.set_usage(metal::MTLTextureUsage::ShaderRead);
-                    let y_texture = self.device.new_texture(&y_descriptor);
+                    let recreate = match self.nv12_textures.get(image_id) {
+                        Some(textures) => {
+                            textures.width != frame.width || textures.height != frame.height
+                        }
+                        None => true,
+                    };
 
-                    let uv_descriptor = metal::TextureDescriptor::new();
-                    uv_descriptor.set_width(frame.uv_width() as u64);
-                    uv_descriptor.set_height(frame.uv_height() as u64);
-                    uv_descriptor.set_pixel_format(MTLPixelFormat::RG8Unorm);
-                    uv_descriptor.set_usage(metal::MTLTextureUsage::ShaderRead);
-                    let uv_texture = self.device.new_texture(&uv_descriptor);
+                    if recreate {
+                        let y_descriptor = metal::TextureDescriptor::new();
+                        y_descriptor.set_width(frame.width as u64);
+                        y_descriptor.set_height(frame.height as u64);
+                        y_descriptor.set_pixel_format(MTLPixelFormat::R8Unorm);
+                        y_descriptor.set_usage(metal::MTLTextureUsage::ShaderRead);
+                        let y_texture = self.device.new_texture(&y_descriptor);
+
+                        let uv_descriptor = metal::TextureDescriptor::new();
+                        uv_descriptor.set_width(frame.uv_width() as u64);
+                        uv_descriptor.set_height(frame.uv_height() as u64);
+                        uv_descriptor.set_pixel_format(MTLPixelFormat::RG8Unorm);
+                        uv_descriptor.set_usage(metal::MTLTextureUsage::ShaderRead);
+                        let uv_texture = self.device.new_texture(&uv_descriptor);
+
+                        self.nv12_textures.insert(
+                            *image_id,
+                            Nv12SurfaceTextures {
+                                y_texture,
+                                uv_texture,
+                                width: frame.width,
+                                height: frame.height,
+                            },
+                        );
+                    }
+
+                    let Some(textures) = self.nv12_textures.get(image_id) else {
+                        return false;
+                    };
 
                     let y_region =
                         metal::MTLRegion::new_2d(0, 0, frame.width as u64, frame.height as u64);
-                    y_texture.replace_region(
+                    textures.y_texture.replace_region(
                         y_region,
                         0,
                         frame.y_plane.as_ref().as_ptr() as *const _,
@@ -1195,7 +1231,7 @@ impl MetalRenderer {
                         frame.uv_width() as u64,
                         frame.uv_height() as u64,
                     );
-                    uv_texture.replace_region(
+                    textures.uv_texture.replace_region(
                         uv_region,
                         0,
                         frame.uv_plane.as_ref().as_ptr() as *const _,
@@ -1218,11 +1254,13 @@ impl MetalRenderer {
                         mem::size_of_val(&texture_size) as u64,
                         &texture_size as *const Size<DevicePixels> as *const _,
                     );
-                    command_encoder
-                        .set_fragment_texture(SurfaceInputIndex::YTexture as u64, Some(&y_texture));
+                    command_encoder.set_fragment_texture(
+                        SurfaceInputIndex::YTexture as u64,
+                        Some(&textures.y_texture),
+                    );
                     command_encoder.set_fragment_texture(
                         SurfaceInputIndex::CbCrTexture as u64,
-                        Some(&uv_texture),
+                        Some(&textures.uv_texture),
                     );
 
                     unsafe {
