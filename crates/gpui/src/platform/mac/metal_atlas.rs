@@ -18,6 +18,8 @@ impl MetalAtlas {
             device: AssertSend(device),
             monochrome_textures: Default::default(),
             polychrome_textures: Default::default(),
+            nv12_y_textures: Default::default(),
+            nv12_uv_textures: Default::default(),
             tiles_by_key: Default::default(),
         }))
     }
@@ -31,6 +33,8 @@ struct MetalAtlasState {
     device: AssertSend<Device>,
     monochrome_textures: AtlasTextureList<MetalAtlasTexture>,
     polychrome_textures: AtlasTextureList<MetalAtlasTexture>,
+    nv12_y_textures: AtlasTextureList<MetalAtlasTexture>,
+    nv12_uv_textures: AtlasTextureList<MetalAtlasTexture>,
     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
 }
 
@@ -66,6 +70,8 @@ impl PlatformAtlas for MetalAtlas {
         let textures = match id.kind {
             AtlasTextureKind::Monochrome => &mut lock.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut lock.polychrome_textures,
+            AtlasTextureKind::Nv12Y => &mut lock.nv12_y_textures,
+            AtlasTextureKind::Nv12UV => &mut lock.nv12_uv_textures,
         };
 
         let Some(texture_slot) = textures
@@ -99,6 +105,8 @@ impl MetalAtlasState {
             let textures = match texture_kind {
                 AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
                 AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
+                AtlasTextureKind::Nv12Y => &mut self.nv12_y_textures,
+                AtlasTextureKind::Nv12UV => &mut self.nv12_uv_textures,
             };
 
             if let Some(tile) = textures
@@ -143,6 +151,14 @@ impl MetalAtlasState {
                 pixel_format = metal::MTLPixelFormat::BGRA8Unorm;
                 usage = metal::MTLTextureUsage::ShaderRead;
             }
+            AtlasTextureKind::Nv12Y => {
+                pixel_format = metal::MTLPixelFormat::R8Unorm;
+                usage = metal::MTLTextureUsage::ShaderRead;
+            }
+            AtlasTextureKind::Nv12UV => {
+                pixel_format = metal::MTLPixelFormat::RG8Unorm;
+                usage = metal::MTLTextureUsage::ShaderRead;
+            }
         }
         texture_descriptor.set_pixel_format(pixel_format);
         texture_descriptor.set_usage(usage);
@@ -151,6 +167,8 @@ impl MetalAtlasState {
         let texture_list = match kind {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
+            AtlasTextureKind::Nv12Y => &mut self.nv12_y_textures,
+            AtlasTextureKind::Nv12UV => &mut self.nv12_uv_textures,
         };
 
         let index = texture_list.free_list.pop();
@@ -181,6 +199,8 @@ impl MetalAtlasState {
         let textures = match id.kind {
             crate::AtlasTextureKind::Monochrome => &self.monochrome_textures,
             crate::AtlasTextureKind::Polychrome => &self.polychrome_textures,
+            crate::AtlasTextureKind::Nv12Y => &self.nv12_y_textures,
+            crate::AtlasTextureKind::Nv12UV => &self.nv12_uv_textures,
         };
         textures[id.index as usize].as_ref().unwrap()
     }

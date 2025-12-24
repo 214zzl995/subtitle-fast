@@ -42,6 +42,19 @@ pub(crate) struct RenderImageParams {
     pub(crate) frame_index: usize,
 }
 
+/// Which plane of an NV12 image to render
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
+pub(crate) enum Nv12Plane {
+    Y,
+    UV,
+}
+
+#[derive(PartialEq, Eq, Hash, Clone)]
+pub(crate) struct RenderNv12Params {
+    pub(crate) image_id: ImageId,
+    pub(crate) plane: Nv12Plane,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Nv12Frame {
     pub(crate) width: u32,
