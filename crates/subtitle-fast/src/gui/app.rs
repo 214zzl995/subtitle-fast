@@ -373,7 +373,7 @@ impl MainWindow {
                     let now = Instant::now();
                     let delta_ms = (now - last_tick).as_secs_f64() * 1000.0;
                     last_tick = now;
-                    let update_result = state.update(&mut async_app, |state, cx| {
+                    let updated = state.update(&mut async_app, |state, cx| {
                         let is_playing = state.is_playing();
                         if is_playing {
                             let next_time = state.playhead_ms() + delta_ms;
@@ -387,25 +387,14 @@ impl MainWindow {
                                 state.set_playhead_ms(next_time);
                             }
                         }
-                        let consumed_images = state.advance_playback();
-                        let advanced = !consumed_images.is_empty();
+                        let advanced = state.advance_playback();
                         if is_playing || advanced {
                             cx.notify();
                         }
-                        consumed_images
                     });
-                    
-                    match update_result {
-                        Ok(consumed_images) => {
-                            for image in consumed_images {
-                                let _ = async_app.update(|cx| {
-                                    cx.drop_image(image, None);
-                                });
-                            }
-                        }
-                        Err(_) => break,
+                    if updated.is_err() {
+                        break;
                     }
-
                 }
             }
         })

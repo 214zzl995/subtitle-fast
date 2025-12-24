@@ -658,44 +658,7 @@ impl BladeRenderer {
         }
     }
 
-    pub fn drop_nv12_image(&mut self, image_id: ImageId) {
-        if let Some(textures) = self.nv12_cache.remove(&image_id) {
-            self.gpu.destroy_texture(textures.y_texture);
-            self.gpu.destroy_texture_view(textures.y_view);
-            self.gpu.destroy_texture(textures.uv_texture);
-            self.gpu.destroy_texture_view(textures.uv_view);
-        }
-    }
-
-
     fn prepare_nv12_textures(&mut self, surfaces: &[PaintSurface]) {
-        let current_image_ids: collections::FxHashSet<ImageId> = surfaces
-            .iter()
-            .filter_map(|surface| {
-                if let PaintSurfaceSource::Nv12 { image_id, .. } = &surface.source {
-                    Some(*image_id)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let stale_ids: Vec<ImageId> = self
-            .nv12_cache
-            .keys()
-            .filter(|id| !current_image_ids.contains(id))
-            .copied()
-            .collect();
-
-        for stale_id in stale_ids {
-            if let Some(textures) = self.nv12_cache.remove(&stale_id) {
-                self.gpu.destroy_texture(textures.y_texture);
-                self.gpu.destroy_texture_view(textures.y_view);
-                self.gpu.destroy_texture(textures.uv_texture);
-                self.gpu.destroy_texture_view(textures.uv_view);
-            }
-        }
-
         if surfaces.is_empty() {
             return;
         }
@@ -708,7 +671,6 @@ impl BladeRenderer {
             if self.nv12_cache.contains_key(image_id) {
                 continue;
             }
-
 
             println!("Preparing NV12 Texture: {}x{}", frame.width, frame.height);
 
@@ -858,13 +820,10 @@ impl BladeRenderer {
     }
 
     pub fn draw(&mut self, scene: &Scene) {
-        self.wait_for_gpu();
-
         self.command_encoder.start();
         self.atlas.before_frame(&mut self.command_encoder);
 
         self.prepare_nv12_textures(&scene.surfaces);
-
 
         let frame = {
             profiling::scope!("acquire frame");
