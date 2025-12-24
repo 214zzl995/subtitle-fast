@@ -116,6 +116,23 @@ struct Nv12SurfaceTextures {
     uv_view: gpu::TextureView,
 }
 
+// RAII guard to ensure NV12 textures are cleaned up after rendering
+struct NV12TextureCleanup<'a> {
+    gpu: &'a gpu::Context,
+    textures: &'a FxHashMap<ImageId, Nv12SurfaceTextures>,
+}
+
+impl<'a> Drop for NV12TextureCleanup<'a> {
+    fn drop(&mut self) {
+        for textures in self.textures.values() {
+            self.gpu.destroy_texture(textures.y_texture);
+            self.gpu.destroy_texture_view(textures.y_view);
+            self.gpu.destroy_texture(textures.uv_texture);
+            self.gpu.destroy_texture_view(textures.uv_view);
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
 struct PathSprite {
@@ -343,7 +360,7 @@ pub struct BladeRenderer {
     instance_belt: BufferBelt,
     atlas: Arc<BladeAtlas>,
     atlas_sampler: gpu::Sampler,
-    nv12_cache: FxHashMap<ImageId, Nv12SurfaceTextures>,
+
     #[cfg(target_os = "macos")]
     core_video_texture_cache: CVMetalTextureCache,
     path_intermediate_texture: gpu::Texture,
@@ -394,7 +411,6 @@ impl BladeRenderer {
             min_filter: gpu::FilterMode::Linear,
             ..Default::default()
         });
-        let nv12_cache = FxHashMap::default();
 
         let (path_intermediate_texture, path_intermediate_texture_view) =
             create_path_intermediate_texture(
@@ -431,7 +447,7 @@ impl BladeRenderer {
             instance_belt,
             atlas,
             atlas_sampler,
-            nv12_cache,
+
             #[cfg(target_os = "macos")]
             core_video_texture_cache,
             path_intermediate_texture,
@@ -637,12 +653,7 @@ impl BladeRenderer {
         self.wait_for_gpu();
         self.atlas.destroy();
         self.gpu.destroy_sampler(self.atlas_sampler);
-        for textures in self.nv12_cache.drain().map(|(_, v)| v) {
-            self.gpu.destroy_texture(textures.y_texture);
-            self.gpu.destroy_texture_view(textures.y_view);
-            self.gpu.destroy_texture(textures.uv_texture);
-            self.gpu.destroy_texture_view(textures.uv_view);
-        }
+
         self.instance_belt.destroy(&self.gpu);
         self.gpu.destroy_command_encoder(&mut self.command_encoder);
         self.pipelines.destroy(&self.gpu);
@@ -658,9 +669,14 @@ impl BladeRenderer {
         }
     }
 
-    fn prepare_nv12_textures(&mut self, surfaces: &[PaintSurface]) {
+    fn prepare_nv12_textures(
+        &mut self,
+        surfaces: &[PaintSurface],
+    ) -> FxHashMap<ImageId, Nv12SurfaceTextures> {
+        let mut nv12_textures = FxHashMap::default();
+
         if surfaces.is_empty() {
-            return;
+            return nv12_textures;
         }
 
         let mut transfers = self.command_encoder.transfer("nv12 upload");
@@ -668,11 +684,10 @@ impl BladeRenderer {
             let PaintSurfaceSource::Nv12 { image_id, frame } = &surface.source else {
                 continue;
             };
-            if self.nv12_cache.contains_key(image_id) {
+
+            if nv12_textures.contains_key(image_id) {
                 continue;
             }
-
-            println!("Preparing NV12 Texture: {}x{}", frame.width, frame.height);
 
             let (y_texture, y_view) = create_nv12_texture(
                 &self.gpu,
@@ -700,10 +715,6 @@ impl BladeRenderer {
 
             // Upload Y plane
             let y_stride_target = align_stride(frame.width, 1);
-            println!(
-                "Y Stride Target: {}, Original: {}",
-                y_stride_target, frame.y_stride
-            );
 
             if y_stride_target != frame.y_stride as u32 {
                 let mut aligned_y = Vec::with_capacity((y_stride_target * frame.height) as usize);
@@ -754,10 +765,6 @@ impl BladeRenderer {
 
             // Upload UV plane
             let uv_stride_target = align_stride(frame.uv_width() * 2, 1);
-            println!(
-                "UV Stride Target: {}, Original: {}",
-                uv_stride_target, frame.uv_stride
-            );
 
             if uv_stride_target != frame.uv_stride as u32 {
                 let mut aligned_uv =
@@ -807,7 +814,8 @@ impl BladeRenderer {
                     },
                 );
             }
-            self.nv12_cache.insert(
+
+            nv12_textures.insert(
                 *image_id,
                 Nv12SurfaceTextures {
                     y_texture,
@@ -817,13 +825,21 @@ impl BladeRenderer {
                 },
             );
         }
+
+        nv12_textures
     }
 
     pub fn draw(&mut self, scene: &Scene) {
         self.command_encoder.start();
         self.atlas.before_frame(&mut self.command_encoder);
 
-        self.prepare_nv12_textures(&scene.surfaces);
+        let nv12_textures = self.prepare_nv12_textures(&scene.surfaces);
+
+        // Ensure textures are cleaned up when this scope ends
+        let _cleanup_guard = NV12TextureCleanup {
+            gpu: &self.gpu,
+            textures: &nv12_textures,
+        };
 
         let frame = {
             profiling::scope!("acquire frame");
@@ -1000,7 +1016,7 @@ impl BladeRenderer {
                     for surface in surfaces {
                         match &surface.source {
                             PaintSurfaceSource::Nv12 { image_id, .. } => {
-                                let Some(textures) = self.nv12_cache.get(image_id) else {
+                                let Some(textures) = nv12_textures.get(image_id) else {
                                     continue;
                                 };
 
