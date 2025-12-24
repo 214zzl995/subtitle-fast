@@ -849,10 +849,6 @@ impl PlatformWindow for WindowsWindow {
         self.0.state.borrow().renderer.sprite_atlas()
     }
 
-    fn drop_nv12_image(&self, image_id: ImageId) {
-        self.0.state.borrow_mut().renderer.drop_nv12_image(image_id);
-    }
-
     fn get_raw_handle(&self) -> HWND {
         self.0.hwnd
     }

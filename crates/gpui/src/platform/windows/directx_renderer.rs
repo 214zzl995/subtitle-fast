@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     mem::ManuallyDrop,
     sync::{Arc, OnceLock},
 };
@@ -46,7 +45,6 @@ pub(crate) struct DirectXRenderer {
     pipelines: DirectXRenderPipelines,
     direct_composition: Option<DirectComposition>,
     font_info: &'static FontInfo,
-    nv12_textures: HashMap<ImageId, Nv12SurfaceTextures>,
 }
 
 /// Direct3D objects
@@ -97,15 +95,6 @@ struct DirectComposition {
     comp_device: IDCompositionDevice,
     comp_target: IDCompositionTarget,
     comp_visual: IDCompositionVisual,
-}
-
-struct Nv12SurfaceTextures {
-    y_texture: ID3D11Texture2D,
-    y_srv: ID3D11ShaderResourceView,
-    uv_texture: ID3D11Texture2D,
-    uv_srv: ID3D11ShaderResourceView,
-    width: u32,
-    height: u32,
 }
 
 impl DirectXRendererDevices {
@@ -176,16 +165,11 @@ impl DirectXRenderer {
             pipelines,
             direct_composition,
             font_info: Self::get_font_info(),
-            nv12_textures: HashMap::new(),
         })
     }
 
     pub(crate) fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.atlas.clone()
-    }
-
-    pub(crate) fn drop_nv12_image(&mut self, image_id: ImageId) {
-        self.nv12_textures.remove(&image_id);
     }
 
     fn pre_draw(&self) -> Result<()> {
@@ -260,7 +244,6 @@ impl DirectXRenderer {
                 .log_err();
 
             drop(self.direct_composition.take());
-            self.nv12_textures.clear();
             ManuallyDrop::drop(&mut self.devices);
         }
 
@@ -607,61 +590,27 @@ impl DirectXRenderer {
         )?;
 
         for (i, surface) in surfaces.iter().enumerate() {
-            let PaintSurfaceSource::Nv12 { image_id, frame } = &surface.source;
+            let PaintSurfaceSource::Nv12 { frame, .. } = &surface.source;
 
-            let needs_create = match self.nv12_textures.get(image_id) {
-                Some(textures) => textures.width != frame.width || textures.height != frame.height,
-                None => true,
-            };
-
-            if needs_create {
-                let y_texture = create_texture(
-                    &self.devices.device,
-                    frame.width,
-                    frame.height,
-                    DXGI_FORMAT_R8_UNORM,
-                )?;
-                let y_srv = create_texture_view(&self.devices.device, &y_texture)?;
-
-                let uv_texture = create_texture(
-                    &self.devices.device,
-                    frame.uv_width(),
-                    frame.uv_height(),
-                    DXGI_FORMAT_R8G8_UNORM,
-                )?;
-                let uv_srv = create_texture_view(&self.devices.device, &uv_texture)?;
-
-                self.nv12_textures.insert(
-                    *image_id,
-                    Nv12SurfaceTextures {
-                        y_texture,
-                        y_srv,
-                        uv_texture,
-                        uv_srv,
-                        width: frame.width,
-                        height: frame.height,
-                    },
-                );
-            }
-
-            let Some(textures) = self.nv12_textures.get(image_id) else {
-                continue;
-            };
-
-            update_texture_with_data(
-                &self.devices.device_context,
-                &textures.y_texture,
-                frame.y_plane.as_ref(),
-                frame.y_stride,
-            )?;
-            update_texture_with_data(
-                &self.devices.device_context,
-                &textures.uv_texture,
-                frame.uv_plane.as_ref(),
-                frame.uv_stride,
+            let (_y_texture, y_srv) = create_texture_with_data(
+                &self.devices.device,
+                frame.width,
+                frame.height,
+                frame.y_stride as u32,
+                DXGI_FORMAT_R8_UNORM,
+                &frame.y_plane,
             )?;
 
-            let textures = [Some(textures.y_srv.clone()), Some(textures.uv_srv.clone())];
+            let (_uv_texture, uv_srv) = create_texture_with_data(
+                &self.devices.device,
+                frame.uv_width(),
+                frame.uv_height(),
+                frame.uv_stride as u32,
+                DXGI_FORMAT_R8G8_UNORM,
+                &frame.uv_plane,
+            )?;
+
+            let textures = [Some(y_srv), Some(uv_srv)];
 
             set_pipeline_state(
                 &self.devices.device_context,
@@ -1483,12 +1432,14 @@ fn update_buffer<T>(
 }
 
 #[inline]
-fn create_texture(
+fn create_texture_with_data(
     device: &ID3D11Device,
     width: u32,
     height: u32,
+    stride: u32,
     format: DXGI_FORMAT,
-) -> Result<ID3D11Texture2D> {
+    data: &[u8],
+) -> Result<(ID3D11Texture2D, ID3D11ShaderResourceView)> {
     let desc = D3D11_TEXTURE2D_DESC {
         Width: width,
         Height: height,
@@ -1505,39 +1456,24 @@ fn create_texture(
         MiscFlags: 0,
     };
 
-    unsafe {
+    let subresource_data = D3D11_SUBRESOURCE_DATA {
+        pSysMem: data.as_ptr() as _,
+        SysMemPitch: stride,
+        SysMemSlicePitch: 0,
+    };
+
+    let texture = unsafe {
         let mut output = None;
-        device.CreateTexture2D(&desc, None, Some(&mut output))?;
-        Ok(output.unwrap())
-    }
-}
+        device.CreateTexture2D(&desc, Some(&subresource_data), Some(&mut output))?;
+        output.unwrap()
+    };
 
-#[inline]
-fn create_texture_view(
-    device: &ID3D11Device,
-    texture: &ID3D11Texture2D,
-) -> Result<ID3D11ShaderResourceView> {
     let mut view = None;
-    unsafe { device.CreateShaderResourceView(texture, None, Some(&mut view))? };
-    Ok(view.unwrap())
+    unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut view))? };
+
+    Ok((texture, view.unwrap()))
 }
 
-#[inline]
-fn update_texture_with_data(
-    device_context: &ID3D11DeviceContext,
-    texture: &ID3D11Texture2D,
-    data: &[u8],
-    stride: usize,
-) -> Result<()> {
-    let stride = u32::try_from(stride)
-        .map_err(|_| anyhow::anyhow!("NV12 stride {} exceeds u32 max", stride))?;
-    unsafe {
-        device_context.UpdateSubresource(texture, 0, None, data.as_ptr() as _, stride, 0);
-    }
-    Ok(())
-}
-
-#[inline]
 #[inline]
 fn set_pipeline_state(
     device_context: &ID3D11DeviceContext,

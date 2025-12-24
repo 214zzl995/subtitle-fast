@@ -509,7 +509,6 @@ impl ControlPanel {
             async move {
                 let mut receiver = rx;
                 let mut last_timestamp_ms: Option<f64> = None;
-                let mut playback_image_id: Option<ImageId> = None;
                 loop {
                     let active_session_id =
                         match state.read_with(&async_app, |state, _| state.playback_session_id()) {
@@ -566,33 +565,15 @@ impl ControlPanel {
                                     });
                                 last_timestamp_ms = Some(timestamp_ms);
 
-                                let image = match playback_image_id {
-                                    Some(image_id) => RenderImage::from_nv12_with_id(
-                                        image_id,
-                                        frame.width(),
-                                        frame.height(),
-                                        frame.y_stride(),
-                                        frame.uv_stride(),
-                                        frame.y_plane().to_vec(),
-                                        frame.uv_plane().to_vec(),
-                                    ),
-                                    None => RenderImage::from_nv12(
-                                        frame.width(),
-                                        frame.height(),
-                                        frame.y_stride(),
-                                        frame.uv_stride(),
-                                        frame.y_plane().to_vec(),
-                                        frame.uv_plane().to_vec(),
-                                    ),
-                                };
-
-                                let image = match image {
-                                    Ok(image) => {
-                                        if playback_image_id.is_none() {
-                                            playback_image_id = Some(image.id);
-                                        }
-                                        Arc::new(image)
-                                    }
+                                let image = match RenderImage::from_nv12(
+                                    frame.width(),
+                                    frame.height(),
+                                    frame.y_stride(),
+                                    frame.uv_stride(),
+                                    frame.y_plane().to_vec(),
+                                    frame.uv_plane().to_vec(),
+                                ) {
+                                    Ok(image) => Arc::new(image),
                                     Err(err) => {
                                         let _ = state.update(&mut async_app, |state, cx| {
                                             let message =
@@ -630,12 +611,6 @@ impl ControlPanel {
                             }
                         },
                     }
-                }
-
-                if let Some(image_id) = playback_image_id {
-                    let _ = state.update(&mut async_app, |_, cx| {
-                        cx.drop_nv12_image(image_id, None);
-                    });
                 }
             }
         })

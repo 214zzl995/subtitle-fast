@@ -25,7 +25,7 @@ use wayland_protocols::{
 use wayland_protocols_plasma::blur::client::org_kde_kwin_blur;
 
 use crate::{
-    AnyWindowHandle, Bounds, Decorations, Globals, GpuSpecs, ImageId, Modifiers, Output, Pixels,
+    AnyWindowHandle, Bounds, Decorations, Globals, GpuSpecs, Modifiers, Output, Pixels,
     PlatformDisplay, PlatformInput, Point, PromptButton, PromptLevel, RequestFrameOptions,
     ResizeEdge, Size, Tiling, WaylandClientStatePtr, WindowAppearance, WindowBackgroundAppearance,
     WindowBounds, WindowControlArea, WindowControls, WindowDecorations, WindowParams, px, size,
@@ -1030,11 +1030,6 @@ impl PlatformWindow for WaylandWindow {
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         let state = self.borrow();
         state.renderer.sprite_atlas().clone()
-    }
-
-    fn drop_nv12_image(&self, image_id: ImageId) {
-        let mut state = self.borrow_mut();
-        state.renderer.drop_nv12_image(image_id);
     }
 
     fn show_window_menu(&self, position: Point<Pixels>) {

@@ -114,8 +114,23 @@ struct Nv12SurfaceTextures {
     y_view: gpu::TextureView,
     uv_texture: gpu::Texture,
     uv_view: gpu::TextureView,
-    width: u32,
-    height: u32,
+}
+
+// RAII guard to ensure NV12 textures are cleaned up after rendering
+struct NV12TextureCleanup<'a> {
+    gpu: &'a gpu::Context,
+    textures: &'a FxHashMap<ImageId, Nv12SurfaceTextures>,
+}
+
+impl<'a> Drop for NV12TextureCleanup<'a> {
+    fn drop(&mut self) {
+        for textures in self.textures.values() {
+            self.gpu.destroy_texture(textures.y_texture);
+            self.gpu.destroy_texture_view(textures.y_view);
+            self.gpu.destroy_texture(textures.uv_texture);
+            self.gpu.destroy_texture_view(textures.uv_view);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -345,7 +360,6 @@ pub struct BladeRenderer {
     instance_belt: BufferBelt,
     atlas: Arc<BladeAtlas>,
     atlas_sampler: gpu::Sampler,
-    nv12_textures: FxHashMap<ImageId, Nv12SurfaceTextures>,
 
     #[cfg(target_os = "macos")]
     core_video_texture_cache: CVMetalTextureCache,
@@ -433,7 +447,6 @@ impl BladeRenderer {
             instance_belt,
             atlas,
             atlas_sampler,
-            nv12_textures: FxHashMap::default(),
 
             #[cfg(target_os = "macos")]
             core_video_texture_cache,
@@ -641,10 +654,6 @@ impl BladeRenderer {
         self.atlas.destroy();
         self.gpu.destroy_sampler(self.atlas_sampler);
 
-        for (_, textures) in self.nv12_textures.drain() {
-            self.destroy_nv12_textures(textures);
-        }
-
         self.instance_belt.destroy(&self.gpu);
         self.gpu.destroy_command_encoder(&mut self.command_encoder);
         self.pipelines.destroy(&self.gpu);
@@ -660,81 +669,43 @@ impl BladeRenderer {
         }
     }
 
-    pub fn drop_nv12_image(&mut self, image_id: ImageId) {
-        if let Some(textures) = self.nv12_textures.remove(&image_id) {
-            self.destroy_nv12_textures(textures);
-        }
-    }
+    fn prepare_nv12_textures(
+        &mut self,
+        surfaces: &[PaintSurface],
+    ) -> FxHashMap<ImageId, Nv12SurfaceTextures> {
+        let mut nv12_textures = FxHashMap::default();
 
-    fn destroy_nv12_textures(&self, textures: Nv12SurfaceTextures) {
-        self.gpu.destroy_texture(textures.y_texture);
-        self.gpu.destroy_texture_view(textures.y_view);
-        self.gpu.destroy_texture(textures.uv_texture);
-        self.gpu.destroy_texture_view(textures.uv_view);
-    }
-
-    fn prepare_nv12_textures(&mut self, surfaces: &[PaintSurface]) {
         if surfaces.is_empty() {
-            return;
+            return nv12_textures;
         }
 
         let mut transfers = self.command_encoder.transfer("nv12 upload");
-        let mut updated_ids: FxHashMap<ImageId, ()> = FxHashMap::default();
-
         for surface in surfaces {
             let PaintSurfaceSource::Nv12 { image_id, frame } = &surface.source else {
                 continue;
             };
 
-            if updated_ids.contains_key(image_id) {
+            if nv12_textures.contains_key(image_id) {
                 continue;
             }
-            updated_ids.insert(*image_id, ());
 
-            let recreate = match self.nv12_textures.get(image_id) {
-                Some(textures) => textures.width != frame.width || textures.height != frame.height,
-                None => true,
-            };
+            let (y_texture, y_view) = create_nv12_texture(
+                &self.gpu,
+                "nv12 y",
+                gpu::TextureFormat::R8Unorm,
+                frame.width,
+                frame.height,
+            );
+            let (uv_texture, uv_view) = create_nv12_texture(
+                &self.gpu,
+                "nv12 uv",
+                gpu::TextureFormat::Rg8Unorm,
+                frame.uv_width(),
+                frame.uv_height(),
+            );
 
-            if recreate {
-                if let Some(textures) = self.nv12_textures.remove(image_id) {
-                    self.destroy_nv12_textures(textures);
-                }
-
-                let (y_texture, y_view) = create_nv12_texture(
-                    &self.gpu,
-                    "nv12 y",
-                    gpu::TextureFormat::R8Unorm,
-                    frame.width,
-                    frame.height,
-                );
-                let (uv_texture, uv_view) = create_nv12_texture(
-                    &self.gpu,
-                    "nv12 uv",
-                    gpu::TextureFormat::Rg8Unorm,
-                    frame.uv_width(),
-                    frame.uv_height(),
-                );
-
-                self.nv12_textures.insert(
-                    *image_id,
-                    Nv12SurfaceTextures {
-                        y_texture,
-                        y_view,
-                        uv_texture,
-                        uv_view,
-                        width: frame.width,
-                        height: frame.height,
-                    },
-                );
-            }
-
-            let Some(textures) = self.nv12_textures.get(image_id) else {
-                continue;
-            };
-
-            self.command_encoder.init_texture(textures.y_texture);
-            self.command_encoder.init_texture(textures.uv_texture);
+            self.command_encoder.init_texture(y_texture);
+            self.command_encoder.init_texture(uv_texture);
 
             const ALIGNMENT: u32 = 256;
             fn align_stride(width: u32, bytes_per_pixel: u32) -> u32 {
@@ -760,7 +731,7 @@ impl BladeRenderer {
                     y_data,
                     y_stride_target,
                     gpu::TexturePiece {
-                        texture: textures.y_texture,
+                        texture: y_texture,
                         mip_level: 0,
                         array_layer: 0,
                         origin: [0, 0, 0],
@@ -779,7 +750,7 @@ impl BladeRenderer {
                     y_data,
                     frame.y_stride as u32,
                     gpu::TexturePiece {
-                        texture: textures.y_texture,
+                        texture: y_texture,
                         mip_level: 0,
                         array_layer: 0,
                         origin: [0, 0, 0],
@@ -812,7 +783,7 @@ impl BladeRenderer {
                     uv_data,
                     uv_stride_target,
                     gpu::TexturePiece {
-                        texture: textures.uv_texture,
+                        texture: uv_texture,
                         mip_level: 0,
                         array_layer: 0,
                         origin: [0, 0, 0],
@@ -831,7 +802,7 @@ impl BladeRenderer {
                     uv_data,
                     frame.uv_stride as u32,
                     gpu::TexturePiece {
-                        texture: textures.uv_texture,
+                        texture: uv_texture,
                         mip_level: 0,
                         array_layer: 0,
                         origin: [0, 0, 0],
@@ -843,15 +814,32 @@ impl BladeRenderer {
                     },
                 );
             }
+
+            nv12_textures.insert(
+                *image_id,
+                Nv12SurfaceTextures {
+                    y_texture,
+                    y_view,
+                    uv_texture,
+                    uv_view,
+                },
+            );
         }
+
+        nv12_textures
     }
 
     pub fn draw(&mut self, scene: &Scene) {
         self.command_encoder.start();
         self.atlas.before_frame(&mut self.command_encoder);
 
-        self.prepare_nv12_textures(&scene.surfaces);
-        let nv12_textures = &self.nv12_textures;
+        let nv12_textures = self.prepare_nv12_textures(&scene.surfaces);
+
+        // Ensure textures are cleaned up when this scope ends
+        let _cleanup_guard = NV12TextureCleanup {
+            gpu: &self.gpu,
+            textures: &nv12_textures,
+        };
 
         let frame = {
             profiling::scope!("acquire frame");

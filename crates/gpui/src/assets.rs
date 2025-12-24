@@ -85,14 +85,10 @@ impl PartialEq for RenderImage {
 impl Eq for RenderImage {}
 
 impl RenderImage {
-    pub(crate) fn allocate_id() -> ImageId {
-        ImageId(NEXT_IMAGE_ID.fetch_add(1, SeqCst))
-    }
-
     /// Create a new image from the given data.
     pub fn new(data: impl Into<SmallVec<[Frame; 1]>>) -> Self {
         Self {
-            id: Self::allocate_id(),
+            id: ImageId(NEXT_IMAGE_ID.fetch_add(1, SeqCst)),
             scale_factor: 1.0,
             data: RenderImageData::Rgba(data.into()),
         }
@@ -100,27 +96,6 @@ impl RenderImage {
 
     /// Create a new NV12 image from the given planes and strides.
     pub fn from_nv12(
-        width: u32,
-        height: u32,
-        y_stride: usize,
-        uv_stride: usize,
-        y_plane: Vec<u8>,
-        uv_plane: Vec<u8>,
-    ) -> Result<Self> {
-        Self::from_nv12_with_id(
-            Self::allocate_id(),
-            width,
-            height,
-            y_stride,
-            uv_stride,
-            y_plane,
-            uv_plane,
-        )
-    }
-
-    /// Create a new NV12 image with an explicit image id.
-    pub fn from_nv12_with_id(
-        id: ImageId,
         width: u32,
         height: u32,
         y_stride: usize,
@@ -174,7 +149,7 @@ impl RenderImage {
         }
 
         Ok(Self {
-            id,
+            id: ImageId(NEXT_IMAGE_ID.fetch_add(1, SeqCst)),
             scale_factor: 1.0,
             data: RenderImageData::Nv12(Nv12Frame {
                 width,
