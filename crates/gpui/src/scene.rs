@@ -8,11 +8,14 @@ use crate::{
     AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels,
     Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
 };
+#[cfg(target_os = "macos")]
+use core_video::pixel_buffer::CVPixelBuffer;
 use std::{
     fmt::Debug,
     iter::Peekable,
     ops::{Add, Range, Sub},
     slice,
+    sync::Arc,
 };
 
 #[allow(non_camel_case_types, unused)]
@@ -653,13 +656,44 @@ impl From<PolychromeSprite> for Primitive {
     }
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub(crate) struct SurfaceId(pub(crate) u64);
+
+#[derive(Clone, Debug)]
+pub(crate) struct Nv12Frame {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) y_stride: usize,
+    pub(crate) uv_stride: usize,
+    pub(crate) y_plane: Arc<[u8]>,
+    pub(crate) uv_plane: Arc<[u8]>,
+}
+
+impl Nv12Frame {
+    pub(crate) fn uv_width(&self) -> u32 {
+        (self.width + 1) / 2
+    }
+
+    pub(crate) fn uv_height(&self) -> u32 {
+        (self.height + 1) / 2
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum SurfaceSource {
+    #[cfg(target_os = "macos")]
+    CvPixelBuffer(CVPixelBuffer),
+    Nv12(Nv12Frame),
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
-    #[cfg(target_os = "macos")]
-    pub image_buffer: core_video::pixel_buffer::CVPixelBuffer,
+    pub source: SurfaceSource,
+    pub surface_id: Option<SurfaceId>,
+    pub frame_generation: u64,
 }
 
 impl From<PaintSurface> for Primitive {

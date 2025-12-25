@@ -8,6 +8,7 @@ cbuffer GlobalParams: register(b0) {
 };
 
 Texture2D<float4> t_sprite: register(t0);
+Texture2D<float4> t_cb_cr: register(t2);
 SamplerState s_sprite: register(s0);
 
 struct Bounds {
@@ -1179,4 +1180,48 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
     }
     color.a *= sprite.opacity * saturate(0.5 - distance);
     return color;
+}
+
+// --- surfaces --- //
+
+struct Surface {
+    Bounds bounds;
+    Bounds content_mask;
+};
+
+struct SurfaceVertexOutput {
+    float4 position: SV_Position;
+    float2 texture_position: POSITION;
+    float4 clip_distance: SV_ClipDistance;
+};
+
+StructuredBuffer<Surface> surfaces: register(t1);
+
+SurfaceVertexOutput surface_vertex(uint vertex_id: SV_VertexID, uint surface_id: SV_InstanceID) {
+    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
+    Surface surface = surfaces[surface_id];
+    float4 device_position = to_device_position(unit_vertex, surface.bounds);
+    float4 clip_distance = distance_from_clip_rect(unit_vertex, surface.bounds, surface.content_mask);
+
+    SurfaceVertexOutput output;
+    output.position = device_position;
+    output.texture_position = unit_vertex;
+    output.clip_distance = clip_distance;
+    return output;
+}
+
+static const float4x4 ycbcr_to_RGB = float4x4(
+    float4( 1.0000f,  1.0000f,  1.0000f, 0.0),
+    float4( 0.0000f, -0.3441f,  1.7720f, 0.0),
+    float4( 1.4020f, -0.7141f,  0.0000f, 0.0),
+    float4(-0.7010f,  0.5291f, -0.8860f, 1.0)
+);
+
+float4 surface_fragment(SurfaceVertexOutput input): SV_Target {
+    float4 y_cb_cr = float4(
+        t_sprite.SampleLevel(s_sprite, input.texture_position, 0.0).r,
+        t_cb_cr.SampleLevel(s_sprite, input.texture_position, 0.0).rg,
+        1.0
+    );
+    return mul(ycbcr_to_RGB, y_cb_cr);
 }

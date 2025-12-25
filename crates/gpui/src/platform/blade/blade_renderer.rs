@@ -3,15 +3,18 @@
 
 use super::{BladeAtlas, BladeContext};
 use crate::{
-    Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, Path, Point, PolychromeSprite,
-    PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, Underline,
+    Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, PaintSurface, Path, Point,
+    PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, Underline,
 };
 use blade_graphics as gpu;
 use blade_util::{BufferBelt, BufferBeltDescriptor};
 use bytemuck::{Pod, Zeroable};
+use collections::{FxHashMap, FxHashSet};
 #[cfg(target_os = "macos")]
 use media::core_video::CVMetalTextureCache;
 use std::sync::Arc;
+
+use crate::scene::{Nv12Frame, SurfaceId, SurfaceSource};
 
 const MAX_FRAME_TIME_MS: u32 = 10000;
 
@@ -46,6 +49,23 @@ impl From<Bounds<ScaledPixels>> for PodBounds {
 struct SurfaceParams {
     bounds: PodBounds,
     content_mask: PodBounds,
+}
+
+struct BladeSurfaceCache {
+    generation: u64,
+    size: Size<DevicePixels>,
+    uv_size: Size<DevicePixels>,
+    y_texture: gpu::Texture,
+    uv_texture: gpu::Texture,
+    y_view: gpu::TextureView,
+    uv_view: gpu::TextureView,
+}
+
+struct SurfaceUpload {
+    texture: gpu::Texture,
+    data: gpu::BufferPiece,
+    bytes_per_row: u32,
+    size: gpu::Extent,
 }
 
 #[derive(blade_macros::ShaderData)]
@@ -334,6 +354,10 @@ pub struct BladeRenderer {
     instance_belt: BufferBelt,
     atlas: Arc<BladeAtlas>,
     atlas_sampler: gpu::Sampler,
+    surface_cache: FxHashMap<SurfaceId, BladeSurfaceCache>,
+    surface_upload_belt: BufferBelt,
+    surface_uploads: Vec<SurfaceUpload>,
+    surface_initializations: Vec<gpu::Texture>,
     #[cfg(target_os = "macos")]
     core_video_texture_cache: CVMetalTextureCache,
     path_intermediate_texture: gpu::Texture,
@@ -384,6 +408,11 @@ impl BladeRenderer {
             min_filter: gpu::FilterMode::Linear,
             ..Default::default()
         });
+        let surface_upload_belt = BufferBelt::new(BufferBeltDescriptor {
+            memory: gpu::Memory::Upload,
+            min_chunk_size: 0x10000,
+            alignment: 64, // Vulkan `optimalBufferCopyOffsetAlignment` on Intel XE
+        });
 
         let (path_intermediate_texture, path_intermediate_texture_view) =
             create_path_intermediate_texture(
@@ -420,6 +449,10 @@ impl BladeRenderer {
             instance_belt,
             atlas,
             atlas_sampler,
+            surface_cache: FxHashMap::default(),
+            surface_upload_belt,
+            surface_uploads: Vec::new(),
+            surface_initializations: Vec::new(),
             #[cfg(target_os = "macos")]
             core_video_texture_cache,
             path_intermediate_texture,
@@ -626,6 +659,10 @@ impl BladeRenderer {
         self.atlas.destroy();
         self.gpu.destroy_sampler(self.atlas_sampler);
         self.instance_belt.destroy(&self.gpu);
+        self.surface_upload_belt.destroy(&self.gpu);
+        for (_, entry) in self.surface_cache.drain() {
+            self.destroy_surface_entry(entry);
+        }
         self.gpu.destroy_command_encoder(&mut self.command_encoder);
         self.pipelines.destroy(&self.gpu);
         self.gpu.destroy_surface(&mut self.surface);
@@ -640,9 +677,203 @@ impl BladeRenderer {
         }
     }
 
+    fn create_nv12_surface_textures(&mut self, frame: &Nv12Frame) -> BladeSurfaceCache {
+        let size = Size {
+            width: DevicePixels::from(frame.width as i32),
+            height: DevicePixels::from(frame.height as i32),
+        };
+        let uv_size = Size {
+            width: DevicePixels::from(frame.uv_width() as i32),
+            height: DevicePixels::from(frame.uv_height() as i32),
+        };
+
+        let y_texture = self.gpu.create_texture(gpu::TextureDesc {
+            name: "surface-y",
+            format: gpu::TextureFormat::R8Unorm,
+            size: gpu::Extent {
+                width: size.width.into(),
+                height: size.height.into(),
+                depth: 1,
+            },
+            array_layer_count: 1,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: gpu::TextureDimension::D2,
+            usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
+            external: None,
+        });
+        let y_view = self.gpu.create_texture_view(
+            y_texture,
+            gpu::TextureViewDesc {
+                name: "surface-y",
+                format: gpu::TextureFormat::R8Unorm,
+                dimension: gpu::ViewDimension::D2,
+                subresources: &Default::default(),
+            },
+        );
+
+        let uv_texture = self.gpu.create_texture(gpu::TextureDesc {
+            name: "surface-uv",
+            format: gpu::TextureFormat::Rg8Unorm,
+            size: gpu::Extent {
+                width: uv_size.width.into(),
+                height: uv_size.height.into(),
+                depth: 1,
+            },
+            array_layer_count: 1,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: gpu::TextureDimension::D2,
+            usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
+            external: None,
+        });
+        let uv_view = self.gpu.create_texture_view(
+            uv_texture,
+            gpu::TextureViewDesc {
+                name: "surface-uv",
+                format: gpu::TextureFormat::Rg8Unorm,
+                dimension: gpu::ViewDimension::D2,
+                subresources: &Default::default(),
+            },
+        );
+
+        self.surface_initializations.push(y_texture);
+        self.surface_initializations.push(uv_texture);
+
+        BladeSurfaceCache {
+            generation: 0,
+            size,
+            uv_size,
+            y_texture,
+            uv_texture,
+            y_view,
+            uv_view,
+        }
+    }
+
+    fn queue_surface_uploads(&mut self, frame: &Nv12Frame, entry: &BladeSurfaceCache) {
+        let y_data = self
+            .surface_upload_belt
+            .alloc_bytes(frame.y_plane.as_ref(), &self.gpu);
+        self.surface_uploads.push(SurfaceUpload {
+            texture: entry.y_texture,
+            data: y_data,
+            bytes_per_row: frame.y_stride as u32,
+            size: gpu::Extent {
+                width: entry.size.width.into(),
+                height: entry.size.height.into(),
+                depth: 1,
+            },
+        });
+
+        let uv_data = self
+            .surface_upload_belt
+            .alloc_bytes(frame.uv_plane.as_ref(), &self.gpu);
+        self.surface_uploads.push(SurfaceUpload {
+            texture: entry.uv_texture,
+            data: uv_data,
+            bytes_per_row: frame.uv_stride as u32,
+            size: gpu::Extent {
+                width: entry.uv_size.width.into(),
+                height: entry.uv_size.height.into(),
+                depth: 1,
+            },
+        });
+    }
+
+    fn flush_surface_uploads(&mut self) {
+        for texture in self.surface_initializations.drain(..) {
+            self.command_encoder.init_texture(texture);
+        }
+
+        if self.surface_uploads.is_empty() {
+            return;
+        }
+
+        let mut transfers = self.command_encoder.transfer("surfaces");
+        for upload in self.surface_uploads.drain(..) {
+            transfers.copy_buffer_to_texture(
+                upload.data,
+                upload.bytes_per_row,
+                gpu::TexturePiece {
+                    texture: upload.texture,
+                    mip_level: 0,
+                    array_layer: 0,
+                    origin: [0, 0, 0],
+                },
+                upload.size,
+            );
+        }
+    }
+
+    fn prepare_surfaces(&mut self, surfaces: &[PaintSurface]) -> FxHashSet<SurfaceId> {
+        let mut seen = FxHashSet::default();
+        for surface in surfaces {
+            let Some(surface_id) = surface.surface_id else {
+                continue;
+            };
+            seen.insert(surface_id);
+
+            let SurfaceSource::Nv12(frame) = &surface.source else {
+                continue;
+            };
+
+            let size = Size {
+                width: DevicePixels::from(frame.width as i32),
+                height: DevicePixels::from(frame.height as i32),
+            };
+            let uv_size = Size {
+                width: DevicePixels::from(frame.uv_width() as i32),
+                height: DevicePixels::from(frame.uv_height() as i32),
+            };
+
+            let mut entry = self
+                .surface_cache
+                .remove(&surface_id)
+                .unwrap_or_else(|| self.create_nv12_surface_textures(frame));
+
+            let size_changed = entry.size != size || entry.uv_size != uv_size;
+            if size_changed {
+                self.destroy_surface_entry(entry);
+                entry = self.create_nv12_surface_textures(frame);
+            }
+
+            if size_changed || entry.generation != surface.frame_generation {
+                entry.generation = surface.frame_generation;
+                self.queue_surface_uploads(frame, &entry);
+            }
+
+            self.surface_cache.insert(surface_id, entry);
+        }
+        seen
+    }
+
+    fn prune_surface_cache(&mut self, seen: &FxHashSet<SurfaceId>) {
+        let mut to_remove = Vec::new();
+        for (surface_id, _) in &self.surface_cache {
+            if !seen.contains(surface_id) {
+                to_remove.push(*surface_id);
+            }
+        }
+        for surface_id in to_remove {
+            if let Some(entry) = self.surface_cache.remove(&surface_id) {
+                self.destroy_surface_entry(entry);
+            }
+        }
+    }
+
+    fn destroy_surface_entry(&mut self, entry: BladeSurfaceCache) {
+        self.gpu.destroy_texture(entry.y_texture);
+        self.gpu.destroy_texture(entry.uv_texture);
+        self.gpu.destroy_texture_view(entry.y_view);
+        self.gpu.destroy_texture_view(entry.uv_view);
+    }
+
     pub fn draw(&mut self, scene: &Scene) {
         self.command_encoder.start();
         self.atlas.before_frame(&mut self.command_encoder);
+        let seen_surfaces = self.prepare_surfaces(&scene.surfaces);
+        self.flush_surface_uploads();
 
         let frame = {
             profiling::scope!("acquire frame");
@@ -817,42 +1048,45 @@ impl BladeRenderer {
                     let mut _encoder = pass.with(&self.pipelines.surfaces);
 
                     for surface in surfaces {
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            let _ = surface;
-                            continue;
-                        };
-
-                        #[cfg(target_os = "macos")]
-                        {
-                            let (t_y, t_cb_cr) = unsafe {
+                        let (t_y, t_cb_cr) = match &surface.source {
+                            SurfaceSource::Nv12(_) => {
+                                let Some(surface_id) = surface.surface_id else {
+                                    continue;
+                                };
+                                let Some(entry) = self.surface_cache.get(&surface_id) else {
+                                    continue;
+                                };
+                                (entry.y_view, entry.uv_view)
+                            }
+                            #[cfg(target_os = "macos")]
+                            SurfaceSource::CvPixelBuffer(buffer) => unsafe {
                                 use core_foundation::base::TCFType as _;
                                 use std::ptr;
 
                                 assert_eq!(
-                                        surface.image_buffer.get_pixel_format(),
-                                        core_video::pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-                                    );
+                                    buffer.get_pixel_format(),
+                                    core_video::pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                                );
 
                                 let y_texture = self
                                     .core_video_texture_cache
                                     .create_texture_from_image(
-                                        surface.image_buffer.as_concrete_TypeRef(),
+                                        buffer.as_concrete_TypeRef(),
                                         ptr::null(),
                                         metal::MTLPixelFormat::R8Unorm,
-                                        surface.image_buffer.get_width_of_plane(0),
-                                        surface.image_buffer.get_height_of_plane(0),
+                                        buffer.get_width_of_plane(0),
+                                        buffer.get_height_of_plane(0),
                                         0,
                                     )
                                     .unwrap();
                                 let cb_cr_texture = self
                                     .core_video_texture_cache
                                     .create_texture_from_image(
-                                        surface.image_buffer.as_concrete_TypeRef(),
+                                        buffer.as_concrete_TypeRef(),
                                         ptr::null(),
                                         metal::MTLPixelFormat::RG8Unorm,
-                                        surface.image_buffer.get_width_of_plane(1),
-                                        surface.image_buffer.get_height_of_plane(1),
+                                        buffer.get_width_of_plane(1),
+                                        buffer.get_height_of_plane(1),
                                         1,
                                     )
                                     .unwrap();
@@ -882,24 +1116,24 @@ impl BladeRenderer {
                                         gpu::TexelAspects::COLOR,
                                     ),
                                 )
-                            };
+                            },
+                        };
 
-                            _encoder.bind(
-                                0,
-                                &ShaderSurfacesData {
-                                    globals,
-                                    surface_locals: SurfaceParams {
-                                        bounds: surface.bounds.into(),
-                                        content_mask: surface.content_mask.bounds.into(),
-                                    },
-                                    t_y,
-                                    t_cb_cr,
-                                    s_surface: self.atlas_sampler,
+                        _encoder.bind(
+                            0,
+                            &ShaderSurfacesData {
+                                globals,
+                                surface_locals: SurfaceParams {
+                                    bounds: surface.bounds.into(),
+                                    content_mask: surface.content_mask.bounds.into(),
                                 },
-                            );
+                                t_y,
+                                t_cb_cr,
+                                s_surface: self.atlas_sampler,
+                            },
+                        );
 
-                            _encoder.draw(0, 4, 0, 1);
-                        }
+                        _encoder.draw(0, 4, 0, 1);
                     }
                 }
             }
@@ -912,9 +1146,12 @@ impl BladeRenderer {
         profiling::scope!("finish");
         self.instance_belt.flush(&sync_point);
         self.atlas.after_frame(&sync_point);
+        self.surface_upload_belt.flush(&sync_point);
 
         self.wait_for_gpu();
         self.last_sync_point = Some(sync_point);
+
+        self.prune_surface_cache(&seen_surfaces);
     }
 }
 

@@ -131,6 +131,10 @@ path = "examples/grid_layout.rs"
 name = "hello_world"
 path = "examples/hello_world.rs"
 
+[[example]]
+name = "nv12"
+path = "examples/nv12/nv12.rs"
+
 # [[example]]
 # name = "image"
 # path = "examples/image/image.rs"

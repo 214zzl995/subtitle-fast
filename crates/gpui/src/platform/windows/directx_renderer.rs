@@ -5,6 +5,7 @@ use std::{
 
 use ::util::ResultExt;
 use anyhow::{Context, Result};
+use collections::{FxHashMap, FxHashSet};
 use windows::{
     Win32::{
         Foundation::HWND,
@@ -19,6 +20,7 @@ use windows::{
     core::Interface,
 };
 
+use crate::scene::{Nv12Frame, SurfaceId, SurfaceSource};
 use crate::{
     platform::windows::directx_renderer::shader_resources::{
         RawShaderBytes, ShaderModule, ShaderTarget,
@@ -45,6 +47,17 @@ pub(crate) struct DirectXRenderer {
     pipelines: DirectXRenderPipelines,
     direct_composition: Option<DirectComposition>,
     font_info: &'static FontInfo,
+    surface_cache: FxHashMap<SurfaceId, DirectXSurfaceCache>,
+}
+
+struct DirectXSurfaceCache {
+    generation: u64,
+    size: Size<DevicePixels>,
+    uv_size: Size<DevicePixels>,
+    y_texture: ID3D11Texture2D,
+    uv_texture: ID3D11Texture2D,
+    y_view: ID3D11ShaderResourceView,
+    uv_view: ID3D11ShaderResourceView,
 }
 
 /// Direct3D objects
@@ -83,6 +96,7 @@ struct DirectXRenderPipelines {
     underline_pipeline: PipelineState<Underline>,
     mono_sprites: PipelineState<MonochromeSprite>,
     poly_sprites: PipelineState<PolychromeSprite>,
+    surfaces: PipelineState<SurfaceInstance>,
 }
 
 struct DirectXGlobalElements {
@@ -164,6 +178,7 @@ impl DirectXRenderer {
             pipelines,
             direct_composition,
             font_info: Self::get_font_info(),
+            surface_cache: FxHashMap::default(),
         })
     }
 
@@ -274,6 +289,7 @@ impl DirectXRenderer {
         self.globals = globals;
         self.pipelines = pipelines;
         self.direct_composition = direct_composition;
+        self.surface_cache.clear();
 
         unsafe {
             self.devices
@@ -285,6 +301,9 @@ impl DirectXRenderer {
 
     pub(crate) fn draw(&mut self, scene: &Scene) -> Result<()> {
         self.pre_draw()?;
+        if scene.surfaces.is_empty() {
+            self.surface_cache.clear();
+        }
         for batch in scene.batches() {
             match batch {
                 PrimitiveBatch::Shadows(shadows) => self.draw_shadows(shadows),
@@ -573,7 +592,148 @@ impl DirectXRenderer {
         if surfaces.is_empty() {
             return Ok(());
         }
+        let mut seen_surfaces = FxHashSet::default();
+
+        for surface in surfaces {
+            let SurfaceSource::Nv12(frame) = &surface.source else {
+                continue;
+            };
+            let Some(surface_id) = surface.surface_id else {
+                continue;
+            };
+            seen_surfaces.insert(surface_id);
+
+            let size = Size {
+                width: DevicePixels::from(frame.width as i32),
+                height: DevicePixels::from(frame.height as i32),
+            };
+            let uv_size = Size {
+                width: DevicePixels::from(frame.uv_width() as i32),
+                height: DevicePixels::from(frame.uv_height() as i32),
+            };
+
+            let mut entry = if let Some(entry) = self.surface_cache.remove(&surface_id) {
+                entry
+            } else {
+                self.create_nv12_surface_cache(frame)?
+            };
+
+            if entry.size != size || entry.uv_size != uv_size {
+                entry = self.create_nv12_surface_cache(frame)?;
+            }
+
+            if entry.generation != surface.frame_generation {
+                self.upload_nv12_frame(frame, &entry);
+                entry.generation = surface.frame_generation;
+            }
+
+            let y_view = entry.y_view.clone();
+            let uv_view = entry.uv_view.clone();
+            self.surface_cache.insert(surface_id, entry);
+
+            let instance = SurfaceInstance {
+                bounds: surface.bounds,
+                content_mask: surface.content_mask.clone(),
+            };
+            self.pipelines.surfaces.update_buffer(
+                &self.devices.device,
+                &self.devices.device_context,
+                std::slice::from_ref(&instance),
+            )?;
+            self.pipelines.surfaces.draw_with_textures(
+                &self.devices.device_context,
+                &y_view,
+                &uv_view,
+                &self.resources.viewport,
+                &self.globals.global_params_buffer,
+                &self.globals.sampler,
+                1,
+            )?;
+        }
+
+        let mut to_remove = Vec::new();
+        for surface_id in self.surface_cache.keys() {
+            if !seen_surfaces.contains(surface_id) {
+                to_remove.push(*surface_id);
+            }
+        }
+        for surface_id in to_remove {
+            self.surface_cache.remove(&surface_id);
+        }
+
         Ok(())
+    }
+
+    fn create_nv12_surface_cache(&self, frame: &Nv12Frame) -> Result<DirectXSurfaceCache> {
+        let size = Size {
+            width: DevicePixels::from(frame.width as i32),
+            height: DevicePixels::from(frame.height as i32),
+        };
+        let uv_size = Size {
+            width: DevicePixels::from(frame.uv_width() as i32),
+            height: DevicePixels::from(frame.uv_height() as i32),
+        };
+
+        let (y_texture, y_view) = create_surface_texture(
+            &self.devices.device,
+            size.width.0 as u32,
+            size.height.0 as u32,
+            DXGI_FORMAT_R8_UNORM,
+        )?;
+        let (uv_texture, uv_view) = create_surface_texture(
+            &self.devices.device,
+            uv_size.width.0 as u32,
+            uv_size.height.0 as u32,
+            DXGI_FORMAT_R8G8_UNORM,
+        )?;
+
+        Ok(DirectXSurfaceCache {
+            generation: 0,
+            size,
+            uv_size,
+            y_texture,
+            uv_texture,
+            y_view,
+            uv_view,
+        })
+    }
+
+    fn upload_nv12_frame(&self, frame: &Nv12Frame, entry: &DirectXSurfaceCache) {
+        let y_box = D3D11_BOX {
+            left: 0,
+            top: 0,
+            front: 0,
+            right: frame.width,
+            bottom: frame.height,
+            back: 1,
+        };
+        let uv_box = D3D11_BOX {
+            left: 0,
+            top: 0,
+            front: 0,
+            right: frame.uv_width(),
+            bottom: frame.uv_height(),
+            back: 1,
+        };
+
+        unsafe {
+            self.devices.device_context.UpdateSubresource(
+                &entry.y_texture,
+                0,
+                Some(&y_box),
+                frame.y_plane.as_ptr() as *const _,
+                frame.y_stride as u32,
+                0,
+            );
+            self.devices.device_context.UpdateSubresource(
+                &entry.uv_texture,
+                0,
+                Some(&uv_box),
+                frame.uv_plane.as_ptr() as *const _,
+                frame.uv_stride as u32,
+                0,
+            );
+        }
     }
 
     pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
@@ -774,6 +934,13 @@ impl DirectXRenderPipelines {
             16,
             create_blend_state(device)?,
         )?;
+        let surfaces = PipelineState::new(
+            device,
+            "surface_pipeline",
+            ShaderModule::Surface,
+            8,
+            create_blend_state(device)?,
+        )?;
 
         Ok(Self {
             shadow_pipeline,
@@ -783,6 +950,7 @@ impl DirectXRenderPipelines {
             underline_pipeline,
             mono_sprites,
             poly_sprites,
+            surfaces,
         })
     }
 }
@@ -977,6 +1145,38 @@ impl<T> PipelineState<T> {
         }
         Ok(())
     }
+
+    fn draw_with_textures(
+        &self,
+        device_context: &ID3D11DeviceContext,
+        y_texture: &ID3D11ShaderResourceView,
+        uv_texture: &ID3D11ShaderResourceView,
+        viewport: &[D3D11_VIEWPORT],
+        global_params: &[Option<ID3D11Buffer>],
+        sampler: &[Option<ID3D11SamplerState>],
+        instance_count: u32,
+    ) -> Result<()> {
+        set_pipeline_state(
+            device_context,
+            &self.view,
+            D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
+            viewport,
+            &self.vertex,
+            &self.fragment,
+            global_params,
+            &self.blend_state,
+        );
+
+        let y_view = [Some(y_texture.clone())];
+        let uv_view = [Some(uv_texture.clone())];
+        unsafe {
+            device_context.PSSetSamplers(0, Some(sampler));
+            device_context.PSSetShaderResources(0, Some(&y_view));
+            device_context.PSSetShaderResources(2, Some(&uv_view));
+            device_context.DrawInstanced(4, instance_count, 0, 0);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -992,6 +1192,13 @@ struct PathRasterizationSprite {
 #[repr(C)]
 struct PathSprite {
     bounds: Bounds<ScaledPixels>,
+}
+
+#[derive(Clone)]
+#[repr(C)]
+struct SurfaceInstance {
+    bounds: Bounds<ScaledPixels>,
+    content_mask: ContentMask<ScaledPixels>,
 }
 
 impl Drop for DirectXRenderer {
@@ -1156,6 +1363,39 @@ fn create_path_intermediate_texture(
     unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut shader_resource_view))? };
 
     Ok((texture, [Some(shader_resource_view.unwrap())]))
+}
+
+#[inline]
+fn create_surface_texture(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+    format: DXGI_FORMAT,
+) -> Result<(ID3D11Texture2D, ID3D11ShaderResourceView)> {
+    let texture = unsafe {
+        let mut output = None;
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        device.CreateTexture2D(&desc, None, Some(&mut output))?;
+        output.unwrap()
+    };
+
+    let mut view = None;
+    unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut view))? };
+    Ok((texture, view.unwrap()))
 }
 
 #[inline]
@@ -1409,6 +1649,7 @@ pub(crate) mod shader_resources {
         PathSprite,
         MonochromeSprite,
         PolychromeSprite,
+        Surface,
         EmojiRasterization,
     }
 
@@ -1478,6 +1719,10 @@ pub(crate) mod shader_resources {
                 ShaderModule::PolychromeSprite => match target {
                     ShaderTarget::Vertex => POLYCHROME_SPRITE_VERTEX_BYTES,
                     ShaderTarget::Fragment => POLYCHROME_SPRITE_FRAGMENT_BYTES,
+                },
+                ShaderModule::Surface => match target {
+                    ShaderTarget::Vertex => SURFACE_VERTEX_BYTES,
+                    ShaderTarget::Fragment => SURFACE_FRAGMENT_BYTES,
                 },
                 ShaderModule::EmojiRasterization => match target {
                     ShaderTarget::Vertex => EMOJI_RASTERIZATION_VERTEX_BYTES,
@@ -1568,6 +1813,7 @@ pub(crate) mod shader_resources {
                 ShaderModule::PathSprite => "path_sprite",
                 ShaderModule::MonochromeSprite => "monochrome_sprite",
                 ShaderModule::PolychromeSprite => "polychrome_sprite",
+                ShaderModule::Surface => "surface",
                 ShaderModule::EmojiRasterization => "emoji_rasterization",
             }
         }

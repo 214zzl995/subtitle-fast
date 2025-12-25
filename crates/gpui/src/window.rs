@@ -1,5 +1,6 @@
 #[cfg(any(feature = "inspector", debug_assertions))]
 use crate::Inspector;
+use crate::scene::{SurfaceId, SurfaceSource};
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
     AsyncWindowContext, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Capslock,
@@ -20,8 +21,6 @@ use crate::{
 };
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
-#[cfg(target_os = "macos")]
-use core_video::pixel_buffer::CVPixelBuffer;
 use derive_more::{Deref, DerefMut};
 use futures::FutureExt;
 use futures::channel::oneshot;
@@ -3177,8 +3176,13 @@ impl Window {
     /// Paint a surface into the scene for the next frame at the current z-index.
     ///
     /// This method should only be called as part of the paint phase of element drawing.
-    #[cfg(target_os = "macos")]
-    pub fn paint_surface(&mut self, bounds: Bounds<Pixels>, image_buffer: CVPixelBuffer) {
+    pub(crate) fn paint_surface(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        source: SurfaceSource,
+        surface_id: Option<SurfaceId>,
+        frame_generation: u64,
+    ) {
         use crate::PaintSurface;
 
         self.invalidator.debug_assert_paint();
@@ -3190,7 +3194,9 @@ impl Window {
             order: 0,
             bounds,
             content_mask,
-            image_buffer,
+            source,
+            surface_id,
+            frame_generation,
         });
     }
 

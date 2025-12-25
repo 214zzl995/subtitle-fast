@@ -74,7 +74,9 @@ pub use assets::*;
 pub use color::*;
 pub use ctor::ctor;
 pub use element::*;
+#[allow(ambiguous_glob_reexports)]
 pub use elements::*;
+pub use elements::{Frame, FrameError, FrameResult, Video, VideoFrame, VideoHandle, video};
 pub use executor::*;
 pub use geometry::*;
 pub use global::*;
@@ -88,6 +90,7 @@ pub use keymap::*;
 pub use path_builder::*;
 pub use platform::*;
 pub use refineable::*;
+#[allow(ambiguous_glob_reexports)]
 pub use scene::*;
 pub use shared_string::*;
 pub use shared_uri::*;
