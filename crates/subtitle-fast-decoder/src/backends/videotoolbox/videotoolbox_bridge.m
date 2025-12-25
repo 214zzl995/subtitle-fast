@@ -40,6 +40,17 @@ typedef struct {
 
 typedef bool (*VideoToolboxFrameCallback)(const VideoToolboxFrame *frame, void *context);
 
+typedef struct {
+    void *pixel_buffer;
+    uint32_t pixel_format;
+    uint32_t width;
+    uint32_t height;
+    double timestamp_seconds;
+    uint64_t frame_index;
+} VideoToolboxHandleFrame;
+
+typedef bool (*VideoToolboxHandleFrameCallback)(const VideoToolboxHandleFrame *frame, void *context);
+
 static char *vt_copy_c_string(const char *message) {
     if (message == NULL) {
         return NULL;
@@ -472,6 +483,113 @@ bool videotoolbox_decode(
             bool should_continue = callback(&frame, context);
 
             CVPixelBufferUnlockBaseAddress(pixel_buffer, kCVPixelBufferLock_ReadOnly);
+            CFRelease(sample);
+
+            if (!should_continue) {
+                break;
+            }
+
+            frame_index += 1;
+        }
+    }
+
+    return true;
+}
+
+bool videotoolbox_decode_handle(
+    const char *path,
+    VideoToolboxHandleFrameCallback callback,
+    void *context,
+    char **out_error
+) {
+    if (out_error != NULL) {
+        *out_error = NULL;
+    }
+    if (callback == NULL) {
+        if (out_error != NULL) {
+            *out_error = vt_copy_c_string("videotoolbox handle callback is null");
+        }
+        return false;
+    }
+
+    @autoreleasepool {
+        NSString *ns_path = vt_string_from_utf8(path);
+        NSURL *url = nil;
+        AVURLAsset *asset = nil;
+        char *asset_error = NULL;
+        if (!vt_populate_asset(ns_path, &url, &asset, &asset_error)) {
+            if (out_error != NULL) {
+                *out_error = asset_error;
+            } else {
+                free(asset_error);
+            }
+            return false;
+        }
+
+        AVAssetReader *reader = nil;
+        AVAssetReaderTrackOutput *output = nil;
+        char *reader_error = NULL;
+        if (!vt_prepare_reader(asset, &reader, &output, &reader_error)) {
+            if (out_error != NULL) {
+                *out_error = reader_error;
+            } else {
+                free(reader_error);
+            }
+            return false;
+        }
+
+        if (![reader startReading]) {
+            if (out_error != NULL) {
+                *out_error = vt_copy_error_message(reader.error, "failed to start AVAssetReader");
+            }
+            return false;
+        }
+
+        uint64_t frame_index = 0;
+
+        while (true) {
+            CMSampleBufferRef sample = [output copyNextSampleBuffer];
+            if (sample == NULL) {
+                if (!vt_reader_handle_status(reader, out_error)) {
+                    return false;
+                }
+                if (reader.status == AVAssetReaderStatusCompleted) {
+                    break;
+                }
+                continue;
+            }
+
+            CVImageBufferRef pixel_buffer = CMSampleBufferGetImageBuffer(sample);
+            if (pixel_buffer == NULL) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("sample buffer missing pixel buffer");
+                }
+                CFRelease(sample);
+                return false;
+            }
+
+            CVPixelBufferRetain(pixel_buffer);
+
+            OSType pixel_format = CVPixelBufferGetPixelFormatType(pixel_buffer);
+            size_t width = CVPixelBufferGetWidth(pixel_buffer);
+            size_t height = CVPixelBufferGetHeight(pixel_buffer);
+
+            CMTime pts = CMSampleBufferGetPresentationTimeStamp(sample);
+            Float64 timestamp_seconds = NAN;
+            if (pts.timescale != 0) {
+                timestamp_seconds = (Float64)pts.value / (Float64)pts.timescale;
+            }
+
+            VideoToolboxHandleFrame frame;
+            frame.pixel_buffer = (void *)pixel_buffer;
+            frame.pixel_format = (uint32_t)pixel_format;
+            frame.width = (uint32_t)width;
+            frame.height = (uint32_t)height;
+            frame.timestamp_seconds = timestamp_seconds;
+            frame.frame_index = frame_index;
+
+            bool should_continue = callback(&frame, context);
+
             CFRelease(sample);
 
             if (!should_continue) {

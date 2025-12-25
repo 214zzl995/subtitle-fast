@@ -5,7 +5,9 @@ use futures_core::Stream;
 use futures_util::stream::unfold;
 use tokio::sync::mpsc::{self, Sender};
 
-pub use subtitle_fast_types::{FrameBuffer, FrameError, FrameResult, Nv12Buffer, VideoFrame};
+pub use subtitle_fast_types::{
+    FrameBuffer, FrameError, FrameResult, NativeBuffer, Nv12Buffer, VideoFrame,
+};
 
 pub type FrameStream = Pin<Box<dyn Stream<Item = FrameResult<VideoFrame>> + Send>>;
 

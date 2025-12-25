@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use indicatif::{ProgressBar, ProgressStyle};
-use subtitle_fast_decoder::{Backend, Configuration};
+use subtitle_fast_decoder::{Backend, Configuration, OutputFormat};
 use tokio_stream::StreamExt;
 
 const INPUT_VIDEO: &str = "./demo/video1_30s.mp4";
@@ -73,6 +73,7 @@ async fn run_backend_bench(
         backend,
         input: Some(input_path.to_path_buf()),
         channel_capacity: None,
+        output_format: OutputFormat::Nv12,
     };
 
     let provider = config.create_provider()?;

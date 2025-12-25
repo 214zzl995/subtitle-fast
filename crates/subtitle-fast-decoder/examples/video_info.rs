@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use subtitle_fast_decoder::{Backend, Configuration};
+use subtitle_fast_decoder::{Backend, Configuration, OutputFormat};
 
 const VIDEO_FILE: &str = "demo/video1_30s.mp4";
 const BACKEND: Backend = Backend::FFmpeg;
@@ -12,6 +12,7 @@ async fn main() {
         backend: BACKEND,
         input: Some(input_path),
         channel_capacity: None,
+        output_format: OutputFormat::Nv12,
     };
 
     match config.create_provider() {

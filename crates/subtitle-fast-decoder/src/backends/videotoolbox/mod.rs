@@ -1,6 +1,7 @@
 #[cfg(all(target_os = "macos", feature = "backend-videotoolbox"))]
 use crate::core::{DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider};
 
+use crate::config::OutputFormat;
 #[cfg(target_os = "macos")]
 use crate::core::{VideoFrame, spawn_stream_from_channel};
 
@@ -9,8 +10,7 @@ use crate::core::{VideoFrame, spawn_stream_from_channel};
 mod platform {
     use super::*;
 
-    use std::ffi::{CStr, CString, c_char};
-    use std::os::raw::c_void;
+    use std::ffi::{CStr, CString, c_char, c_void};
     use std::path::{Path, PathBuf};
     use std::ptr;
     use std::slice;
@@ -44,6 +44,18 @@ mod platform {
 
     type CVTFrameCallback = unsafe extern "C" fn(*const CVTFrame, *mut c_void) -> bool;
 
+    #[repr(C)]
+    struct CVTHandleFrame {
+        pixel_buffer: *mut c_void,
+        pixel_format: u32,
+        width: u32,
+        height: u32,
+        timestamp_seconds: f64,
+        frame_index: u64,
+    }
+
+    type CVTHandleFrameCallback = unsafe extern "C" fn(*const CVTHandleFrame, *mut c_void) -> bool;
+
     #[allow(improper_ctypes)]
     unsafe extern "C" {
         fn videotoolbox_probe_total_frames(
@@ -56,6 +68,12 @@ mod platform {
             context: *mut c_void,
             out_error: *mut *mut c_char,
         ) -> bool;
+        fn videotoolbox_decode_handle(
+            path: *const c_char,
+            callback: CVTHandleFrameCallback,
+            context: *mut c_void,
+            out_error: *mut *mut c_char,
+        ) -> bool;
         fn videotoolbox_string_free(ptr: *mut c_char);
     }
 
@@ -65,10 +83,15 @@ mod platform {
         input: PathBuf,
         metadata: crate::core::VideoMetadata,
         channel_capacity: usize,
+        output_format: OutputFormat,
     }
 
     impl VideoToolboxProvider {
-        pub fn open<P: AsRef<Path>>(path: P, channel_capacity: Option<usize>) -> FrameResult<Self> {
+        pub fn open<P: AsRef<Path>>(
+            path: P,
+            channel_capacity: Option<usize>,
+            output_format: OutputFormat,
+        ) -> FrameResult<Self> {
             let path = path.as_ref();
             if !path.exists() {
                 return Err(FrameError::Io(std::io::Error::new(
@@ -82,6 +105,7 @@ mod platform {
                 input: path.to_path_buf(),
                 metadata,
                 channel_capacity: capacity,
+                output_format,
             })
         }
     }
@@ -150,6 +174,16 @@ mod platform {
         Some(message)
     }
 
+    unsafe extern "C" {
+        fn CFRelease(cf: *const c_void);
+    }
+
+    unsafe extern "C" fn release_native_handle(handle: *mut c_void) {
+        if !handle.is_null() {
+            unsafe { CFRelease(handle as *const c_void) };
+        }
+    }
+
     impl FrameStreamProvider for VideoToolboxProvider {
         fn metadata(&self) -> crate::core::VideoMetadata {
             self.metadata
@@ -158,15 +192,22 @@ mod platform {
         fn into_stream(self: Box<Self>) -> FrameStream {
             let path = self.input.clone();
             let capacity = self.channel_capacity;
+            let output_format = self.output_format;
             spawn_stream_from_channel(capacity, move |tx| {
-                if let Err(err) = decode_videotoolbox(path.clone(), tx.clone()) {
+                let result = match output_format {
+                    OutputFormat::Nv12 => decode_videotoolbox_nv12(path.clone(), tx.clone()),
+                    OutputFormat::CVPixelBuffer => {
+                        decode_videotoolbox_handle(path.clone(), tx.clone())
+                    }
+                };
+                if let Err(err) = result {
                     let _ = tx.blocking_send(Err(err));
                 }
             })
         }
     }
 
-    fn decode_videotoolbox(
+    fn decode_videotoolbox_nv12(
         path: PathBuf,
         tx: mpsc::Sender<FrameResult<VideoFrame>>,
     ) -> FrameResult<()> {
@@ -176,7 +217,7 @@ mod platform {
         let ok = unsafe {
             videotoolbox_decode(
                 c_path.as_ptr(),
-                frame_callback,
+                frame_callback_nv12,
                 (&mut *context) as *mut DecodeContext as *mut c_void,
                 &mut error_ptr,
             )
@@ -186,6 +227,36 @@ mod platform {
         let error = take_bridge_string(error_ptr);
         if !ok {
             let message = error.unwrap_or_else(|| "videotoolbox decode failed".to_string());
+            return Err(FrameError::backend_failure("videotoolbox", message));
+        }
+        if let Some(message) = error
+            && !message.is_empty()
+        {
+            return Err(FrameError::backend_failure("videotoolbox", message));
+        }
+        Ok(())
+    }
+
+    fn decode_videotoolbox_handle(
+        path: PathBuf,
+        tx: mpsc::Sender<FrameResult<VideoFrame>>,
+    ) -> FrameResult<()> {
+        let c_path = cstring_from_path(&path)?;
+        let mut context = Box::new(DecodeContext::new(tx));
+        let mut error_ptr: *mut c_char = ptr::null_mut();
+        let ok = unsafe {
+            videotoolbox_decode_handle(
+                c_path.as_ptr(),
+                frame_callback_handle,
+                (&mut *context) as *mut DecodeContext as *mut c_void,
+                &mut error_ptr,
+            )
+        };
+        drop(context);
+
+        let error = take_bridge_string(error_ptr);
+        if !ok {
+            let message = error.unwrap_or_else(|| "videotoolbox handle decode failed".to_string());
             return Err(FrameError::backend_failure("videotoolbox", message));
         }
         if let Some(message) = error
@@ -210,7 +281,7 @@ mod platform {
         }
     }
 
-    unsafe extern "C" fn frame_callback(frame: *const CVTFrame, ctx: *mut c_void) -> bool {
+    unsafe extern "C" fn frame_callback_nv12(frame: *const CVTFrame, ctx: *mut c_void) -> bool {
         if frame.is_null() || ctx.is_null() {
             return false;
         }
@@ -256,11 +327,66 @@ mod platform {
         true
     }
 
+    unsafe extern "C" fn frame_callback_handle(
+        frame: *const CVTHandleFrame,
+        ctx: *mut c_void,
+    ) -> bool {
+        if frame.is_null() {
+            return false;
+        }
+        let frame = unsafe { &*frame };
+        if ctx.is_null() {
+            if !frame.pixel_buffer.is_null() {
+                unsafe { release_native_handle(frame.pixel_buffer) };
+            }
+            return false;
+        }
+        let context = unsafe { &*(ctx as *const DecodeContext) };
+
+        if frame.pixel_buffer.is_null() {
+            let _ = context.send(Err(FrameError::backend_failure(
+                "videotoolbox",
+                "native frame missing pixel buffer handle",
+            )));
+            return false;
+        }
+
+        let timestamp = if frame.timestamp_seconds.is_finite() && frame.timestamp_seconds >= 0.0 {
+            Some(Duration::from_secs_f64(frame.timestamp_seconds))
+        } else {
+            None
+        };
+
+        let native_frame = match VideoFrame::from_native_handle(
+            frame.width,
+            frame.height,
+            timestamp,
+            Some(frame.frame_index),
+            "videotoolbox",
+            frame.pixel_format,
+            frame.pixel_buffer,
+            release_native_handle,
+        ) {
+            Ok(value) => value,
+            Err(err) => {
+                unsafe { release_native_handle(frame.pixel_buffer) };
+                let _ = context.send(Err(err));
+                return false;
+            }
+        };
+
+        if !context.send(Ok(native_frame)) {
+            return false;
+        }
+        true
+    }
+
     pub fn boxed_videotoolbox<P: AsRef<Path>>(
         path: P,
         channel_capacity: Option<usize>,
+        output_format: OutputFormat,
     ) -> FrameResult<DynFrameProvider> {
-        VideoToolboxProvider::open(path, channel_capacity)
+        VideoToolboxProvider::open(path, channel_capacity, output_format)
             .map(|provider| Box::new(provider) as DynFrameProvider)
     }
 }
@@ -273,7 +399,11 @@ mod platform {
     pub struct VideoToolboxProvider;
 
     impl VideoToolboxProvider {
-        pub fn open<P: AsRef<Path>>(_path: P) -> FrameResult<Self> {
+        pub fn open<P: AsRef<Path>>(
+            _path: P,
+            _channel_capacity: Option<usize>,
+            _output_format: OutputFormat,
+        ) -> FrameResult<Self> {
             Err(FrameError::unsupported("videotoolbox"))
         }
     }
@@ -287,6 +417,7 @@ mod platform {
     pub fn boxed_videotoolbox<P: AsRef<Path>>(
         _path: P,
         _channel_capacity: Option<usize>,
+        _output_format: OutputFormat,
     ) -> FrameResult<DynFrameProvider> {
         Err(FrameError::unsupported("videotoolbox"))
     }

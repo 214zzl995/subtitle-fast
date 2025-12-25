@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use png::{BitDepth, ColorType, Encoder};
-use subtitle_fast_decoder::{Backend, Configuration, VideoFrame};
+use subtitle_fast_decoder::{Backend, Configuration, OutputFormat, VideoFrame};
 use tokio_stream::StreamExt;
 
 const SAMPLE_FREQUENCY: usize = 7; // frames per second
@@ -49,6 +49,7 @@ async fn main() -> io::Result<()> {
         backend,
         input: Some(input_path.clone()),
         channel_capacity: None,
+        output_format: OutputFormat::Nv12,
     };
     let provider = config.create_provider().map_err(io::Error::other)?;
     let metadata = provider.metadata();

@@ -22,6 +22,27 @@ pub enum Backend {
     Mft,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    Nv12,
+    CVPixelBuffer,
+}
+
+impl OutputFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OutputFormat::Nv12 => "nv12",
+            OutputFormat::CVPixelBuffer => "cvpixelbuffer",
+        }
+    }
+}
+
+impl Default for OutputFormat {
+    fn default() -> Self {
+        Self::Nv12
+    }
+}
+
 impl FromStr for Backend {
     type Err = FrameError;
 
@@ -125,6 +146,7 @@ pub struct Configuration {
     pub backend: Backend,
     pub input: Option<PathBuf>,
     pub channel_capacity: Option<NonZeroUsize>,
+    pub output_format: OutputFormat,
 }
 
 impl Default for Configuration {
@@ -137,6 +159,7 @@ impl Default for Configuration {
             backend,
             input: None,
             channel_capacity: None,
+            output_format: OutputFormat::Nv12,
         }
     }
 }
@@ -171,6 +194,7 @@ impl Configuration {
     }
 
     pub fn create_provider(&self) -> FrameResult<DynFrameProvider> {
+        self.validate_output_format()?;
         let channel_capacity = self.channel_capacity.map(NonZeroUsize::get);
 
         match self.backend {
@@ -195,7 +219,11 @@ impl Configuration {
                         "VideoToolbox backend requires SUBFAST_INPUT to be set",
                     )
                 })?;
-                crate::backends::videotoolbox::boxed_videotoolbox(path, channel_capacity)
+                crate::backends::videotoolbox::boxed_videotoolbox(
+                    path,
+                    channel_capacity,
+                    self.output_format,
+                )
             }
             #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
             Backend::Dxva => {
@@ -213,6 +241,28 @@ impl Configuration {
             }
             #[allow(unreachable_patterns)]
             other => Err(FrameError::unsupported(other.as_str())),
+        }
+    }
+}
+
+impl Configuration {
+    fn validate_output_format(&self) -> FrameResult<()> {
+        match self.output_format {
+            OutputFormat::Nv12 => Ok(()),
+            OutputFormat::CVPixelBuffer => {
+                #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
+                {
+                    if self.backend == Backend::VideoToolbox {
+                        return Ok(());
+                    }
+                }
+
+                Err(FrameError::configuration(format!(
+                    "output format '{}' is only supported by videotoolbox backend (selected: {})",
+                    self.output_format.as_str(),
+                    self.backend.as_str()
+                )))
+            }
         }
     }
 }
