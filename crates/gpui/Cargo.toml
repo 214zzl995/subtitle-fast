@@ -139,6 +139,10 @@ path = "examples/nv12/nv12.rs"
 name = "video"
 path = "examples/video/video.rs"
 
+[[example]]
+name = "video_cvpixelbuffer"
+path = "examples/video/cvpixelbuffer.rs"
+
 # [[example]]
 # name = "image"
 # path = "examples/image/image.rs"

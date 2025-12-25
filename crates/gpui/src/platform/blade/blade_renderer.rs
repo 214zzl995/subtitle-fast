@@ -1063,9 +1063,13 @@ impl BladeRenderer {
                                 use core_foundation::base::TCFType as _;
                                 use std::ptr;
 
-                                assert_eq!(
-                                    buffer.get_pixel_format(),
-                                    core_video::pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                                let pixel_format = buffer.get_pixel_format();
+                                assert!(
+                                    pixel_format
+                                        == core_video::pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                                        || pixel_format
+                                            == core_video::pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                                    "unexpected CVPixelBuffer pixel format"
                                 );
 
                                 let y_texture = self

@@ -15,9 +15,13 @@ use cocoa::{
 use collections::{FxHashMap, FxHashSet};
 use core_foundation::base::TCFType;
 use core_video::{
-    metal_texture::CVMetalTexture, metal_texture::CVMetalTextureGetTexture,
+    metal_texture::CVMetalTexture,
+    metal_texture::CVMetalTextureGetTexture,
     metal_texture_cache::CVMetalTextureCache,
-    pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    pixel_buffer::{
+        kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+    },
 };
 use foreign_types::{ForeignType, ForeignTypeRef};
 use metal::{
@@ -143,6 +147,7 @@ pub(crate) struct MetalRenderer {
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
     polychrome_sprites_pipeline_state: metal::RenderPipelineState,
     surfaces_pipeline_state: metal::RenderPipelineState,
+    surfaces_video_range_pipeline_state: metal::RenderPipelineState,
     unit_vertices: metal::Buffer,
     #[allow(clippy::arc_with_non_send_sync)]
     instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
@@ -283,6 +288,14 @@ impl MetalRenderer {
             "surface_fragment",
             MTLPixelFormat::BGRA8Unorm,
         );
+        let surfaces_video_range_pipeline_state = build_pipeline_state(
+            &device,
+            &library,
+            "surfaces_video_range",
+            "surface_vertex",
+            "surface_fragment_video_range",
+            MTLPixelFormat::BGRA8Unorm,
+        );
 
         let command_queue = device.new_command_queue();
         let sprite_atlas = Arc::new(MetalAtlas::new(device.clone()));
@@ -302,6 +315,7 @@ impl MetalRenderer {
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
             surfaces_pipeline_state,
+            surfaces_video_range_pipeline_state,
             unit_vertices,
             instance_buffer_pool,
             sprite_atlas,
@@ -1105,9 +1119,11 @@ impl MetalRenderer {
             DevicePixels::from(buffer.get_height() as i32),
         );
 
-        assert_eq!(
-            buffer.get_pixel_format(),
-            kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        let pixel_format = buffer.get_pixel_format();
+        debug_assert!(
+            pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                || pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            "unexpected CVPixelBuffer pixel format"
         );
 
         let y_texture = self
@@ -1203,6 +1219,7 @@ impl MetalRenderer {
         viewport_size: Size<DevicePixels>,
         command_encoder: &metal::RenderCommandEncoderRef,
     ) -> bool {
+        let mut uses_video_range = false;
         command_encoder.set_render_pipeline_state(&self.surfaces_pipeline_state);
         command_encoder.set_vertex_buffer(
             SurfaceInputIndex::Vertices as u64,
@@ -1217,8 +1234,16 @@ impl MetalRenderer {
 
         let mut seen_surfaces = FxHashSet::default();
         for surface in surfaces {
-            let (texture_size, textures) = match &surface.source {
+            let (texture_size, textures, wants_video_range) = match &surface.source {
                 SurfaceSource::CvPixelBuffer(buffer) => {
+                    let pixel_format = buffer.get_pixel_format();
+                    let is_full_range =
+                        pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
+                    let is_video_range =
+                        pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+                    if !is_full_range && !is_video_range {
+                        continue;
+                    }
                     let texture_size = size(
                         DevicePixels::from(buffer.get_width() as i32),
                         DevicePixels::from(buffer.get_height() as i32),
@@ -1274,7 +1299,7 @@ impl MetalRenderer {
                         }
                     };
 
-                    (texture_size, textures)
+                    (texture_size, textures, is_video_range)
                 }
                 SurfaceSource::Nv12(frame) => {
                     let texture_size = size(
@@ -1340,9 +1365,19 @@ impl MetalRenderer {
                         }
                     };
 
-                    (texture_size, textures)
+                    (texture_size, textures, false)
                 }
             };
+
+            if wants_video_range != uses_video_range {
+                let pipeline = if wants_video_range {
+                    &self.surfaces_video_range_pipeline_state
+                } else {
+                    &self.surfaces_pipeline_state
+                };
+                command_encoder.set_render_pipeline_state(pipeline);
+                uses_video_range = wants_video_range;
+            }
 
             align_offset(instance_offset);
             let next_offset = *instance_offset + mem::size_of::<SurfaceBounds>();

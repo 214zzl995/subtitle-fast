@@ -886,6 +886,22 @@ fragment float4 surface_fragment(SurfaceFragmentInput input [[stage_in]],
   return ycbcrToRGBTransform * ycbcr;
 }
 
+fragment float4 surface_fragment_video_range(
+    SurfaceFragmentInput input [[stage_in]],
+    texture2d<float> y_texture [[texture(SurfaceInputIndex_YTexture)]],
+    texture2d<float> cb_cr_texture [[texture(SurfaceInputIndex_CbCrTexture)]]) {
+  constexpr sampler texture_sampler(mag_filter::linear, min_filter::linear);
+  float y = y_texture.sample(texture_sampler, input.texture_position).r;
+  float2 cbcr = cb_cr_texture.sample(texture_sampler, input.texture_position).rg;
+  float cb = cbcr.x - 0.5;
+  float cr = cbcr.y - 0.5;
+  float luma = max(y - (16.0 / 255.0), 0.0) * 1.1643836;
+  float r = luma + 1.5960273 * cr;
+  float g = luma - 0.3917623 * cb - 0.8129689 * cr;
+  float b = luma + 2.0172321 * cb;
+  return float4(r, g, b, 1.0);
+}
+
 float4 hsla_to_rgba(Hsla hsla) {
   float h = hsla.h * 6.0; // Now, it's an angle but scaled in [0, 6) range
   float s = hsla.s;
