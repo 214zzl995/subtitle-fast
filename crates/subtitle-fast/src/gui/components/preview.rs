@@ -4,7 +4,6 @@ use crate::gui::theme::AppTheme;
 use gpui::prelude::*;
 use gpui::*;
 use gpui::{InteractiveElement, MouseButton};
-use std::sync::Arc;
 
 pub struct PreviewPanel {
     state: Entity<AppState>,
@@ -32,8 +31,6 @@ impl Render for PreviewPanel {
         let roi = state.get_roi();
         let selection_visible = state.selection_visible();
         let highlight_enabled = state.highlight_enabled();
-        let playback_image = state.playback_current_image();
-        let playback_loading = state.playback_is_loading();
         let playback_error = state.playback_error();
 
         div()
@@ -123,8 +120,6 @@ impl Render for PreviewPanel {
                                     roi,
                                     selection_visible,
                                     highlight_enabled,
-                                    playback_image,
-                                    playback_loading,
                                     playback_error,
                                 )
                             } else {
@@ -240,8 +235,6 @@ impl PreviewPanel {
         roi: Option<crate::gui::state::RoiSelection>,
         selection_visible: bool,
         highlight_enabled: bool,
-        playback_image: Option<Arc<RenderImage>>,
-        playback_loading: bool,
         playback_error: Option<String>,
     ) -> Div {
         let overlay = roi.unwrap_or(crate::gui::state::RoiSelection {
@@ -256,13 +249,7 @@ impl PreviewPanel {
             .w_full()
             .h_full()
             .bg(hsla(0.0, 0.0, 0.02, 1.0))
-            .child(match playback_image {
-                Some(image) => div()
-                    .w_full()
-                    .h_full()
-                    .child(img(image).object_fit(ObjectFit::Contain).w_full().h_full()),
-                None => self.render_playback_placeholder(playback_loading, playback_error),
-            })
+            .child(self.render_playback_placeholder(playback_error))
             .child(
                 div()
                     .absolute()
@@ -298,13 +285,11 @@ impl PreviewPanel {
             )
     }
 
-    fn render_playback_placeholder(&self, loading: bool, error: Option<String>) -> Div {
+    fn render_playback_placeholder(&self, error: Option<String>) -> Div {
         let message = if let Some(error) = error {
             format!("Playback error\n{error}")
-        } else if loading {
-            "Loading preview...".to_string()
         } else {
-            "Press play to start preview".to_string()
+            "Preview disabled (frames discarded)".to_string()
         };
 
         div()

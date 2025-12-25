@@ -5,8 +5,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, ImageId,
-    Nv12Frame, Pixels, Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
+    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels,
+    Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
 };
 use std::{
     fmt::Debug,
@@ -654,22 +654,12 @@ impl From<PolychromeSprite> for Primitive {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum PaintSurfaceSource {
-    #[cfg(target_os = "macos")]
-    CvPixelBuffer(core_video::pixel_buffer::CVPixelBuffer),
-    Nv12 {
-        #[allow(dead_code)]
-        image_id: ImageId,
-        frame: Nv12Frame,
-    },
-}
-
-#[derive(Clone, Debug)]
 pub(crate) struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
-    pub source: PaintSurfaceSource,
+    #[cfg(target_os = "macos")]
+    pub image_buffer: core_video::pixel_buffer::CVPixelBuffer,
 }
 
 impl From<PaintSurface> for Primitive {

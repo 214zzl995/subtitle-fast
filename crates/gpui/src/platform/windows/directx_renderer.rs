@@ -83,7 +83,6 @@ struct DirectXRenderPipelines {
     underline_pipeline: PipelineState<Underline>,
     mono_sprites: PipelineState<MonochromeSprite>,
     poly_sprites: PipelineState<PolychromeSprite>,
-    surface_pipeline: PipelineState<SurfaceGPU>,
 }
 
 struct DirectXGlobalElements {
@@ -574,68 +573,6 @@ impl DirectXRenderer {
         if surfaces.is_empty() {
             return Ok(());
         }
-
-        let gpu_surfaces = surfaces
-            .iter()
-            .map(|s| SurfaceGPU {
-                bounds: s.bounds,
-                content_mask: s.content_mask.clone(),
-            })
-            .collect::<Vec<_>>();
-
-        self.pipelines.surface_pipeline.update_buffer(
-            &self.devices.device,
-            &self.devices.device_context,
-            &gpu_surfaces,
-        )?;
-
-        for (i, surface) in surfaces.iter().enumerate() {
-            let PaintSurfaceSource::Nv12 { frame, .. } = &surface.source;
-
-            let (_y_texture, y_srv) = create_texture_with_data(
-                &self.devices.device,
-                frame.width,
-                frame.height,
-                frame.y_stride as u32,
-                DXGI_FORMAT_R8_UNORM,
-                &frame.y_plane,
-            )?;
-
-            let (_uv_texture, uv_srv) = create_texture_with_data(
-                &self.devices.device,
-                frame.uv_width(),
-                frame.uv_height(),
-                frame.uv_stride as u32,
-                DXGI_FORMAT_R8G8_UNORM,
-                &frame.uv_plane,
-            )?;
-
-            let textures = [Some(y_srv), Some(uv_srv)];
-
-            set_pipeline_state(
-                &self.devices.device_context,
-                &self.pipelines.surface_pipeline.view,
-                D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
-                &self.resources.viewport,
-                &self.pipelines.surface_pipeline.vertex,
-                &self.pipelines.surface_pipeline.fragment,
-                &self.globals.global_params_buffer,
-                &self.pipelines.surface_pipeline.blend_state,
-            );
-
-            unsafe {
-                self.devices
-                    .device_context
-                    .PSSetSamplers(0, Some(&self.globals.sampler));
-                // Bind Y to t2, UV to t3.
-                self.devices
-                    .device_context
-                    .PSSetShaderResources(2, Some(&textures));
-
-                self.devices.device_context.DrawInstanced(4, 1, 0, i as u32);
-            }
-        }
-
         Ok(())
     }
 
@@ -837,13 +774,6 @@ impl DirectXRenderPipelines {
             16,
             create_blend_state(device)?,
         )?;
-        let surface_pipeline = PipelineState::new(
-            device,
-            "surface_pipeline",
-            ShaderModule::Surface,
-            4,
-            create_blend_state(device)?,
-        )?;
 
         Ok(Self {
             shadow_pipeline,
@@ -853,7 +783,6 @@ impl DirectXRenderPipelines {
             underline_pipeline,
             mono_sprites,
             poly_sprites,
-            surface_pipeline,
         })
     }
 }
@@ -1063,13 +992,6 @@ struct PathRasterizationSprite {
 #[repr(C)]
 struct PathSprite {
     bounds: Bounds<ScaledPixels>,
-}
-
-#[derive(Clone)]
-#[repr(C)]
-struct SurfaceGPU {
-    bounds: Bounds<ScaledPixels>,
-    content_mask: ContentMask<ScaledPixels>,
 }
 
 impl Drop for DirectXRenderer {
@@ -1432,49 +1354,6 @@ fn update_buffer<T>(
 }
 
 #[inline]
-fn create_texture_with_data(
-    device: &ID3D11Device,
-    width: u32,
-    height: u32,
-    stride: u32,
-    format: DXGI_FORMAT,
-    data: &[u8],
-) -> Result<(ID3D11Texture2D, ID3D11ShaderResourceView)> {
-    let desc = D3D11_TEXTURE2D_DESC {
-        Width: width,
-        Height: height,
-        MipLevels: 1,
-        ArraySize: 1,
-        Format: format,
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Usage: D3D11_USAGE_DEFAULT,
-        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-        CPUAccessFlags: 0,
-        MiscFlags: 0,
-    };
-
-    let subresource_data = D3D11_SUBRESOURCE_DATA {
-        pSysMem: data.as_ptr() as _,
-        SysMemPitch: stride,
-        SysMemSlicePitch: 0,
-    };
-
-    let texture = unsafe {
-        let mut output = None;
-        device.CreateTexture2D(&desc, Some(&subresource_data), Some(&mut output))?;
-        output.unwrap()
-    };
-
-    let mut view = None;
-    unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut view))? };
-
-    Ok((texture, view.unwrap()))
-}
-
-#[inline]
 fn set_pipeline_state(
     device_context: &ID3D11DeviceContext,
     buffer_view: &[Option<ID3D11ShaderResourceView>],
@@ -1531,7 +1410,6 @@ pub(crate) mod shader_resources {
         MonochromeSprite,
         PolychromeSprite,
         EmojiRasterization,
-        Surface,
     }
 
     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1604,10 +1482,6 @@ pub(crate) mod shader_resources {
                 ShaderModule::EmojiRasterization => match target {
                     ShaderTarget::Vertex => EMOJI_RASTERIZATION_VERTEX_BYTES,
                     ShaderTarget::Fragment => EMOJI_RASTERIZATION_FRAGMENT_BYTES,
-                },
-                ShaderModule::Surface => match target {
-                    ShaderTarget::Vertex => SURFACE_VERTEX_BYTES,
-                    ShaderTarget::Fragment => SURFACE_FRAGMENT_BYTES,
                 },
             };
             Self { inner: bytes }
@@ -1695,7 +1569,6 @@ pub(crate) mod shader_resources {
                 ShaderModule::MonochromeSprite => "monochrome_sprite",
                 ShaderModule::PolychromeSprite => "polychrome_sprite",
                 ShaderModule::EmojiRasterization => "emoji_rasterization",
-                ShaderModule::Surface => "surface",
             }
         }
     }

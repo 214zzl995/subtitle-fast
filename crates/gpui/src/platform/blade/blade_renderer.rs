@@ -3,14 +3,12 @@
 
 use super::{BladeAtlas, BladeContext};
 use crate::{
-    Background, Bounds, DevicePixels, GpuSpecs, ImageId, MonochromeSprite, PaintSurface,
-    PaintSurfaceSource, Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene,
-    Shadow, Size, Underline,
+    Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, Path, Point, PolychromeSprite,
+    PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, Underline,
 };
 use blade_graphics as gpu;
 use blade_util::{BufferBelt, BufferBeltDescriptor};
 use bytemuck::{Pod, Zeroable};
-use collections::FxHashMap;
 #[cfg(target_os = "macos")]
 use media::core_video::CVMetalTextureCache;
 use std::sync::Arc;
@@ -107,30 +105,6 @@ struct ShaderSurfacesData {
     t_y: gpu::TextureView,
     t_cb_cr: gpu::TextureView,
     s_surface: gpu::Sampler,
-}
-
-struct Nv12SurfaceTextures {
-    y_texture: gpu::Texture,
-    y_view: gpu::TextureView,
-    uv_texture: gpu::Texture,
-    uv_view: gpu::TextureView,
-}
-
-// RAII guard to ensure NV12 textures are cleaned up after rendering
-struct NV12TextureCleanup<'a> {
-    gpu: &'a gpu::Context,
-    textures: &'a FxHashMap<ImageId, Nv12SurfaceTextures>,
-}
-
-impl<'a> Drop for NV12TextureCleanup<'a> {
-    fn drop(&mut self) {
-        for textures in self.textures.values() {
-            self.gpu.destroy_texture(textures.y_texture);
-            self.gpu.destroy_texture_view(textures.y_view);
-            self.gpu.destroy_texture(textures.uv_texture);
-            self.gpu.destroy_texture_view(textures.uv_view);
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -360,7 +334,6 @@ pub struct BladeRenderer {
     instance_belt: BufferBelt,
     atlas: Arc<BladeAtlas>,
     atlas_sampler: gpu::Sampler,
-
     #[cfg(target_os = "macos")]
     core_video_texture_cache: CVMetalTextureCache,
     path_intermediate_texture: gpu::Texture,
@@ -447,7 +420,6 @@ impl BladeRenderer {
             instance_belt,
             atlas,
             atlas_sampler,
-
             #[cfg(target_os = "macos")]
             core_video_texture_cache,
             path_intermediate_texture,
@@ -653,7 +625,6 @@ impl BladeRenderer {
         self.wait_for_gpu();
         self.atlas.destroy();
         self.gpu.destroy_sampler(self.atlas_sampler);
-
         self.instance_belt.destroy(&self.gpu);
         self.gpu.destroy_command_encoder(&mut self.command_encoder);
         self.pipelines.destroy(&self.gpu);
@@ -669,177 +640,9 @@ impl BladeRenderer {
         }
     }
 
-    fn prepare_nv12_textures(
-        &mut self,
-        surfaces: &[PaintSurface],
-    ) -> FxHashMap<ImageId, Nv12SurfaceTextures> {
-        let mut nv12_textures = FxHashMap::default();
-
-        if surfaces.is_empty() {
-            return nv12_textures;
-        }
-
-        let mut transfers = self.command_encoder.transfer("nv12 upload");
-        for surface in surfaces {
-            let PaintSurfaceSource::Nv12 { image_id, frame } = &surface.source else {
-                continue;
-            };
-
-            if nv12_textures.contains_key(image_id) {
-                continue;
-            }
-
-            let (y_texture, y_view) = create_nv12_texture(
-                &self.gpu,
-                "nv12 y",
-                gpu::TextureFormat::R8Unorm,
-                frame.width,
-                frame.height,
-            );
-            let (uv_texture, uv_view) = create_nv12_texture(
-                &self.gpu,
-                "nv12 uv",
-                gpu::TextureFormat::Rg8Unorm,
-                frame.uv_width(),
-                frame.uv_height(),
-            );
-
-            self.command_encoder.init_texture(y_texture);
-            self.command_encoder.init_texture(uv_texture);
-
-            const ALIGNMENT: u32 = 256;
-            fn align_stride(width: u32, bytes_per_pixel: u32) -> u32 {
-                let stride = width * bytes_per_pixel;
-                (stride + ALIGNMENT - 1) & !(ALIGNMENT - 1)
-            }
-
-            // Upload Y plane
-            let y_stride_target = align_stride(frame.width, 1);
-
-            if y_stride_target != frame.y_stride as u32 {
-                let mut aligned_y = Vec::with_capacity((y_stride_target * frame.height) as usize);
-                for i in 0..frame.height {
-                    let start = (i as usize) * frame.y_stride;
-                    let end = start + frame.width as usize;
-                    aligned_y.extend_from_slice(&frame.y_plane[start..end]);
-                    aligned_y.extend(
-                        std::iter::repeat(0).take((y_stride_target - frame.width) as usize),
-                    );
-                }
-                let y_data = self.instance_belt.alloc_bytes(&aligned_y, &self.gpu);
-                transfers.copy_buffer_to_texture(
-                    y_data,
-                    y_stride_target,
-                    gpu::TexturePiece {
-                        texture: y_texture,
-                        mip_level: 0,
-                        array_layer: 0,
-                        origin: [0, 0, 0],
-                    },
-                    gpu::Extent {
-                        width: frame.width,
-                        height: frame.height,
-                        depth: 1,
-                    },
-                );
-            } else {
-                let y_data = self
-                    .instance_belt
-                    .alloc_bytes(frame.y_plane.as_ref(), &self.gpu);
-                transfers.copy_buffer_to_texture(
-                    y_data,
-                    frame.y_stride as u32,
-                    gpu::TexturePiece {
-                        texture: y_texture,
-                        mip_level: 0,
-                        array_layer: 0,
-                        origin: [0, 0, 0],
-                    },
-                    gpu::Extent {
-                        width: frame.width,
-                        height: frame.height,
-                        depth: 1,
-                    },
-                );
-            }
-
-            // Upload UV plane
-            let uv_stride_target = align_stride(frame.uv_width() * 2, 1);
-
-            if uv_stride_target != frame.uv_stride as u32 {
-                let mut aligned_uv =
-                    Vec::with_capacity((uv_stride_target * frame.uv_height()) as usize);
-                let row_bytes = frame.uv_width() as usize * 2;
-                for i in 0..frame.uv_height() {
-                    let start = (i as usize) * frame.uv_stride;
-                    let end = start + row_bytes;
-                    aligned_uv.extend_from_slice(&frame.uv_plane[start..end]);
-                    aligned_uv
-                        .extend(std::iter::repeat(0).take((uv_stride_target as usize) - row_bytes));
-                }
-
-                let uv_data = self.instance_belt.alloc_bytes(&aligned_uv, &self.gpu);
-                transfers.copy_buffer_to_texture(
-                    uv_data,
-                    uv_stride_target,
-                    gpu::TexturePiece {
-                        texture: uv_texture,
-                        mip_level: 0,
-                        array_layer: 0,
-                        origin: [0, 0, 0],
-                    },
-                    gpu::Extent {
-                        width: frame.uv_width(),
-                        height: frame.uv_height(),
-                        depth: 1,
-                    },
-                );
-            } else {
-                let uv_data = self
-                    .instance_belt
-                    .alloc_bytes(frame.uv_plane.as_ref(), &self.gpu);
-                transfers.copy_buffer_to_texture(
-                    uv_data,
-                    frame.uv_stride as u32,
-                    gpu::TexturePiece {
-                        texture: uv_texture,
-                        mip_level: 0,
-                        array_layer: 0,
-                        origin: [0, 0, 0],
-                    },
-                    gpu::Extent {
-                        width: frame.uv_width(),
-                        height: frame.uv_height(),
-                        depth: 1,
-                    },
-                );
-            }
-
-            nv12_textures.insert(
-                *image_id,
-                Nv12SurfaceTextures {
-                    y_texture,
-                    y_view,
-                    uv_texture,
-                    uv_view,
-                },
-            );
-        }
-
-        nv12_textures
-    }
-
     pub fn draw(&mut self, scene: &Scene) {
         self.command_encoder.start();
         self.atlas.before_frame(&mut self.command_encoder);
-
-        let nv12_textures = self.prepare_nv12_textures(&scene.surfaces);
-
-        // Ensure textures are cleaned up when this scope ends
-        let _cleanup_guard = NV12TextureCleanup {
-            gpu: &self.gpu,
-            textures: &nv12_textures,
-        };
 
         let frame = {
             profiling::scope!("acquire frame");
@@ -1014,103 +817,88 @@ impl BladeRenderer {
                     let mut _encoder = pass.with(&self.pipelines.surfaces);
 
                     for surface in surfaces {
-                        match &surface.source {
-                            PaintSurfaceSource::Nv12 { image_id, .. } => {
-                                let Some(textures) = nv12_textures.get(image_id) else {
-                                    continue;
-                                };
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            let _ = surface;
+                            continue;
+                        };
 
-                                _encoder.bind(
-                                    0,
-                                    &ShaderSurfacesData {
-                                        globals,
-                                        surface_locals: SurfaceParams {
-                                            bounds: surface.bounds.into(),
-                                            content_mask: surface.content_mask.bounds.into(),
-                                        },
-                                        t_y: textures.y_view,
-                                        t_cb_cr: textures.uv_view,
-                                        s_surface: self.atlas_sampler,
-                                    },
-                                );
-                                _encoder.draw(0, 4, 0, 1);
-                            }
-                            #[cfg(target_os = "macos")]
-                            PaintSurfaceSource::CvPixelBuffer(surface_buffer) => {
-                                let (t_y, t_cb_cr) = unsafe {
-                                    use core_foundation::base::TCFType as _;
-                                    use std::ptr;
+                        #[cfg(target_os = "macos")]
+                        {
+                            let (t_y, t_cb_cr) = unsafe {
+                                use core_foundation::base::TCFType as _;
+                                use std::ptr;
 
-                                    assert_eq!(
-                                        surface_buffer.get_pixel_format(),
+                                assert_eq!(
+                                        surface.image_buffer.get_pixel_format(),
                                         core_video::pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
                                     );
 
-                                    let y_texture = self
-                                        .core_video_texture_cache
-                                        .create_texture_from_image(
-                                            surface_buffer.as_concrete_TypeRef(),
-                                            ptr::null(),
-                                            metal::MTLPixelFormat::R8Unorm,
-                                            surface_buffer.get_width_of_plane(0),
-                                            surface_buffer.get_height_of_plane(0),
-                                            0,
-                                        )
-                                        .unwrap();
-                                    let cb_cr_texture = self
-                                        .core_video_texture_cache
-                                        .create_texture_from_image(
-                                            surface_buffer.as_concrete_TypeRef(),
-                                            ptr::null(),
-                                            metal::MTLPixelFormat::RG8Unorm,
-                                            surface_buffer.get_width_of_plane(1),
-                                            surface_buffer.get_height_of_plane(1),
-                                            1,
-                                        )
-                                        .unwrap();
-                                    (
-                                        gpu::TextureView::from_metal_texture(
-                                            &objc2::rc::Retained::retain(
-                                                foreign_types::ForeignTypeRef::as_ptr(
-                                                    y_texture.as_texture_ref(),
-                                                )
-                                                    as *mut objc2::runtime::ProtocolObject<
-                                                        dyn objc2_metal::MTLTexture,
-                                                    >,
-                                            )
-                                            .unwrap(),
-                                            gpu::TexelAspects::COLOR,
-                                        ),
-                                        gpu::TextureView::from_metal_texture(
-                                            &objc2::rc::Retained::retain(
-                                                foreign_types::ForeignTypeRef::as_ptr(
-                                                    cb_cr_texture.as_texture_ref(),
-                                                )
-                                                    as *mut objc2::runtime::ProtocolObject<
-                                                        dyn objc2_metal::MTLTexture,
-                                                    >,
-                                            )
-                                            .unwrap(),
-                                            gpu::TexelAspects::COLOR,
-                                        ),
+                                let y_texture = self
+                                    .core_video_texture_cache
+                                    .create_texture_from_image(
+                                        surface.image_buffer.as_concrete_TypeRef(),
+                                        ptr::null(),
+                                        metal::MTLPixelFormat::R8Unorm,
+                                        surface.image_buffer.get_width_of_plane(0),
+                                        surface.image_buffer.get_height_of_plane(0),
+                                        0,
                                     )
-                                };
+                                    .unwrap();
+                                let cb_cr_texture = self
+                                    .core_video_texture_cache
+                                    .create_texture_from_image(
+                                        surface.image_buffer.as_concrete_TypeRef(),
+                                        ptr::null(),
+                                        metal::MTLPixelFormat::RG8Unorm,
+                                        surface.image_buffer.get_width_of_plane(1),
+                                        surface.image_buffer.get_height_of_plane(1),
+                                        1,
+                                    )
+                                    .unwrap();
+                                (
+                                    gpu::TextureView::from_metal_texture(
+                                        &objc2::rc::Retained::retain(
+                                            foreign_types::ForeignTypeRef::as_ptr(
+                                                y_texture.as_texture_ref(),
+                                            )
+                                                as *mut objc2::runtime::ProtocolObject<
+                                                    dyn objc2_metal::MTLTexture,
+                                                >,
+                                        )
+                                        .unwrap(),
+                                        gpu::TexelAspects::COLOR,
+                                    ),
+                                    gpu::TextureView::from_metal_texture(
+                                        &objc2::rc::Retained::retain(
+                                            foreign_types::ForeignTypeRef::as_ptr(
+                                                cb_cr_texture.as_texture_ref(),
+                                            )
+                                                as *mut objc2::runtime::ProtocolObject<
+                                                    dyn objc2_metal::MTLTexture,
+                                                >,
+                                        )
+                                        .unwrap(),
+                                        gpu::TexelAspects::COLOR,
+                                    ),
+                                )
+                            };
 
-                                _encoder.bind(
-                                    0,
-                                    &ShaderSurfacesData {
-                                        globals,
-                                        surface_locals: SurfaceParams {
-                                            bounds: surface.bounds.into(),
-                                            content_mask: surface.content_mask.bounds.into(),
-                                        },
-                                        t_y,
-                                        t_cb_cr,
-                                        s_surface: self.atlas_sampler,
+                            _encoder.bind(
+                                0,
+                                &ShaderSurfacesData {
+                                    globals,
+                                    surface_locals: SurfaceParams {
+                                        bounds: surface.bounds.into(),
+                                        content_mask: surface.content_mask.bounds.into(),
                                     },
-                                );
-                                _encoder.draw(0, 4, 0, 1);
-                            }
+                                    t_y,
+                                    t_cb_cr,
+                                    s_surface: self.atlas_sampler,
+                                },
+                            );
+
+                            _encoder.draw(0, 4, 0, 1);
                         }
                     }
                 }
@@ -1155,40 +943,6 @@ fn create_path_intermediate_texture(
         texture,
         gpu::TextureViewDesc {
             name: "path intermediate view",
-            format,
-            dimension: gpu::ViewDimension::D2,
-            subresources: &Default::default(),
-        },
-    );
-    (texture, texture_view)
-}
-
-fn create_nv12_texture(
-    gpu: &gpu::Context,
-    name: &str,
-    format: gpu::TextureFormat,
-    width: u32,
-    height: u32,
-) -> (gpu::Texture, gpu::TextureView) {
-    let texture = gpu.create_texture(gpu::TextureDesc {
-        name,
-        format,
-        size: gpu::Extent {
-            width,
-            height,
-            depth: 1,
-        },
-        array_layer_count: 1,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: gpu::TextureDimension::D2,
-        usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
-        external: None,
-    });
-    let texture_view = gpu.create_texture_view(
-        texture,
-        gpu::TextureViewDesc {
-            name,
             format,
             dimension: gpu::ViewDimension::D2,
             subresources: &Default::default(),

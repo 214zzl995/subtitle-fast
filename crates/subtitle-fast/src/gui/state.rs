@@ -1,8 +1,7 @@
-use gpui::{RenderImage, WindowAppearance};
+use gpui::WindowAppearance;
 use parking_lot::RwLock;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use crate::backend::ExecutionPlan;
 use crate::gui::components::AnimatedPanelState;
@@ -84,15 +83,13 @@ pub const PLAYBACK_BUFFER_CAPACITY: usize = 48;
 pub struct PlaybackFrame {
     timestamp_ms: f64,
     frame_index: Option<u64>,
-    image: Arc<RenderImage>,
 }
 
 impl PlaybackFrame {
-    pub fn new(timestamp_ms: f64, frame_index: Option<u64>, image: Arc<RenderImage>) -> Self {
+    pub fn new(timestamp_ms: f64, frame_index: Option<u64>) -> Self {
         Self {
             timestamp_ms,
             frame_index,
-            image,
         }
     }
 }
@@ -526,14 +523,6 @@ impl AppState {
 
     pub fn playback_buffer_len(&self) -> usize {
         self.playback.read().buffer.len()
-    }
-
-    pub fn playback_current_image(&self) -> Option<Arc<RenderImage>> {
-        self.playback
-            .read()
-            .current_frame
-            .as_ref()
-            .map(|frame| frame.image.clone())
     }
 
     pub fn playback_current_frame_index(&self) -> Option<u64> {

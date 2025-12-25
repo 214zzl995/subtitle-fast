@@ -6,7 +6,6 @@ use gpui::prelude::*;
 use gpui::*;
 use gpui::{InteractiveElement, MouseButton};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use subtitle_fast_decoder::{Configuration, FrameError, FrameResult, VideoFrame};
@@ -565,32 +564,8 @@ impl ControlPanel {
                                     });
                                 last_timestamp_ms = Some(timestamp_ms);
 
-                                let image = match RenderImage::from_nv12(
-                                    frame.width(),
-                                    frame.height(),
-                                    frame.y_stride(),
-                                    frame.uv_stride(),
-                                    frame.y_plane().to_vec(),
-                                    frame.uv_plane().to_vec(),
-                                ) {
-                                    Ok(image) => Arc::new(image),
-                                    Err(err) => {
-                                        let _ = state.update(&mut async_app, |state, cx| {
-                                            let message =
-                                                format!("Failed to render NV12 frame: {err}");
-                                            state.set_playback_error(
-                                                session_id,
-                                                Some(message.clone()),
-                                            );
-                                            state.set_error_message(Some(message));
-                                            cx.notify();
-                                        });
-                                        break;
-                                    }
-                                };
-
                                 let playback_frame =
-                                    PlaybackFrame::new(timestamp_ms, frame.frame_index(), image);
+                                    PlaybackFrame::new(timestamp_ms, frame.frame_index());
                                 let _ = state.update(&mut async_app, |state, cx| {
                                     if state.push_playback_frame(session_id, playback_frame) {
                                         if timestamp_ms > state.duration_ms() {
