@@ -12,7 +12,7 @@ use gpui::{
 use subtitle_fast_decoder::{Configuration, OutputFormat, VideoFrame};
 use tokio_stream::StreamExt;
 
-const INPUT_VIDEO: &str = "examples/video/big-buck-bunny-1080p-60fps-30sec.mp4";
+const INPUT_VIDEO: &str = "examples/video/big-buck-bunny-480p-30sec.mp4";
 
 struct VideoView {
     handle: VideoHandle,
