@@ -1210,18 +1210,15 @@ SurfaceVertexOutput surface_vertex(uint vertex_id: SV_VertexID, uint surface_id:
     return output;
 }
 
-static const float4x4 ycbcr_to_RGB = float4x4(
-    float4( 1.0000f,  1.0000f,  1.0000f, 0.0),
-    float4( 0.0000f, -0.3441f,  1.7720f, 0.0),
-    float4( 1.4020f, -0.7141f,  0.0000f, 0.0),
-    float4(-0.7010f,  0.5291f, -0.8860f, 1.0)
-);
-
 float4 surface_fragment(SurfaceVertexOutput input): SV_Target {
-    float4 y_cb_cr = float4(
-        t_sprite.SampleLevel(s_sprite, input.texture_position, 0.0).r,
-        t_cb_cr.SampleLevel(s_sprite, input.texture_position, 0.0).rg,
-        1.0
+    float y = t_sprite.SampleLevel(s_sprite, input.texture_position, 0.0).r;
+    float2 cb_cr = t_cb_cr.SampleLevel(s_sprite, input.texture_position, 0.0).rg;
+    float cb = cb_cr.x - 0.5f;
+    float cr = cb_cr.y - 0.5f;
+    float3 rgb = float3(
+        y + 1.4020f * cr,
+        y - 0.3441f * cb - 0.7141f * cr,
+        y + 1.7720f * cb
     );
-    return mul(ycbcr_to_RGB, y_cb_cr);
+    return float4(rgb, 1.0f);
 }

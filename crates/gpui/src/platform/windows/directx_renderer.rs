@@ -595,9 +595,7 @@ impl DirectXRenderer {
         let mut seen_surfaces = FxHashSet::default();
 
         for surface in surfaces {
-            let SurfaceSource::Nv12(frame) = &surface.source else {
-                continue;
-            };
+            let SurfaceSource::Nv12(frame) = &surface.source;
             let Some(surface_id) = surface.surface_id else {
                 continue;
             };
