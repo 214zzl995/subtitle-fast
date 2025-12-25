@@ -135,6 +135,10 @@ path = "examples/hello_world.rs"
 name = "nv12"
 path = "examples/nv12/nv12.rs"
 
+[[example]]
+name = "video"
+path = "examples/video/video.rs"
+
 # [[example]]
 # name = "image"
 # path = "examples/image/image.rs"
@@ -444,6 +448,16 @@ features = ["unstable"]
 
 [dev-dependencies.rand]
 version = "0.9"
+
+[dev-dependencies.subtitle-fast-decoder]
+path = "../subtitle-fast-decoder"
+
+[dev-dependencies.tokio]
+version = "1"
+features = ["rt-multi-thread", "time"]
+
+[dev-dependencies.tokio-stream]
+version = "0.1"
 
 [dev-dependencies.unicode-segmentation]
 version = "1.10"
