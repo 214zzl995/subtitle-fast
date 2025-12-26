@@ -1,6 +1,5 @@
 use gpui::prelude::*;
 use gpui::*;
-use std::time::{Duration, Instant};
 
 use crate::gui::components::*;
 use crate::gui::icons::{Icon, icon_sm};
@@ -65,12 +64,6 @@ pub struct MainWindow {
     state: Entity<AppState>,
     appearance_subscription: Option<Subscription>,
     sidebar: Option<Entity<Sidebar>>,
-    preview: Option<Entity<PreviewPanel>>,
-    control_panel: Option<Entity<ControlPanel>>,
-    status_panel: Option<Entity<StatusPanel>>,
-    subtitle_list: Option<Entity<SubtitleList>>,
-    playback_loop_started: bool,
-    last_active_file_id: Option<crate::gui::state::FileId>,
 }
 
 impl MainWindow {
@@ -79,12 +72,6 @@ impl MainWindow {
             state,
             appearance_subscription: None,
             sidebar: None,
-            preview: None,
-            control_panel: None,
-            status_panel: None,
-            subtitle_list: None,
-            playback_loop_started: false,
-            last_active_file_id: None,
         }
     }
 }
@@ -93,19 +80,6 @@ impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_theme_listener(window, cx);
         self.ensure_children(cx);
-        self.ensure_playback_loop(cx);
-
-        let current_active_file_id = self.state.read(cx).get_active_file_id();
-        if self.last_active_file_id != current_active_file_id {
-            self.last_active_file_id = current_active_file_id;
-            if current_active_file_id.is_some() {
-                if let Some(control_panel) = &self.control_panel {
-                    control_panel.update(cx, |panel, cx| {
-                        panel.init_decoder(cx);
-                    });
-                }
-            }
-        }
 
         let (
             theme,
@@ -150,12 +124,12 @@ impl Render for MainWindow {
         let full_size_style = StyleRefinement::default().w_full().h_full();
         let sidebar =
             AnyView::from(self.sidebar.as_ref().unwrap().clone()).cached(full_size_style.clone());
-        let preview =
-            AnyView::from(self.preview.as_ref().unwrap().clone()).cached(full_size_style.clone());
-        let control_panel = AnyView::from(self.control_panel.as_ref().unwrap().clone());
-        let status_panel = AnyView::from(self.status_panel.as_ref().unwrap().clone());
-        let subtitle_list =
-            AnyView::from(self.subtitle_list.as_ref().unwrap().clone()).cached(full_size_style);
+        let main_content = div()
+            .relative()
+            .flex()
+            .flex_1()
+            .h_full()
+            .bg(theme.surface());
 
         div()
             .relative()
@@ -261,15 +235,12 @@ impl Render for MainWindow {
                             .gap(px(1.0))
                             .overflow_hidden()
                             .child(
-                                div().relative().flex().flex_1().overflow_hidden().child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .flex_1()
-                                        .h_full()
-                                        .child(div().flex_1().child(preview))
-                                        .child(div().child(control_panel)),
-                                ),
+                                div()
+                                    .relative()
+                                    .flex()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .child(main_content),
                             )
                             .child(
                                 div()
@@ -279,9 +250,9 @@ impl Render for MainWindow {
                                     .w(px(right_sidebar_width))
                                     .h_full()
                                     .gap(px(1.0))
+                                    .bg(theme.surface())
                                     .child(self.render_resize_handle_right(theme, cx))
-                                    .child(div().child(status_panel))
-                                    .child(div().flex_1().child(subtitle_list)),
+                                    .child(div().flex_1()),
                             ),
                     ),
             )
@@ -340,65 +311,6 @@ impl MainWindow {
             let state = self.state.clone();
             self.sidebar = Some(cx.new(|_| Sidebar::new(state)));
         }
-        if self.preview.is_none() {
-            let state = self.state.clone();
-            self.preview = Some(cx.new(|_| PreviewPanel::new(state)));
-        }
-        if self.control_panel.is_none() {
-            let state = self.state.clone();
-            self.control_panel = Some(cx.new(|_| ControlPanel::new(state)));
-        }
-        if self.status_panel.is_none() {
-            let state = self.state.clone();
-            self.status_panel = Some(cx.new(|_| StatusPanel::new(state)));
-        }
-        if self.subtitle_list.is_none() {
-            let state = self.state.clone();
-            self.subtitle_list = Some(cx.new(|_| SubtitleList::new(state)));
-        }
-    }
-
-    fn ensure_playback_loop(&mut self, cx: &mut Context<Self>) {
-        if self.playback_loop_started {
-            return;
-        }
-        self.playback_loop_started = true;
-        let state = self.state.clone();
-        cx.spawn(|_this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let mut async_app = (*cx).clone();
-            async move {
-                let mut last_tick = Instant::now();
-                loop {
-                    Timer::after(Duration::from_millis(16)).await;
-                    let now = Instant::now();
-                    let delta_ms = (now - last_tick).as_secs_f64() * 1000.0;
-                    last_tick = now;
-                    let updated = state.update(&mut async_app, |state, cx| {
-                        let is_playing = state.is_playing();
-                        if is_playing {
-                            let next_time = state.playhead_ms() + delta_ms;
-                            let duration = state.duration_ms();
-                            if !state.playback_is_decoding() && next_time >= duration {
-                                state.set_playhead_ms(duration);
-                                state.set_playing(false);
-                            } else if state.playback_is_decoding() {
-                                state.set_playhead_ms_unclamped(next_time);
-                            } else {
-                                state.set_playhead_ms(next_time);
-                            }
-                        }
-                        let advanced = state.advance_playback();
-                        if is_playing || advanced {
-                            cx.notify();
-                        }
-                    });
-                    if updated.is_err() {
-                        break;
-                    }
-                }
-            }
-        })
-        .detach();
     }
 
     fn render_sidebar_titlebar(&self, theme: AppTheme, titlebar_height: Pixels) -> Div {
@@ -421,6 +333,9 @@ impl MainWindow {
     ) -> Div {
         #[cfg(not(target_os = "windows"))]
         let _ = window;
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        let _ = cx;
 
         #[cfg(target_os = "windows")]
         let controls = self.render_windows_controls(theme, window, cx);
@@ -456,10 +371,7 @@ impl MainWindow {
             .window_control_area(WindowControlArea::Drag);
 
         titlebar
-            .child(
-                self.render_file_picker_button(theme, cx)
-                    .ml(file_button_offset),
-            )
+            .child(self.render_file_picker_button(theme).ml(file_button_offset))
             .child(controls_slot)
             .child(
                 div()
@@ -699,7 +611,7 @@ impl MainWindow {
             )
     }
 
-    fn render_file_picker_button(&self, theme: AppTheme, cx: &mut Context<Self>) -> Div {
+    fn render_file_picker_button(&self, theme: AppTheme) -> Div {
         div()
             .flex()
             .items_center()
@@ -713,58 +625,6 @@ impl MainWindow {
             .cursor_pointer()
             .hover(|s| s.bg(theme.surface_hover()))
             .child(icon_sm(Icon::Upload, theme.text_secondary()))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|_this, _, _, cx| {
-                    let receiver = cx.prompt_for_paths(PathPromptOptions {
-                        files: true,
-                        directories: false,
-                        multiple: true,
-                        prompt: Some("Select video files".into()),
-                    });
-                    cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-                        let mut async_app = (*cx).clone();
-                        async move {
-                            let result = match receiver.await {
-                                Ok(result) => result,
-                                Err(_) => return,
-                            };
-                            match result {
-                                Ok(Some(paths)) => {
-                                    let _ = this.update(&mut async_app, |this, cx| {
-                                        let state = this.state.clone();
-                                        state.update(cx, |state, cx| {
-                                            for path in paths {
-                                                state.add_file(path);
-                                            }
-                                            state.set_error_message(None);
-                                            cx.notify();
-                                        });
-                                        if let Some(control_panel) = &this.control_panel {
-                                            control_panel.update(cx, |panel, cx| {
-                                                panel.init_decoder(cx);
-                                            });
-                                        }
-                                    });
-                                }
-                                Ok(None) => {}
-                                Err(err) => {
-                                    let _ = this.update(&mut async_app, |this, cx| {
-                                        let state = this.state.clone();
-                                        state.update(cx, |state, cx| {
-                                            state.set_error_message(Some(format!(
-                                                "Failed to open file picker: {err}"
-                                            )));
-                                            cx.notify();
-                                        });
-                                    });
-                                }
-                            }
-                        }
-                    })
-                    .detach();
-                }),
-            )
     }
 
     fn render_resize_handle_left(&self, theme: AppTheme, cx: &mut Context<Self>) -> Div {
