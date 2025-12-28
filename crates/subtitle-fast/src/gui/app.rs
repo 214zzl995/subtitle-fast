@@ -3,9 +3,12 @@ use gpui::*;
 use gpui_component::button::Button;
 use rust_embed::RustEmbed;
 use std::borrow::Cow;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use crate::gui::components::{VideoPlayer, VideoPlayerControlHandle, VideoPlayerInfoHandle};
+use crate::gui::components::{
+    DragRange, DraggableEdge, DraggableEdgePanel, VideoPlayer, VideoPlayerControlHandle,
+    VideoPlayerInfoHandle,
+};
 
 #[derive(RustEmbed)]
 #[folder = "assets"]
@@ -48,8 +51,6 @@ impl SubtitleFastApp {
     pub fn open_window(&self, cx: &mut App) -> WindowHandle<MainWindow> {
         let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
 
-        let demo_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../demo/video1_30s.mp4");
-
         let window = cx
             .open_window(
                 WindowOptions {
@@ -62,9 +63,13 @@ impl SubtitleFastApp {
                     ..Default::default()
                 },
                 move |_, cx| {
-                    let (player, controls, info) = VideoPlayer::new(demo_path.clone());
-                    let player = cx.new(|_| player);
-                    cx.new(|_| MainWindow::new(player, controls, info))
+                    let left_panel = cx.new(|_| {
+                        DraggableEdgePanel::new(
+                            DraggableEdge::Right,
+                            DragRange::new(px(200.0), px(480.0)),
+                        )
+                    });
+                    cx.new(|_| MainWindow::new(None, None, None, left_panel))
                 },
             )
             .unwrap();
@@ -74,23 +79,26 @@ impl SubtitleFastApp {
 }
 
 pub struct MainWindow {
-    player: Entity<VideoPlayer>,
-    controls: VideoPlayerControlHandle,
-    _info: VideoPlayerInfoHandle,
+    player: Option<Entity<VideoPlayer>>,
+    controls: Option<VideoPlayerControlHandle>,
+    _info: Option<VideoPlayerInfoHandle>,
     paused: bool,
+    left_panel: Entity<DraggableEdgePanel>,
 }
 
 impl MainWindow {
     pub fn new(
-        player: Entity<VideoPlayer>,
-        controls: VideoPlayerControlHandle,
-        info: VideoPlayerInfoHandle,
+        player: Option<Entity<VideoPlayer>>,
+        controls: Option<VideoPlayerControlHandle>,
+        info: Option<VideoPlayerInfoHandle>,
+        left_panel: Entity<DraggableEdgePanel>,
     ) -> Self {
         Self {
             player,
             controls,
             _info: info,
             paused: false,
+            left_panel,
         }
     }
 
@@ -130,15 +138,18 @@ impl MainWindow {
 
     fn load_video(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let (player, controls, info) = VideoPlayer::new(path);
-        self.player = cx.new(|_| player);
-        self.controls = controls;
-        self._info = info;
+        self.player = Some(cx.new(|_| player));
+        self.controls = Some(controls);
+        self._info = Some(info);
         self.paused = false;
         cx.notify();
     }
 
     fn toggle_playback(&mut self, cx: &mut Context<Self>) {
-        self.controls.toggle_pause();
+        let Some(controls) = self.controls.as_ref() else {
+            return;
+        };
+        controls.toggle_pause();
         self.paused = !self.paused;
         cx.notify();
     }
@@ -147,6 +158,10 @@ impl MainWindow {
 impl Render for MainWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let toggle_label = if self.paused { "Play" } else { "Pause" };
+        let video_content = self
+            .player
+            .as_ref()
+            .map(|player| div().flex_grow().child(player.clone()));
 
         div()
             .flex()
@@ -172,6 +187,18 @@ impl Render for MainWindow {
                         }),
                     )),
             )
-            .child(self.player.clone())
+            .child({
+                let layout = div()
+                    .flex()
+                    .flex_row()
+                    .flex_grow()
+                    .w_full()
+                    .child(self.left_panel.clone());
+                if let Some(video) = video_content {
+                    layout.child(video)
+                } else {
+                    layout
+                }
+            })
     }
 }
