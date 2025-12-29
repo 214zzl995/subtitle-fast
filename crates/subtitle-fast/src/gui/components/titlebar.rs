@@ -5,6 +5,8 @@ use gpui::*;
 
 #[cfg(target_os = "windows")]
 const WINDOWS_TITLEBAR_HEIGHT: f32 = 32.0;
+const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 36.0;
+const WINDOWS_CAPTION_FONT: &str = "Segoe MDL2 Assets";
 #[cfg(not(target_os = "windows"))]
 const TITLEBAR_MIN_HEIGHT: f32 = 34.0;
 const MAC_TRAFFIC_LIGHT_PADDING: f32 = 72.0;
@@ -25,6 +27,140 @@ impl PlatformStyle {
         } else {
             Self::Linux
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsCaptionButtonIcon {
+    Minimize,
+    Restore,
+    Maximize,
+    Close,
+}
+
+#[derive(IntoElement)]
+struct WindowsCaptionButton {
+    id: ElementId,
+    icon: WindowsCaptionButtonIcon,
+    hover_background: Hsla,
+    active_background: Hsla,
+}
+
+impl WindowsCaptionButton {
+    fn new(
+        id: impl Into<ElementId>,
+        icon: WindowsCaptionButtonIcon,
+        hover_background: Hsla,
+        active_background: Hsla,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            icon,
+            hover_background,
+            active_background,
+        }
+    }
+}
+
+impl RenderOnce for WindowsCaptionButton {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        div()
+            .id(self.id)
+            .flex()
+            .items_center()
+            .justify_center()
+            .occlude()
+            .w(px(WINDOWS_CAPTION_BUTTON_WIDTH))
+            .h_full()
+            .text_size(px(10.0))
+            .cursor_pointer()
+            .hover(|style| style.bg(self.hover_background))
+            .active(|style| style.bg(self.active_background))
+            .map(|this| match self.icon {
+                WindowsCaptionButtonIcon::Close => {
+                    this.window_control_area(WindowControlArea::Close)
+                }
+                WindowsCaptionButtonIcon::Maximize | WindowsCaptionButtonIcon::Restore => {
+                    this.window_control_area(WindowControlArea::Max)
+                }
+                WindowsCaptionButtonIcon::Minimize => {
+                    this.window_control_area(WindowControlArea::Min)
+                }
+            })
+            .child(match self.icon {
+                WindowsCaptionButtonIcon::Minimize => "\u{e921}",
+                WindowsCaptionButtonIcon::Restore => "\u{e923}",
+                WindowsCaptionButtonIcon::Maximize => "\u{e922}",
+                WindowsCaptionButtonIcon::Close => "\u{e8bb}",
+            })
+    }
+}
+
+#[derive(IntoElement)]
+struct WindowsWindowControls {
+    id: ElementId,
+    button_height: Pixels,
+    supported_controls: WindowControls,
+}
+
+impl WindowsWindowControls {
+    fn new(
+        id: impl Into<ElementId>,
+        button_height: Pixels,
+        supported_controls: WindowControls,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            button_height,
+            supported_controls,
+        }
+    }
+}
+
+impl RenderOnce for WindowsWindowControls {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let hover_background = hsla(0.0, 0.0, 1.0, 0.08);
+        let active_background = hsla(0.0, 0.0, 1.0, 0.14);
+        let close_hover_background = hsla(0.0, 0.8, 0.55, 0.35);
+
+        let mut controls = div()
+            .id(self.id)
+            .font_family(WINDOWS_CAPTION_FONT)
+            .flex()
+            .items_center()
+            .justify_center()
+            .max_h(self.button_height)
+            .min_h(self.button_height);
+
+        if self.supported_controls.minimize {
+            controls = controls.child(WindowsCaptionButton::new(
+                "titlebar-minimize",
+                WindowsCaptionButtonIcon::Minimize,
+                hover_background,
+                active_background,
+            ));
+        }
+
+        if self.supported_controls.maximize {
+            let icon = if window.is_maximized() {
+                WindowsCaptionButtonIcon::Restore
+            } else {
+                WindowsCaptionButtonIcon::Maximize
+            };
+            controls = controls.child(WindowsCaptionButton::new(
+                "titlebar-maximize",
+                icon,
+                hover_background,
+                active_background,
+            ));
+        }
+
+        controls.child(WindowsCaptionButton::new(
+            "titlebar-close",
+            WindowsCaptionButtonIcon::Close,
+            close_hover_background,
+            active_background,
+        ))
     }
 }
 
@@ -163,27 +299,33 @@ impl Render for Titlebar {
         );
 
         let mut controls = div().flex().items_center().h_full().gap(px(2.0));
-        if self.platform_style != PlatformStyle::Mac && supported_controls.minimize {
-            controls = controls.child(Self::control_button(
-                "titlebar-minimize",
-                "-",
-                WindowControlArea::Min,
-                hsla(0.0, 0.0, 1.0, 0.08),
-                |window, _| window.minimize_window(),
+        if self.platform_style == PlatformStyle::Windows {
+            controls = controls.child(WindowsWindowControls::new(
+                "windows-titlebar-controls",
+                height,
+                supported_controls,
             ));
-        }
+        } else if self.platform_style != PlatformStyle::Mac {
+            if supported_controls.minimize {
+                controls = controls.child(Self::control_button(
+                    "titlebar-minimize",
+                    "-",
+                    WindowControlArea::Min,
+                    hsla(0.0, 0.0, 1.0, 0.08),
+                    |window, _| window.minimize_window(),
+                ));
+            }
 
-        if self.platform_style != PlatformStyle::Mac && supported_controls.maximize {
-            controls = controls.child(Self::control_button(
-                "titlebar-maximize",
-                "[]",
-                WindowControlArea::Max,
-                hsla(0.0, 0.0, 1.0, 0.08),
-                |window, _| window.zoom_window(),
-            ));
-        }
+            if supported_controls.maximize {
+                controls = controls.child(Self::control_button(
+                    "titlebar-maximize",
+                    "[]",
+                    WindowControlArea::Max,
+                    hsla(0.0, 0.0, 1.0, 0.08),
+                    |window, _| window.zoom_window(),
+                ));
+            }
 
-        if self.platform_style != PlatformStyle::Mac {
             controls = controls.child(Self::control_button(
                 "titlebar-close",
                 "X",
