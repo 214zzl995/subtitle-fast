@@ -27,24 +27,24 @@ struct VideoFilterPipeline {
 
 impl VideoFilterPipeline {
     fn new(
-        decoder: &ffmpeg::decoder::Video,
-        stream: &ffmpeg::format::stream::Stream,
+        time_base: ffmpeg::Rational,
+        frame_rate: Option<(i32, i32)>,
+        frame: &ffmpeg::util::frame::Video,
         start_frame: Option<u64>,
     ) -> FrameResult<Self> {
         let mut graph = ffmpeg::filter::Graph::new();
 
-        let (time_base_num, time_base_den) = sanitize_rational(stream.time_base(), (1, 1));
-        let (sar_num, sar_den) = sanitize_rational(decoder.aspect_ratio(), (1, 1));
-        let frame_rate = optional_positive_rational(stream.avg_frame_rate());
-        let pixel_format = decoder.format();
+        let (time_base_num, time_base_den) = sanitize_rational(time_base, (1, 1));
+        let (sar_num, sar_den) = sanitize_rational(frame.aspect_ratio(), (1, 1));
+        let pixel_format = frame.format();
         let pixel_format_name = pixel_format
             .descriptor()
             .map(|descriptor| descriptor.name())
             .unwrap_or("yuv420p");
         let mut args = format!(
             "video_size={}x{}:pix_fmt={}:time_base={}/{}:pixel_aspect={}/{}",
-            decoder.width(),
-            decoder.height(),
+            frame.width(),
+            frame.height(),
             pixel_format_name,
             time_base_num,
             time_base_den,
@@ -53,6 +53,12 @@ impl VideoFilterPipeline {
         );
         if let Some((num, den)) = frame_rate {
             args.push_str(&format!(":frame_rate={}/{}", num, den));
+        }
+        if let Some(colorspace) = colorspace_name(frame.color_space()) {
+            args.push_str(&format!(":colorspace={colorspace}"));
+        }
+        if let Some(range) = color_range_name(frame.color_range()) {
+            args.push_str(&format!(":range={range}"));
         }
 
         graph
@@ -215,11 +221,15 @@ impl FfmpegProvider {
     fn decode_loop(&self, tx: Sender<FrameResult<VideoFrame>>) -> FrameResult<()> {
         let mut ictx = ffmpeg::format::input(&self.input)
             .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
-        let input_stream = ictx
-            .streams()
-            .best(ffmpeg::media::Type::Video)
-            .ok_or_else(|| FrameError::backend_failure(BACKEND_NAME, "no video stream found"))?;
-        let frame_rate = stream_frame_rate(&input_stream);
+        let frame_rate = {
+            let input_stream =
+                ictx.streams()
+                    .best(ffmpeg::media::Type::Video)
+                    .ok_or_else(|| {
+                        FrameError::backend_failure(BACKEND_NAME, "no video stream found")
+                    })?;
+            stream_frame_rate(&input_stream)
+        };
 
         if let Some(start_frame) = self.start_frame.filter(|value| *value > 0) {
             let frame_rate = frame_rate.ok_or_else(|| {
@@ -230,16 +240,23 @@ impl FfmpegProvider {
             seek_to_start_frame(&mut ictx, start_frame, frame_rate)?;
         }
 
-        let input_stream = ictx
-            .streams()
-            .best(ffmpeg::media::Type::Video)
-            .ok_or_else(|| FrameError::backend_failure(BACKEND_NAME, "no video stream found"))?;
-        let stream_index = input_stream.index();
-        let time_base = input_stream.time_base();
+        let (stream_index, time_base, filter_frame_rate, parameters) = {
+            let input_stream =
+                ictx.streams()
+                    .best(ffmpeg::media::Type::Video)
+                    .ok_or_else(|| {
+                        FrameError::backend_failure(BACKEND_NAME, "no video stream found")
+                    })?;
+            (
+                input_stream.index(),
+                input_stream.time_base(),
+                stream_frame_rate(&input_stream),
+                input_stream.parameters(),
+            )
+        };
 
-        let mut context =
-            ffmpeg::codec::context::Context::from_parameters(input_stream.parameters())
-                .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+        let mut context = ffmpeg::codec::context::Context::from_parameters(parameters)
+            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
         let mut threading = ffmpeg::codec::threading::Config::default();
         threading.kind = ffmpeg::codec::threading::Type::Frame;
         context.set_threading(threading);
@@ -248,7 +265,7 @@ impl FfmpegProvider {
             .video()
             .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
 
-        let mut filter = VideoFilterPipeline::new(&decoder, &input_stream, self.start_frame)?;
+        let mut filter: Option<VideoFilterPipeline> = None;
         let mut decoded = ffmpeg::util::frame::Video::empty();
 
         for (stream, packet) in ictx.packets() {
@@ -262,15 +279,33 @@ impl FfmpegProvider {
                     return Err(FrameError::backend_failure(BACKEND_NAME, err.to_string()));
                 }
             }
-            drain_decoder(&mut decoder, &mut decoded, &mut filter, time_base, &tx)?;
+            drain_decoder(
+                &mut decoder,
+                &mut decoded,
+                &mut filter,
+                time_base,
+                filter_frame_rate,
+                self.start_frame,
+                &tx,
+            )?;
         }
 
         decoder
             .send_eof()
             .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
-        drain_decoder(&mut decoder, &mut decoded, &mut filter, time_base, &tx)?;
-        filter.flush()?;
-        filter.drain(time_base, &tx)?;
+        drain_decoder(
+            &mut decoder,
+            &mut decoded,
+            &mut filter,
+            time_base,
+            filter_frame_rate,
+            self.start_frame,
+            &tx,
+        )?;
+        if let Some(filter) = filter.as_mut() {
+            filter.flush()?;
+            filter.drain(time_base, &tx)?;
+        }
         Ok(())
     }
 }
@@ -295,18 +330,37 @@ impl FrameStreamProvider for FfmpegProvider {
 fn drain_decoder(
     decoder: &mut ffmpeg::decoder::Video,
     decoded: &mut ffmpeg::util::frame::Video,
-    filter: &mut VideoFilterPipeline,
+    filter: &mut Option<VideoFilterPipeline>,
     fallback_time_base: ffmpeg::Rational,
+    frame_rate: Option<(i32, i32)>,
+    start_frame: Option<u64>,
     tx: &Sender<FrameResult<VideoFrame>>,
 ) -> FrameResult<()> {
     loop {
         match decoder.receive_frame(decoded) {
             Ok(_) => {
-                filter.push(decoded)?;
-                unsafe {
-                    ffmpeg::ffi::av_frame_unref(decoded.as_mut_ptr());
+                if filter.is_none() {
+                    let new_filter = VideoFilterPipeline::new(
+                        fallback_time_base,
+                        frame_rate,
+                        decoded,
+                        start_frame,
+                    )
+                    .map_err(|err| {
+                        unsafe {
+                            ffmpeg::ffi::av_frame_unref(decoded.as_mut_ptr());
+                        }
+                        err
+                    })?;
+                    *filter = Some(new_filter);
                 }
-                filter.drain(fallback_time_base, tx)?;
+                if let Some(filter) = filter.as_mut() {
+                    filter.push(decoded)?;
+                    unsafe {
+                        ffmpeg::ffi::av_frame_unref(decoded.as_mut_ptr());
+                    }
+                    filter.drain(fallback_time_base, tx)?;
+                }
             }
             Err(err) => {
                 if is_retryable_error(&err) || matches!(err, ffmpeg::Error::Eof) {
@@ -496,6 +550,17 @@ fn optional_positive_rational(value: ffmpeg::Rational) -> Option<(i32, i32)> {
     } else {
         None
     }
+}
+
+fn colorspace_name(space: ffmpeg::color::Space) -> Option<&'static str> {
+    match space {
+        ffmpeg::color::Space::Unspecified | ffmpeg::color::Space::Reserved => None,
+        _ => space.name(),
+    }
+}
+
+fn color_range_name(range: ffmpeg::color::Range) -> Option<&'static str> {
+    range.name()
 }
 
 fn is_invalid_time_base(value: ffmpeg::Rational) -> bool {
