@@ -4,10 +4,11 @@ use gpui_component::button::Button;
 use rust_embed::RustEmbed;
 use std::borrow::Cow;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::gui::components::{
-    DragRange, DraggableEdge, DraggableEdgePanel, VideoPlayer, VideoPlayerControlHandle,
-    VideoPlayerInfoHandle,
+    CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle, VideoPlayer,
+    VideoPlayerControlHandle, VideoPlayerInfoHandle,
 };
 
 #[derive(RustEmbed)]
@@ -63,13 +64,32 @@ impl SubtitleFastApp {
                     ..Default::default()
                 },
                 move |_, cx| {
-                    let left_panel = cx.new(|_| {
-                        DraggableEdgePanel::new(
-                            DraggableEdge::Right,
-                            DragRange::new(px(200.0), px(480.0)),
+                    let (left_panel, left_panel_handle) = Sidebar::create(
+                        DraggableEdge::Right,
+                        DragRange::new(px(200.0), px(480.0)),
+                        CollapseDirection::Left,
+                        px(0.0),
+                        Duration::from_millis(160),
+                        cx,
+                    );
+                    let (right_panel, _) = Sidebar::create(
+                        DraggableEdge::Left,
+                        DragRange::new(px(200.0), px(480.0)),
+                        CollapseDirection::Right,
+                        px(0.0),
+                        Duration::from_millis(160),
+                        cx,
+                    );
+                    cx.new(|_| {
+                        MainWindow::new(
+                            None,
+                            None,
+                            None,
+                            left_panel,
+                            left_panel_handle,
+                            right_panel,
                         )
-                    });
-                    cx.new(|_| MainWindow::new(None, None, None, left_panel))
+                    })
                 },
             )
             .unwrap();
@@ -83,7 +103,9 @@ pub struct MainWindow {
     controls: Option<VideoPlayerControlHandle>,
     _info: Option<VideoPlayerInfoHandle>,
     paused: bool,
-    left_panel: Entity<DraggableEdgePanel>,
+    left_panel: Entity<Sidebar>,
+    left_panel_handle: SidebarHandle,
+    right_panel: Entity<Sidebar>,
 }
 
 impl MainWindow {
@@ -91,7 +113,9 @@ impl MainWindow {
         player: Option<Entity<VideoPlayer>>,
         controls: Option<VideoPlayerControlHandle>,
         info: Option<VideoPlayerInfoHandle>,
-        left_panel: Entity<DraggableEdgePanel>,
+        left_panel: Entity<Sidebar>,
+        left_panel_handle: SidebarHandle,
+        right_panel: Entity<Sidebar>,
     ) -> Self {
         Self {
             player,
@@ -99,6 +123,8 @@ impl MainWindow {
             _info: info,
             paused: false,
             left_panel,
+            left_panel_handle,
+            right_panel,
         }
     }
 
@@ -185,20 +211,38 @@ impl Render for MainWindow {
                         cx.listener(|this, _event, _window, cx| {
                             this.toggle_playback(cx);
                         }),
-                    )),
+                    ))
+                    .child(
+                        Button::new("toggle-left-sidebar")
+                            .label("Toggle Sidebar")
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.left_panel_handle.toggle(cx);
+                            })),
+                    ),
             )
             .child({
-                let layout = div()
+                let video_area = div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h_full()
+                    .overflow_hidden();
+
+                let video_area = if let Some(video) = video_content {
+                    video_area.child(video)
+                } else {
+                    video_area
+                };
+
+                div()
                     .flex()
                     .flex_row()
                     .flex_grow()
                     .w_full()
-                    .child(self.left_panel.clone());
-                if let Some(video) = video_content {
-                    layout.child(video)
-                } else {
-                    layout
-                }
+                    .child(self.left_panel.clone())
+                    .child(video_area)
+                    .child(self.right_panel.clone())
             })
     }
 }
