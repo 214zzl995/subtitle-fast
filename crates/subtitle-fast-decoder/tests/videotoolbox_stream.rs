@@ -31,7 +31,7 @@ async fn videotoolbox_backend_streams_frames() {
 
     let metadata = provider.metadata();
     let total_frames = metadata.total_frames;
-    let mut stream = provider.into_stream();
+    let (_controller, mut stream) = provider.open();
     let frame = stream
         .next()
         .await

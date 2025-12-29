@@ -6,21 +6,31 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use gpui::{Context, Frame, ObjectFit, Render, VideoHandle, Window, div, prelude::*, rgb, video};
-use subtitle_fast_decoder::{Configuration, OutputFormat, VideoFrame, VideoMetadata};
+use subtitle_fast_decoder::{
+    Configuration, DecoderController, OutputFormat, SeekInfo, VideoFrame, VideoMetadata,
+};
 use tokio_stream::StreamExt;
 
 #[derive(Clone)]
 pub struct VideoPlayerControlHandle {
     paused: Arc<AtomicBool>,
-    seek_request: Arc<Mutex<Option<Duration>>>,
+    decoder: Arc<Mutex<Option<DecoderController>>>,
 }
 
 impl VideoPlayerControlHandle {
     fn new() -> Self {
         Self {
             paused: Arc::new(AtomicBool::new(false)),
-            seek_request: Arc::new(Mutex::new(None)),
+            decoder: Arc::new(Mutex::new(None)),
         }
+    }
+
+    fn set_decoder(&self, controller: DecoderController) {
+        let mut slot = self
+            .decoder
+            .lock()
+            .expect("decoder controller mutex poisoned");
+        *slot = Some(controller);
     }
 
     pub fn pause(&self) {
@@ -37,20 +47,28 @@ impl VideoPlayerControlHandle {
     }
 
     pub fn seek_to(&self, position: Duration) {
-        let mut pending = self.seek_request.lock().expect("seek mutex poisoned");
-        *pending = Some(position);
-        // TODO: implement decoder seek support.
+        self.send_seek(SeekInfo::Time(position));
+    }
+
+    pub fn seek_to_frame(&self, frame: u64) {
+        self.send_seek(SeekInfo::Frame(frame));
     }
 
     fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
     }
 
-    fn take_seek_request(&self) -> Option<Duration> {
-        self.seek_request
+    fn send_seek(&self, info: SeekInfo) {
+        let slot = self
+            .decoder
             .lock()
-            .expect("seek mutex poisoned")
-            .take()
+            .expect("decoder controller mutex poisoned");
+        let Some(controller) = slot.as_ref() else {
+            return;
+        };
+        if let Err(err) = controller.seek(info) {
+            eprintln!("decoder seek failed: {err}");
+        }
     }
 }
 
@@ -220,7 +238,8 @@ fn spawn_decoder(
                 .fps
                 .and_then(|fps| (fps > 0.0).then(|| Duration::from_secs_f64(1.0 / fps)));
 
-            let mut stream = provider.into_stream();
+            let (controller, mut stream) = provider.open();
+            control.set_decoder(controller);
             let mut started = false;
             let mut start_instant = Instant::now();
             let mut first_timestamp: Option<Duration> = None;
@@ -240,11 +259,6 @@ fn spawn_decoder(
                     let pause_duration = Instant::now().saturating_duration_since(paused_at);
                     start_instant += pause_duration;
                     next_deadline += pause_duration;
-                }
-
-                if let Some(target) = control.take_seek_request() {
-                    let _ = target;
-                    // TODO: implement decoder seek support.
                 }
 
                 let frame = stream.next().await;

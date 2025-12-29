@@ -88,7 +88,7 @@ pub async fn run_pipeline(
     pipeline: &PipelineConfig,
 ) -> Result<(), (FrameError, u64)> {
     let initial_total_frames = provider.metadata().total_frames;
-    let initial_stream = provider.into_stream();
+    let (_, initial_stream) = provider.open();
     let paused_stream = if let Some(pause_rx) = pipeline.pause.as_ref() {
         StreamBundle::new(
             Box::pin(PauseStream::new(initial_stream, pause_rx.clone())),

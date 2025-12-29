@@ -95,7 +95,7 @@ async fn run_backend_bench(
         bar
     });
 
-    let mut stream = provider.into_stream();
+    let (_controller, mut stream) = provider.open();
     let mut processed = 0u64;
     let bench_start = Instant::now();
 

@@ -1,5 +1,8 @@
 #[cfg(all(target_os = "windows", feature = "backend-mft"))]
-use crate::core::{DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider};
+use crate::core::{
+    DecoderController, DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider,
+    SeekInfo, SeekReceiver,
+};
 
 #[cfg(all(target_os = "windows", feature = "backend-mft"))]
 use crate::core::{VideoFrame, spawn_stream_from_channel};
@@ -95,15 +98,19 @@ mod platform {
             self.metadata
         }
 
-        fn into_stream(self: Box<Self>) -> FrameStream {
+        fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
             let provider = *self;
             let capacity = provider.channel_capacity;
             let start_frame = provider.start_frame;
-            spawn_stream_from_channel(capacity, move |tx| {
-                if let Err(err) = decode_mft(provider.input.clone(), tx.clone(), start_frame) {
+            let (controller, seek_rx) = DecoderController::new();
+            let stream = spawn_stream_from_channel(capacity, move |tx| {
+                if let Err(err) =
+                    decode_mft(provider.input.clone(), tx.clone(), start_frame, seek_rx)
+                {
                     let _ = tx.blocking_send(Err(err));
                 }
-            })
+            });
+            (controller, stream)
         }
     }
 
@@ -111,9 +118,10 @@ mod platform {
         path: PathBuf,
         tx: Sender<FrameResult<VideoFrame>>,
         start_frame: Option<u64>,
+        seek_rx: SeekReceiver,
     ) -> FrameResult<()> {
         let c_path = cstring_from_path(&path)?;
-        let mut context = DecodeContext::new(tx);
+        let mut context = DecodeContext::new(tx, seek_rx);
         let mut error_ptr: *mut c_char = ptr::null_mut();
         let (has_start_frame, start_frame) = match start_frame {
             Some(value) => (true, value),
@@ -204,11 +212,12 @@ mod platform {
 
     struct DecodeContext {
         tx: Sender<FrameResult<VideoFrame>>,
+        seek_rx: SeekReceiver,
     }
 
     impl DecodeContext {
-        fn new(tx: Sender<FrameResult<VideoFrame>>) -> Self {
-            Self { tx }
+        fn new(tx: Sender<FrameResult<VideoFrame>>, seek_rx: SeekReceiver) -> Self {
+            Self { tx, seek_rx }
         }
 
         fn send_frame(&self, frame: VideoFrame) -> bool {
@@ -218,6 +227,15 @@ mod platform {
         fn send_error(&self, error: FrameError) {
             let _ = self.tx.blocking_send(Err(error));
         }
+
+        fn drain_seek_requests(&mut self) {
+            if !self.seek_rx.has_changed().unwrap_or(false) {
+                return;
+            }
+            if let Some(info) = *self.seek_rx.borrow_and_update() {
+                handle_seek_request(info);
+            }
+        }
     }
 
     unsafe extern "C" fn handle_frame(frame: *const CMftFrame, context: *mut c_void) -> bool {
@@ -225,7 +243,8 @@ mod platform {
             return false;
         }
         let frame = unsafe { &*frame };
-        let context = unsafe { &*(context as *mut DecodeContext) };
+        let context = unsafe { &mut *(context as *mut DecodeContext) };
+        context.drain_seek_requests();
         if frame.y_data.is_null() || frame.uv_data.is_null() {
             context.send_error(FrameError::backend_failure(
                 BACKEND_NAME,
@@ -260,6 +279,10 @@ mod platform {
         }
     }
 
+    fn handle_seek_request(_info: SeekInfo) {
+        todo!("mft seek handling is not implemented yet");
+    }
+
     pub fn boxed_mft<P: AsRef<Path>>(
         path: P,
         channel_capacity: Option<usize>,
@@ -275,7 +298,10 @@ mod platform {
 
 #[cfg(not(target_os = "windows"))]
 mod platform {
-    use crate::{DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider};
+    use crate::{
+        DecoderController, DynFrameProvider, FrameError, FrameResult, FrameStream,
+        FrameStreamProvider,
+    };
     use std::path::Path;
 
     pub struct MftProvider;
@@ -291,7 +317,7 @@ mod platform {
     }
 
     impl FrameStreamProvider for MftProvider {
-        fn into_stream(self: Box<Self>) -> FrameStream {
+        fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
             panic!("MFT backend is only available on Windows builds");
         }
     }

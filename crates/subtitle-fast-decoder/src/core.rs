@@ -4,6 +4,7 @@ use std::time::Duration;
 use futures_core::Stream;
 use futures_util::stream::unfold;
 use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::watch;
 
 pub use subtitle_fast_types::{
     FrameBuffer, FrameError, FrameResult, NativeBuffer, Nv12Buffer, VideoFrame,
@@ -12,6 +13,31 @@ pub use subtitle_fast_types::{
 pub type FrameStream = Pin<Box<dyn Stream<Item = FrameResult<VideoFrame>> + Send>>;
 
 pub type DynFrameProvider = Box<dyn FrameStreamProvider>;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SeekInfo {
+    Time(Duration),
+    Frame(u64),
+}
+
+pub type SeekReceiver = watch::Receiver<Option<SeekInfo>>;
+
+pub struct DecoderController {
+    seek_tx: watch::Sender<Option<SeekInfo>>,
+}
+
+impl DecoderController {
+    pub fn new() -> (Self, SeekReceiver) {
+        let (seek_tx, seek_rx) = watch::channel(None);
+        (Self { seek_tx }, seek_rx)
+    }
+
+    pub fn seek(&self, info: SeekInfo) -> FrameResult<()> {
+        self.seek_tx
+            .send(Some(info))
+            .map_err(|err| FrameError::backend_failure("decoder", err.to_string()))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VideoMetadata {
@@ -73,7 +99,7 @@ pub trait FrameStreamProvider: Send + 'static {
         VideoMetadata::default()
     }
 
-    fn into_stream(self: Box<Self>) -> FrameStream;
+    fn open(self: Box<Self>) -> (DecoderController, FrameStream);
 }
 
 pub fn spawn_stream_from_channel(

@@ -114,7 +114,7 @@ fn spawn_decoder(sender: SyncSender<Frame>, input_path: PathBuf) {
                 .fps
                 .and_then(|fps| (fps > 0.0).then(|| Duration::from_secs_f64(1.0 / fps)));
 
-            let mut stream = provider.into_stream();
+            let (_controller, mut stream) = provider.open();
             let mut started = false;
             let mut start_instant = Instant::now();
             let mut first_timestamp: Option<Duration> = None;

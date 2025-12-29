@@ -6,8 +6,8 @@ use ffmpeg::util::mathematics::rescale::{Rescale, TIME_BASE};
 use ffmpeg_next as ffmpeg;
 
 use crate::core::{
-    DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider, VideoFrame,
-    spawn_stream_from_channel,
+    DecoderController, DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider,
+    SeekInfo, SeekReceiver, VideoFrame, spawn_stream_from_channel,
 };
 use tokio::sync::mpsc::Sender;
 
@@ -218,7 +218,11 @@ impl FfmpegProvider {
         })
     }
 
-    fn decode_loop(&self, tx: Sender<FrameResult<VideoFrame>>) -> FrameResult<()> {
+    fn decode_loop(
+        &self,
+        tx: Sender<FrameResult<VideoFrame>>,
+        mut seek_rx: SeekReceiver,
+    ) -> FrameResult<()> {
         let mut ictx = ffmpeg::format::input(&self.input)
             .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
         let frame_rate = {
@@ -269,6 +273,7 @@ impl FfmpegProvider {
         let mut decoded = ffmpeg::util::frame::Video::empty();
 
         for (stream, packet) in ictx.packets() {
+            drain_seek_requests(&mut seek_rx);
             if stream.index() != stream_index {
                 continue;
             }
@@ -315,16 +320,31 @@ impl FrameStreamProvider for FfmpegProvider {
         self.metadata
     }
 
-    fn into_stream(self: Box<Self>) -> FrameStream {
+    fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
         let provider = *self;
         let capacity = provider.channel_capacity;
-        spawn_stream_from_channel(capacity, move |tx| {
-            let result = provider.decode_loop(tx.clone());
+        let (controller, seek_rx) = DecoderController::new();
+        let stream = spawn_stream_from_channel(capacity, move |tx| {
+            let result = provider.decode_loop(tx.clone(), seek_rx);
             if let Err(err) = result {
                 let _ = tx.blocking_send(Err(err));
             }
-        })
+        });
+        (controller, stream)
     }
+}
+
+fn drain_seek_requests(seek_rx: &mut SeekReceiver) {
+    if !seek_rx.has_changed().unwrap_or(false) {
+        return;
+    }
+    if let Some(info) = *seek_rx.borrow_and_update() {
+        handle_seek_request(info);
+    }
+}
+
+fn handle_seek_request(_info: SeekInfo) {
+    todo!("ffmpeg seek handling is not implemented yet");
 }
 
 fn drain_decoder(

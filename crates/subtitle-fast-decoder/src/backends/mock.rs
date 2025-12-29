@@ -5,8 +5,8 @@ use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
 use crate::core::{
-    DynFrameProvider, FrameResult, FrameStream, FrameStreamProvider, VideoFrame,
-    spawn_stream_from_channel,
+    DecoderController, DynFrameProvider, FrameResult, FrameStream, FrameStreamProvider, SeekInfo,
+    SeekReceiver, VideoFrame, spawn_stream_from_channel,
 };
 
 pub struct MockProvider {
@@ -41,9 +41,10 @@ impl MockProvider {
         }
     }
 
-    fn emit_frames(&self, tx: Sender<FrameResult<VideoFrame>>) {
+    fn emit_frames(&self, tx: Sender<FrameResult<VideoFrame>>, mut seek_rx: SeekReceiver) {
         let start_index = self.start_frame.min(self.frame_count as u64) as usize;
         for index in start_index..self.frame_count {
+            drain_seek_requests(&mut seek_rx);
             if tx.is_closed() {
                 break;
             }
@@ -89,13 +90,28 @@ impl FrameStreamProvider for MockProvider {
         }
     }
 
-    fn into_stream(self: Box<Self>) -> FrameStream {
+    fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
         let provider = *self;
         let capacity = provider.channel_capacity;
-        spawn_stream_from_channel(capacity, move |tx| {
-            provider.emit_frames(tx);
-        })
+        let (controller, seek_rx) = DecoderController::new();
+        let stream = spawn_stream_from_channel(capacity, move |tx| {
+            provider.emit_frames(tx, seek_rx);
+        });
+        (controller, stream)
     }
+}
+
+fn drain_seek_requests(seek_rx: &mut SeekReceiver) {
+    if !seek_rx.has_changed().unwrap_or(false) {
+        return;
+    }
+    if let Some(info) = *seek_rx.borrow_and_update() {
+        handle_seek_request(info);
+    }
+}
+
+fn handle_seek_request(_info: SeekInfo) {
+    todo!("mock seek handling is not implemented yet");
 }
 
 pub fn boxed_mock(
@@ -119,7 +135,7 @@ mod tests {
     async fn mock_backend_emits_frames() {
         let provider = boxed_mock(None, None, None).unwrap();
         let metadata = provider.metadata();
-        let mut stream = provider.into_stream();
+        let (_controller, mut stream) = provider.open();
         assert_eq!(metadata.total_frames, Some(120));
         let frame = stream.next().await.unwrap().unwrap();
         assert_eq!(frame.width(), 640);
@@ -131,7 +147,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn mock_backend_honors_start_frame() {
         let provider = boxed_mock(None, None, Some(10)).unwrap();
-        let mut stream = provider.into_stream();
+        let (_controller, mut stream) = provider.open();
         let frame = stream.next().await.unwrap().unwrap();
         assert_eq!(frame.frame_index(), Some(10));
     }

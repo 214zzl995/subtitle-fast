@@ -1,5 +1,8 @@
 #[cfg(all(target_os = "macos", feature = "backend-videotoolbox"))]
-use crate::core::{DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider};
+use crate::core::{
+    DecoderController, DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider,
+    SeekInfo, SeekReceiver,
+};
 
 use crate::config::OutputFormat;
 #[cfg(target_os = "macos")]
@@ -196,24 +199,26 @@ mod platform {
             self.metadata
         }
 
-        fn into_stream(self: Box<Self>) -> FrameStream {
+        fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
             let path = self.input.clone();
             let capacity = self.channel_capacity;
             let output_format = self.output_format;
             let start_frame = self.start_frame;
-            spawn_stream_from_channel(capacity, move |tx| {
+            let (controller, seek_rx) = DecoderController::new();
+            let stream = spawn_stream_from_channel(capacity, move |tx| {
                 let result = match output_format {
                     OutputFormat::Nv12 => {
-                        decode_videotoolbox_nv12(path.clone(), tx.clone(), start_frame)
+                        decode_videotoolbox_nv12(path.clone(), tx.clone(), start_frame, seek_rx)
                     }
                     OutputFormat::CVPixelBuffer => {
-                        decode_videotoolbox_handle(path.clone(), tx.clone(), start_frame)
+                        decode_videotoolbox_handle(path.clone(), tx.clone(), start_frame, seek_rx)
                     }
                 };
                 if let Err(err) = result {
                     let _ = tx.blocking_send(Err(err));
                 }
-            })
+            });
+            (controller, stream)
         }
     }
 
@@ -221,9 +226,10 @@ mod platform {
         path: PathBuf,
         tx: mpsc::Sender<FrameResult<VideoFrame>>,
         start_frame: Option<u64>,
+        seek_rx: SeekReceiver,
     ) -> FrameResult<()> {
         let c_path = cstring_from_path(&path)?;
-        let mut context = Box::new(DecodeContext::new(tx));
+        let mut context = Box::new(DecodeContext::new(tx, seek_rx));
         let mut error_ptr: *mut c_char = ptr::null_mut();
         let (has_start_frame, start_frame) = match start_frame {
             Some(value) => (true, value),
@@ -258,9 +264,10 @@ mod platform {
         path: PathBuf,
         tx: mpsc::Sender<FrameResult<VideoFrame>>,
         start_frame: Option<u64>,
+        seek_rx: SeekReceiver,
     ) -> FrameResult<()> {
         let c_path = cstring_from_path(&path)?;
-        let mut context = Box::new(DecodeContext::new(tx));
+        let mut context = Box::new(DecodeContext::new(tx, seek_rx));
         let mut error_ptr: *mut c_char = ptr::null_mut();
         let (has_start_frame, start_frame) = match start_frame {
             Some(value) => (true, value),
@@ -293,15 +300,25 @@ mod platform {
 
     struct DecodeContext {
         sender: mpsc::Sender<FrameResult<VideoFrame>>,
+        seek_rx: SeekReceiver,
     }
 
     impl DecodeContext {
-        fn new(sender: mpsc::Sender<FrameResult<VideoFrame>>) -> Self {
-            Self { sender }
+        fn new(sender: mpsc::Sender<FrameResult<VideoFrame>>, seek_rx: SeekReceiver) -> Self {
+            Self { sender, seek_rx }
         }
 
         fn send(&self, message: FrameResult<VideoFrame>) -> bool {
             self.sender.blocking_send(message).is_ok()
+        }
+
+        fn drain_seek_requests(&mut self) {
+            if !self.seek_rx.has_changed().unwrap_or(false) {
+                return;
+            }
+            if let Some(info) = *self.seek_rx.borrow_and_update() {
+                handle_seek_request(info);
+            }
         }
     }
 
@@ -310,7 +327,8 @@ mod platform {
             return false;
         }
         let frame = unsafe { &*frame };
-        let context = unsafe { &*(ctx as *const DecodeContext) };
+        let context = unsafe { &mut *(ctx as *mut DecodeContext) };
+        context.drain_seek_requests();
 
         if frame.y_data.is_null() || frame.uv_data.is_null() {
             let _ = context.send(Err(FrameError::backend_failure(
@@ -365,7 +383,8 @@ mod platform {
             }
             return false;
         }
-        let context = unsafe { &*(ctx as *const DecodeContext) };
+        let context = unsafe { &mut *(ctx as *mut DecodeContext) };
+        context.drain_seek_requests();
 
         if frame.pixel_buffer.is_null() {
             let _ = context.send(Err(FrameError::backend_failure(
@@ -405,6 +424,10 @@ mod platform {
         true
     }
 
+    fn handle_seek_request(_info: SeekInfo) {
+        todo!("videotoolbox seek handling is not implemented yet");
+    }
+
     pub fn boxed_videotoolbox<P: AsRef<Path>>(
         path: P,
         channel_capacity: Option<usize>,
@@ -435,7 +458,7 @@ mod platform {
     }
 
     impl FrameStreamProvider for VideoToolboxProvider {
-        fn into_stream(self: Box<Self>) -> FrameStream {
+        fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
             panic!("VideoToolbox backend is only available on macOS builds");
         }
     }
