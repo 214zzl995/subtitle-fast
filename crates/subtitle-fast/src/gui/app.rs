@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::gui::components::{
-    CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle, VideoPlayer,
+    CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle, Titlebar, VideoPlayer,
     VideoPlayerControlHandle, VideoPlayerInfoHandle,
 };
 
@@ -61,9 +61,11 @@ impl SubtitleFastApp {
                         appears_transparent: true,
                         traffic_light_position: None,
                     }),
+                    window_decorations: Some(WindowDecorations::Client),
                     ..Default::default()
                 },
                 move |_, cx| {
+                    let titlebar = cx.new(|_| Titlebar::new("main-titlebar", "subtitle-fast"));
                     let (left_panel, left_panel_handle) = Sidebar::create(
                         DraggableEdge::Right,
                         DragRange::new(px(200.0), px(480.0)),
@@ -85,6 +87,7 @@ impl SubtitleFastApp {
                             None,
                             None,
                             None,
+                            titlebar,
                             left_panel,
                             left_panel_handle,
                             right_panel,
@@ -103,6 +106,7 @@ pub struct MainWindow {
     controls: Option<VideoPlayerControlHandle>,
     _info: Option<VideoPlayerInfoHandle>,
     paused: bool,
+    titlebar: Entity<Titlebar>,
     left_panel: Entity<Sidebar>,
     left_panel_handle: SidebarHandle,
     right_panel: Entity<Sidebar>,
@@ -113,6 +117,7 @@ impl MainWindow {
         player: Option<Entity<VideoPlayer>>,
         controls: Option<VideoPlayerControlHandle>,
         info: Option<VideoPlayerInfoHandle>,
+        titlebar: Entity<Titlebar>,
         left_panel: Entity<Sidebar>,
         left_panel_handle: SidebarHandle,
         right_panel: Entity<Sidebar>,
@@ -122,6 +127,7 @@ impl MainWindow {
             controls,
             _info: info,
             paused: false,
+            titlebar,
             left_panel,
             left_panel_handle,
             right_panel,
@@ -194,6 +200,7 @@ impl Render for MainWindow {
             .flex_col()
             .w_full()
             .h_full()
+            .child(self.titlebar.clone())
             .child(
                 div()
                     .flex()
