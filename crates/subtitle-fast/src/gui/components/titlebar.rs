@@ -5,6 +5,7 @@ use gpui::*;
 
 #[cfg(target_os = "windows")]
 const WINDOWS_TITLEBAR_HEIGHT: f32 = 32.0;
+#[cfg(not(target_os = "windows"))]
 const TITLEBAR_MIN_HEIGHT: f32 = 34.0;
 const MAC_TRAFFIC_LIGHT_PADDING: f32 = 72.0;
 
