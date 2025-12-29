@@ -33,6 +33,41 @@ namespace
         return buffer;
     }
 
+    bool compute_seek_timestamp(
+        uint64_t start_frame,
+        UINT32 frame_rate_num,
+        UINT32 frame_rate_den,
+        LONGLONG &out_value,
+        std::string &error)
+    {
+        if (frame_rate_num == 0 || frame_rate_den == 0)
+        {
+            error = "MFT requires frame rate metadata to seek";
+            return false;
+        }
+
+        long double frames = static_cast<long double>(start_frame);
+        long double fps_num = static_cast<long double>(frame_rate_num);
+        long double fps_den = static_cast<long double>(frame_rate_den);
+        long double seconds = frames * fps_den / fps_num;
+        long double ticks = seconds * 10000000.0L;
+        if (!std::isfinite(ticks) || ticks < 0.0L)
+        {
+            error = "start frame timestamp overflow";
+            return false;
+        }
+
+        long double max_value = static_cast<long double>((std::numeric_limits<LONGLONG>::max)());
+        if (ticks > max_value)
+        {
+            error = "start frame timestamp overflow";
+            return false;
+        }
+
+        out_value = static_cast<LONGLONG>(std::llround(ticks));
+        return true;
+    }
+
     struct ScopedCoInitialize
     {
         HRESULT result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -380,28 +415,25 @@ extern "C"
             UINT32 frame_rate_num = 0;
             UINT32 frame_rate_den = 0;
             HRESULT fr_hr = MFGetAttributeRatio(media_type.Get(), MF_MT_FRAME_RATE, &frame_rate_num, &frame_rate_den);
-            if (FAILED(fr_hr) || frame_rate_num == 0 || frame_rate_den == 0)
+            if (FAILED(fr_hr))
             {
-                set_error(out_error, "MFT requires frame rate metadata to seek");
+                set_error(out_error, hresult("MFGetAttributeRatio", fr_hr));
                 return false;
             }
 
-            unsigned __int128 numerator = static_cast<unsigned __int128>(start_frame);
-            numerator *= static_cast<unsigned __int128>(frame_rate_den);
-            numerator *= 10000000ull;
-            unsigned __int128 denominator = static_cast<unsigned __int128>(frame_rate_num);
-            unsigned __int128 value = numerator / denominator;
-            if (value > static_cast<unsigned __int128>((std::numeric_limits<LONGLONG>::max)()))
+            LONGLONG position_value = 0;
+            std::string position_error;
+            if (!compute_seek_timestamp(start_frame, frame_rate_num, frame_rate_den, position_value, position_error))
             {
-                set_error(out_error, "start frame timestamp overflow");
+                set_error(out_error, position_error);
                 return false;
             }
 
             PROPVARIANT position;
             PropVariantInit(&position);
             position.vt = VT_I8;
-            position.hVal.QuadPart = static_cast<LONGLONG>(value);
-            HRESULT seek_hr = reader->SetCurrentPosition(GUID_NULL, &position);
+            position.hVal.QuadPart = position_value;
+            HRESULT seek_hr = reader->SetCurrentPosition(GUID_NULL, position);
             PropVariantClear(&position);
             if (FAILED(seek_hr))
             {

@@ -202,7 +202,7 @@ fn spawn_decoder(
                 input: Some(input_path),
                 channel_capacity: None,
                 output_format: OutputFormat::Nv12,
-                start_frame: Some(10000),
+                start_frame: None,
             };
 
             let provider = match config.create_provider() {
