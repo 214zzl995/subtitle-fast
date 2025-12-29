@@ -1,15 +1,15 @@
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::button::Button;
 use rust_embed::RustEmbed;
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::gui::components::{
-    CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle, Titlebar, VideoPlayer,
-    VideoPlayerControlHandle, VideoPlayerInfoHandle,
+    CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle, Titlebar, VideoControls,
+    VideoPlayer,
 };
+use crate::gui::icons::{Icon, icon_md};
 
 #[derive(RustEmbed)]
 #[folder = "assets"]
@@ -82,15 +82,15 @@ impl SubtitleFastApp {
                         Duration::from_millis(160),
                         cx,
                     );
+                    let controls_view = cx.new(|_| VideoControls::new());
                     cx.new(|_| {
                         MainWindow::new(
-                            None,
-                            None,
                             None,
                             titlebar,
                             left_panel,
                             left_panel_handle,
                             right_panel,
+                            controls_view,
                         )
                     })
                 },
@@ -103,34 +103,29 @@ impl SubtitleFastApp {
 
 pub struct MainWindow {
     player: Option<Entity<VideoPlayer>>,
-    controls: Option<VideoPlayerControlHandle>,
-    _info: Option<VideoPlayerInfoHandle>,
-    paused: bool,
     titlebar: Entity<Titlebar>,
     left_panel: Entity<Sidebar>,
-    left_panel_handle: SidebarHandle,
+    _left_panel_handle: SidebarHandle,
     right_panel: Entity<Sidebar>,
+    controls_view: Entity<VideoControls>,
 }
 
 impl MainWindow {
-    pub fn new(
+    fn new(
         player: Option<Entity<VideoPlayer>>,
-        controls: Option<VideoPlayerControlHandle>,
-        info: Option<VideoPlayerInfoHandle>,
         titlebar: Entity<Titlebar>,
         left_panel: Entity<Sidebar>,
         left_panel_handle: SidebarHandle,
         right_panel: Entity<Sidebar>,
+        controls_view: Entity<VideoControls>,
     ) -> Self {
         Self {
             player,
-            controls,
-            _info: info,
-            paused: false,
             titlebar,
             left_panel,
-            left_panel_handle,
+            _left_panel_handle: left_panel_handle,
             right_panel,
+            controls_view,
         }
     }
 
@@ -171,29 +166,17 @@ impl MainWindow {
     fn load_video(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let (player, controls, info) = VideoPlayer::new(path);
         self.player = Some(cx.new(|_| player));
-        self.controls = Some(controls);
-        self._info = Some(info);
-        self.paused = false;
-        cx.notify();
-    }
-
-    fn toggle_playback(&mut self, cx: &mut Context<Self>) {
-        let Some(controls) = self.controls.as_ref() else {
-            return;
-        };
-        controls.toggle_pause();
-        self.paused = !self.paused;
+        let _ = self.controls_view.update(cx, |controls_view, cx| {
+            controls_view.set_handles(Some(controls), Some(info));
+            cx.notify();
+        });
         cx.notify();
     }
 }
 
 impl Render for MainWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let toggle_label = if self.paused { "Play" } else { "Pause" };
-        let video_content = self
-            .player
-            .as_ref()
-            .map(|player| div().flex_grow().child(player.clone()));
+        let video_content = self.player.as_ref().map(|player| player.clone());
 
         div()
             .flex()
@@ -201,46 +184,58 @@ impl Render for MainWindow {
             .w_full()
             .h_full()
             .child(self.titlebar.clone())
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .p(px(12.0))
-                    .child(
-                        Button::new("select-video")
-                            .label("Select Video")
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.prompt_for_video(cx);
-                            })),
-                    )
-                    .child(Button::new("toggle-playback").label(toggle_label).on_click(
-                        cx.listener(|this, _event, _window, cx| {
-                            this.toggle_playback(cx);
-                        }),
-                    ))
-                    .child(
-                        Button::new("toggle-left-sidebar")
-                            .label("Toggle Sidebar")
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.left_panel_handle.toggle(cx);
-                            })),
-                    ),
-            )
             .child({
+                let reserved_area = div().w_full().h(px(56.0));
+                let video_wrapper = if let Some(video) = video_content {
+                    div()
+                        .flex()
+                        .flex_1()
+                        .w_full()
+                        .rounded(px(16.0))
+                        .overflow_hidden()
+                        .bg(rgb(0x111111))
+                        .child(video)
+                        .id(("video-wrapper", cx.entity_id()))
+                } else {
+                    div()
+                        .flex()
+                        .flex_1()
+                        .w_full()
+                        .rounded(px(16.0))
+                        .overflow_hidden()
+                        .bg(rgb(0x111111))
+                        .cursor_pointer()
+                        .items_center()
+                        .justify_center()
+                        .text_color(hsla(0.0, 0.0, 1.0, 0.7))
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(icon_md(Icon::Upload, hsla(0.0, 0.0, 1.0, 0.7)))
+                                .child("Click to select a video"),
+                        )
+                        .id(("video-wrapper", cx.entity_id()))
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.prompt_for_video(cx);
+                        }))
+                };
+
                 let video_area = div()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_w(px(0.0))
                     .h_full()
-                    .overflow_hidden();
-
-                let video_area = if let Some(video) = video_content {
-                    video_area.child(video)
-                } else {
-                    video_area
-                };
+                    .bg(rgb(0x1b1b1b))
+                    .p(px(16.0))
+                    .gap(px(12.0))
+                    .child(reserved_area)
+                    .child(video_wrapper)
+                    .child(self.controls_view.clone());
 
                 div()
                     .flex()
