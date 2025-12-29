@@ -323,6 +323,8 @@ extern "C"
 
     bool mft_decode(
         const char *path,
+        bool has_start_frame,
+        uint64_t start_frame,
         CMftFrameCallback callback,
         void *context,
         char **out_error)
@@ -365,7 +367,51 @@ extern "C"
             return false;
         }
 
-        for (uint64_t frame_index = 0;; frame_index++)
+        if (has_start_frame)
+        {
+            ComPtr<IMFMediaType> media_type;
+            HRESULT mt_hr = reader->GetCurrentMediaType(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), &media_type);
+            if (FAILED(mt_hr))
+            {
+                set_error(out_error, hresult("GetCurrentMediaType", mt_hr));
+                return false;
+            }
+
+            UINT32 frame_rate_num = 0;
+            UINT32 frame_rate_den = 0;
+            HRESULT fr_hr = MFGetAttributeRatio(media_type.Get(), MF_MT_FRAME_RATE, &frame_rate_num, &frame_rate_den);
+            if (FAILED(fr_hr) || frame_rate_num == 0 || frame_rate_den == 0)
+            {
+                set_error(out_error, "MFT requires frame rate metadata to seek");
+                return false;
+            }
+
+            unsigned __int128 numerator = static_cast<unsigned __int128>(start_frame);
+            numerator *= static_cast<unsigned __int128>(frame_rate_den);
+            numerator *= 10000000ull;
+            unsigned __int128 denominator = static_cast<unsigned __int128>(frame_rate_num);
+            unsigned __int128 value = numerator / denominator;
+            if (value > static_cast<unsigned __int128>((std::numeric_limits<LONGLONG>::max)()))
+            {
+                set_error(out_error, "start frame timestamp overflow");
+                return false;
+            }
+
+            PROPVARIANT position;
+            PropVariantInit(&position);
+            position.vt = VT_I8;
+            position.hVal.QuadPart = static_cast<LONGLONG>(value);
+            HRESULT seek_hr = reader->SetCurrentPosition(GUID_NULL, &position);
+            PropVariantClear(&position);
+            if (FAILED(seek_hr))
+            {
+                set_error(out_error, hresult("SetCurrentPosition", seek_hr));
+                return false;
+            }
+        }
+
+        uint64_t start_index = has_start_frame ? start_frame : 0;
+        for (uint64_t frame_index = start_index;; frame_index++)
         {
             DWORD stream_index = 0;
             DWORD flags = 0;

@@ -13,6 +13,7 @@ async fn main() {
         input: Some(input_path),
         channel_capacity: None,
         output_format: OutputFormat::Nv12,
+        start_frame: None,
     };
 
     match config.create_provider() {

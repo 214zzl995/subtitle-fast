@@ -147,6 +147,7 @@ pub struct Configuration {
     pub input: Option<PathBuf>,
     pub channel_capacity: Option<NonZeroUsize>,
     pub output_format: OutputFormat,
+    pub start_frame: Option<u64>,
 }
 
 impl Default for Configuration {
@@ -160,6 +161,7 @@ impl Default for Configuration {
             input: None,
             channel_capacity: None,
             output_format: OutputFormat::Nv12,
+            start_frame: None,
         }
     }
 }
@@ -186,6 +188,14 @@ impl Configuration {
             };
             config.channel_capacity = Some(value);
         }
+        if let Ok(start_frame) = env::var("SUBFAST_START_FRAME") {
+            let parsed: u64 = start_frame.parse().map_err(|_| {
+                FrameError::configuration(format!(
+                    "failed to parse SUBFAST_START_FRAME='{start_frame}' as a non-negative integer"
+                ))
+            })?;
+            config.start_frame = Some(parsed);
+        }
         Ok(config)
     }
 
@@ -202,7 +212,11 @@ impl Configuration {
                 if !github_ci_active() {
                     Err(FrameError::unsupported("mock"))
                 } else {
-                    crate::backends::mock::boxed_mock(self.input.clone(), channel_capacity)
+                    crate::backends::mock::boxed_mock(
+                        self.input.clone(),
+                        channel_capacity,
+                        self.start_frame,
+                    )
                 }
             }
             #[cfg(feature = "backend-ffmpeg")]
@@ -210,7 +224,7 @@ impl Configuration {
                 let path = self.input.clone().ok_or_else(|| {
                     FrameError::configuration("FFmpeg backend requires SUBFAST_INPUT")
                 })?;
-                crate::backends::ffmpeg::boxed_ffmpeg(path, channel_capacity)
+                crate::backends::ffmpeg::boxed_ffmpeg(path, channel_capacity, self.start_frame)
             }
             #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
             Backend::VideoToolbox => {
@@ -223,6 +237,7 @@ impl Configuration {
                     path,
                     channel_capacity,
                     self.output_format,
+                    self.start_frame,
                 )
             }
             #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
@@ -230,14 +245,14 @@ impl Configuration {
                 let path = self.input.clone().ok_or_else(|| {
                     FrameError::configuration("DXVA backend requires SUBFAST_INPUT to be set")
                 })?;
-                crate::backends::dxva::boxed_dxva(path, channel_capacity)
+                crate::backends::dxva::boxed_dxva(path, channel_capacity, self.start_frame)
             }
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             Backend::Mft => {
                 let path = self.input.clone().ok_or_else(|| {
                     FrameError::configuration("MFT backend requires SUBFAST_INPUT to be set")
                 })?;
-                crate::backends::mft::boxed_mft(path, channel_capacity)
+                crate::backends::mft::boxed_mft(path, channel_capacity, self.start_frame)
             }
             #[allow(unreachable_patterns)]
             other => Err(FrameError::unsupported(other.as_str())),

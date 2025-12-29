@@ -7,6 +7,7 @@ fn handle_output_rejects_non_videotoolbox_backend() {
         input: None,
         channel_capacity: None,
         output_format: OutputFormat::CVPixelBuffer,
+        start_frame: None,
     };
 
     let err = match config.create_provider() {

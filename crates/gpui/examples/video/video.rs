@@ -98,6 +98,7 @@ fn spawn_decoder(sender: SyncSender<Frame>, input_path: PathBuf) {
                 input: Some(input_path),
                 channel_capacity: None,
                 output_format: OutputFormat::Nv12,
+                start_frame: None,
             };
 
             let provider = match config.create_provider() {

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ffmpeg::util::error::{EAGAIN, EWOULDBLOCK};
+use ffmpeg::util::mathematics::rescale::{Rescale, TIME_BASE};
 use ffmpeg_next as ffmpeg;
 
 use crate::core::{
@@ -21,12 +22,14 @@ struct VideoFilterPipeline {
     filtered: ffmpeg::util::frame::Video,
     frame_rate: Option<(i32, i32)>,
     next_fallback_index: u64,
+    start_frame: Option<u64>,
 }
 
 impl VideoFilterPipeline {
     fn new(
         decoder: &ffmpeg::decoder::Video,
         stream: &ffmpeg::format::stream::Stream,
+        start_frame: Option<u64>,
     ) -> FrameResult<Self> {
         let mut graph = ffmpeg::filter::Graph::new();
 
@@ -103,6 +106,7 @@ impl VideoFilterPipeline {
             filtered,
             frame_rate,
             next_fallback_index: 0,
+            start_frame,
         })
     }
 
@@ -153,6 +157,13 @@ impl VideoFilterPipeline {
                             &mut self.next_fallback_index,
                         )?;
                         ffmpeg::ffi::av_frame_unref(self.filtered.as_mut_ptr());
+                        if let Some(start_frame) = self.start_frame
+                            && frame
+                                .frame_index()
+                                .map_or(false, |index| index < start_frame)
+                        {
+                            continue;
+                        }
                         if tx.blocking_send(Ok(frame)).is_err() {
                             break;
                         }
@@ -174,10 +185,15 @@ pub struct FfmpegProvider {
     input: PathBuf,
     channel_capacity: usize,
     metadata: crate::core::VideoMetadata,
+    start_frame: Option<u64>,
 }
 
 impl FfmpegProvider {
-    pub fn open<P: AsRef<Path>>(path: P, channel_capacity: Option<usize>) -> FrameResult<Self> {
+    pub fn open<P: AsRef<Path>>(
+        path: P,
+        channel_capacity: Option<usize>,
+        start_frame: Option<u64>,
+    ) -> FrameResult<Self> {
         let path = path.as_ref();
         if !path.exists() {
             return Err(FrameError::Io(std::io::Error::new(
@@ -192,12 +208,28 @@ impl FfmpegProvider {
             input: path.to_path_buf(),
             channel_capacity: capacity,
             metadata,
+            start_frame,
         })
     }
 
     fn decode_loop(&self, tx: Sender<FrameResult<VideoFrame>>) -> FrameResult<()> {
         let mut ictx = ffmpeg::format::input(&self.input)
             .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+        let input_stream = ictx
+            .streams()
+            .best(ffmpeg::media::Type::Video)
+            .ok_or_else(|| FrameError::backend_failure(BACKEND_NAME, "no video stream found"))?;
+        let frame_rate = stream_frame_rate(&input_stream);
+
+        if let Some(start_frame) = self.start_frame.filter(|value| *value > 0) {
+            let frame_rate = frame_rate.ok_or_else(|| {
+                FrameError::configuration(
+                    "ffmpeg backend requires frame rate metadata to seek to start_frame",
+                )
+            })?;
+            seek_to_start_frame(&mut ictx, start_frame, frame_rate)?;
+        }
+
         let input_stream = ictx
             .streams()
             .best(ffmpeg::media::Type::Video)
@@ -216,7 +248,7 @@ impl FfmpegProvider {
             .video()
             .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
 
-        let mut filter = VideoFilterPipeline::new(&decoder, &input_stream)?;
+        let mut filter = VideoFilterPipeline::new(&decoder, &input_stream, self.start_frame)?;
         let mut decoded = ffmpeg::util::frame::Video::empty();
 
         for (stream, packet) in ictx.packets() {
@@ -365,6 +397,26 @@ fn compute_frame_index(
     Some(value)
 }
 
+fn stream_frame_rate(stream: &ffmpeg::format::stream::Stream) -> Option<(i32, i32)> {
+    optional_positive_rational(stream.avg_frame_rate())
+        .or_else(|| optional_positive_rational(stream.rate()))
+}
+
+fn seek_to_start_frame(
+    ictx: &mut ffmpeg::format::context::Input,
+    start_frame: u64,
+    frame_rate: (i32, i32),
+) -> FrameResult<()> {
+    let (num, den) = frame_rate;
+    let start_frame = i64::try_from(start_frame)
+        .map_err(|_| FrameError::configuration("start_frame is too large for ffmpeg seeking"))?;
+    let frame_time_base = ffmpeg::Rational::new(den, num);
+    let timestamp = start_frame.rescale(frame_time_base, TIME_BASE);
+    ictx.seek(timestamp, ..)
+        .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+    Ok(())
+}
+
 fn is_retryable_error(error: &ffmpeg::Error) -> bool {
     matches!(
         error,
@@ -455,8 +507,13 @@ fn is_invalid_time_base(value: ffmpeg::Rational) -> bool {
 pub fn boxed_ffmpeg<P: AsRef<Path>>(
     path: P,
     channel_capacity: Option<usize>,
+    start_frame: Option<u64>,
 ) -> FrameResult<DynFrameProvider> {
-    Ok(Box::new(FfmpegProvider::open(path, channel_capacity)?))
+    Ok(Box::new(FfmpegProvider::open(
+        path,
+        channel_capacity,
+        start_frame,
+    )?))
 }
 
 #[cfg(test)]
@@ -465,7 +522,7 @@ mod tests {
 
     #[test]
     fn missing_file_returns_error() {
-        let result = FfmpegProvider::open("/tmp/nonexistent-file.mp4", None);
+        let result = FfmpegProvider::open("/tmp/nonexistent-file.mp4", None, None);
         assert!(result.is_err());
     }
 }

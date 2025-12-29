@@ -101,6 +101,7 @@ mod macos {
                     input: Some(input_path),
                     channel_capacity: None,
                     output_format: OutputFormat::CVPixelBuffer,
+                    start_frame: None,
                 };
 
                 let provider = match config.create_provider() {

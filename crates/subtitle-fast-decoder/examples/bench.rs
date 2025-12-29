@@ -74,6 +74,7 @@ async fn run_backend_bench(
         input: Some(input_path.to_path_buf()),
         channel_capacity: None,
         output_format: OutputFormat::Nv12,
+        start_frame: None,
     };
 
     let provider = config.create_provider()?;

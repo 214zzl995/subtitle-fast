@@ -37,7 +37,8 @@ so tests can exercise downstream logic without native dependencies.
 
 ## Configuration knobs
 
-- Env vars: `SUBFAST_BACKEND`, `SUBFAST_INPUT`, and `SUBFAST_CHANNEL_CAPACITY` feed into `Configuration::from_env`.
+- Env vars: `SUBFAST_BACKEND`, `SUBFAST_INPUT`, `SUBFAST_CHANNEL_CAPACITY`, and `SUBFAST_START_FRAME` feed into
+  `Configuration::from_env`.
 - Output format: `Configuration::output_format` defaults to NV12; `OutputFormat::CVPixelBuffer` is only supported
   by the VideoToolbox backend and must be set in code (no env override).
 - Default backend: the first compiled backend is chosen in priority order (mock on CI; VideoToolbox then FFmpeg on macOS;
@@ -56,6 +57,7 @@ let config = Configuration {
     backend: Backend::VideoToolbox,
     input: Some(input_path),
     output_format: OutputFormat::CVPixelBuffer,
+    start_frame: None,
     ..Configuration::default()
 };
 

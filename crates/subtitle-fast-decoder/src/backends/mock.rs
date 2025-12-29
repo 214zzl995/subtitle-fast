@@ -17,12 +17,17 @@ pub struct MockProvider {
     frame_count: usize,
     frame_interval: Duration,
     channel_capacity: usize,
+    start_frame: u64,
 }
 
 impl MockProvider {
     const DEFAULT_CHANNEL_CAPACITY: usize = 8;
 
-    pub fn open(input: Option<PathBuf>, channel_capacity: Option<usize>) -> Self {
+    pub fn open(
+        input: Option<PathBuf>,
+        channel_capacity: Option<usize>,
+        start_frame: Option<u64>,
+    ) -> Self {
         let capacity = channel_capacity.unwrap_or(Self::DEFAULT_CHANNEL_CAPACITY);
         Self {
             _input: input,
@@ -32,11 +37,13 @@ impl MockProvider {
             frame_count: 120,
             frame_interval: Duration::from_millis(4),
             channel_capacity: capacity.max(1),
+            start_frame: start_frame.unwrap_or(0),
         }
     }
 
     fn emit_frames(&self, tx: Sender<FrameResult<VideoFrame>>) {
-        for index in 0..self.frame_count {
+        let start_index = self.start_frame.min(self.frame_count as u64) as usize;
+        for index in start_index..self.frame_count {
             if tx.is_closed() {
                 break;
             }
@@ -57,7 +64,8 @@ impl MockProvider {
                 timestamp,
                 buffer,
                 uv_plane,
-            );
+            )
+            .map(|frame| frame.with_frame_index(Some(index as u64)));
             if tx.blocking_send(frame).is_err() {
                 break;
             }
@@ -93,8 +101,13 @@ impl FrameStreamProvider for MockProvider {
 pub fn boxed_mock(
     path: Option<PathBuf>,
     channel_capacity: Option<usize>,
+    start_frame: Option<u64>,
 ) -> FrameResult<DynFrameProvider> {
-    Ok(Box::new(MockProvider::open(path, channel_capacity)))
+    Ok(Box::new(MockProvider::open(
+        path,
+        channel_capacity,
+        start_frame,
+    )))
 }
 
 #[cfg(test)]
@@ -104,7 +117,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn mock_backend_emits_frames() {
-        let provider = boxed_mock(None, None).unwrap();
+        let provider = boxed_mock(None, None, None).unwrap();
         let metadata = provider.metadata();
         let mut stream = provider.into_stream();
         assert_eq!(metadata.total_frames, Some(120));
@@ -113,5 +126,13 @@ mod tests {
         assert_eq!(frame.height(), 360);
         assert_eq!(frame.data().len(), 640 * 360);
         assert_eq!(frame.uv_plane().len(), 640 * 180);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mock_backend_honors_start_frame() {
+        let provider = boxed_mock(None, None, Some(10)).unwrap();
+        let mut stream = provider.into_stream();
+        let frame = stream.next().await.unwrap().unwrap();
+        assert_eq!(frame.frame_index(), Some(10));
     }
 }

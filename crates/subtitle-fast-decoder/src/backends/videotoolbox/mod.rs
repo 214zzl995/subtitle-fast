@@ -64,12 +64,16 @@ mod platform {
         ) -> bool;
         fn videotoolbox_decode(
             path: *const c_char,
+            has_start_frame: bool,
+            start_frame: u64,
             callback: CVTFrameCallback,
             context: *mut c_void,
             out_error: *mut *mut c_char,
         ) -> bool;
         fn videotoolbox_decode_handle(
             path: *const c_char,
+            has_start_frame: bool,
+            start_frame: u64,
             callback: CVTHandleFrameCallback,
             context: *mut c_void,
             out_error: *mut *mut c_char,
@@ -84,6 +88,7 @@ mod platform {
         metadata: crate::core::VideoMetadata,
         channel_capacity: usize,
         output_format: OutputFormat,
+        start_frame: Option<u64>,
     }
 
     impl VideoToolboxProvider {
@@ -91,6 +96,7 @@ mod platform {
             path: P,
             channel_capacity: Option<usize>,
             output_format: OutputFormat,
+            start_frame: Option<u64>,
         ) -> FrameResult<Self> {
             let path = path.as_ref();
             if !path.exists() {
@@ -106,6 +112,7 @@ mod platform {
                 metadata,
                 channel_capacity: capacity,
                 output_format,
+                start_frame,
             })
         }
     }
@@ -193,11 +200,14 @@ mod platform {
             let path = self.input.clone();
             let capacity = self.channel_capacity;
             let output_format = self.output_format;
+            let start_frame = self.start_frame;
             spawn_stream_from_channel(capacity, move |tx| {
                 let result = match output_format {
-                    OutputFormat::Nv12 => decode_videotoolbox_nv12(path.clone(), tx.clone()),
+                    OutputFormat::Nv12 => {
+                        decode_videotoolbox_nv12(path.clone(), tx.clone(), start_frame)
+                    }
                     OutputFormat::CVPixelBuffer => {
-                        decode_videotoolbox_handle(path.clone(), tx.clone())
+                        decode_videotoolbox_handle(path.clone(), tx.clone(), start_frame)
                     }
                 };
                 if let Err(err) = result {
@@ -210,13 +220,20 @@ mod platform {
     fn decode_videotoolbox_nv12(
         path: PathBuf,
         tx: mpsc::Sender<FrameResult<VideoFrame>>,
+        start_frame: Option<u64>,
     ) -> FrameResult<()> {
         let c_path = cstring_from_path(&path)?;
         let mut context = Box::new(DecodeContext::new(tx));
         let mut error_ptr: *mut c_char = ptr::null_mut();
+        let (has_start_frame, start_frame) = match start_frame {
+            Some(value) => (true, value),
+            None => (false, 0),
+        };
         let ok = unsafe {
             videotoolbox_decode(
                 c_path.as_ptr(),
+                has_start_frame,
+                start_frame,
                 frame_callback_nv12,
                 (&mut *context) as *mut DecodeContext as *mut c_void,
                 &mut error_ptr,
@@ -240,13 +257,20 @@ mod platform {
     fn decode_videotoolbox_handle(
         path: PathBuf,
         tx: mpsc::Sender<FrameResult<VideoFrame>>,
+        start_frame: Option<u64>,
     ) -> FrameResult<()> {
         let c_path = cstring_from_path(&path)?;
         let mut context = Box::new(DecodeContext::new(tx));
         let mut error_ptr: *mut c_char = ptr::null_mut();
+        let (has_start_frame, start_frame) = match start_frame {
+            Some(value) => (true, value),
+            None => (false, 0),
+        };
         let ok = unsafe {
             videotoolbox_decode_handle(
                 c_path.as_ptr(),
+                has_start_frame,
+                start_frame,
                 frame_callback_handle,
                 (&mut *context) as *mut DecodeContext as *mut c_void,
                 &mut error_ptr,
@@ -385,8 +409,9 @@ mod platform {
         path: P,
         channel_capacity: Option<usize>,
         output_format: OutputFormat,
+        start_frame: Option<u64>,
     ) -> FrameResult<DynFrameProvider> {
-        VideoToolboxProvider::open(path, channel_capacity, output_format)
+        VideoToolboxProvider::open(path, channel_capacity, output_format, start_frame)
             .map(|provider| Box::new(provider) as DynFrameProvider)
     }
 }
@@ -403,6 +428,7 @@ mod platform {
             _path: P,
             _channel_capacity: Option<usize>,
             _output_format: OutputFormat,
+            _start_frame: Option<u64>,
         ) -> FrameResult<Self> {
             Err(FrameError::unsupported("videotoolbox"))
         }
@@ -418,6 +444,7 @@ mod platform {
         _path: P,
         _channel_capacity: Option<usize>,
         _output_format: OutputFormat,
+        _start_frame: Option<u64>,
     ) -> FrameResult<DynFrameProvider> {
         Err(FrameError::unsupported("videotoolbox"))
     }

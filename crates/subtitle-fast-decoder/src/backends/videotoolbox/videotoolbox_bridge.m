@@ -338,6 +338,8 @@ bool videotoolbox_probe_total_frames(const char *path, VideoToolboxProbeResult *
 
 bool videotoolbox_decode(
     const char *path,
+    bool has_start_frame,
+    uint64_t start_frame,
     VideoToolboxFrameCallback callback,
     void *context,
     char **out_error
@@ -378,6 +380,49 @@ bool videotoolbox_decode(
             return false;
         }
 
+        if (has_start_frame) {
+            NSArray<AVAssetTrack *> *tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+            if (tracks == nil || tracks.count == 0) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("asset contains no video tracks");
+                }
+                return false;
+            }
+            AVAssetTrack *track = tracks.firstObject;
+            if (track == nil) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("asset contains no primary video track");
+                }
+                return false;
+            }
+
+            Float64 fps = track.nominalFrameRate;
+            if (!isfinite(fps) || fps <= 0.0) {
+                CMTime min_frame_duration = track.minFrameDuration;
+                Float64 frame_duration_seconds = CMTimeGetSeconds(min_frame_duration);
+                if (frame_duration_seconds > 0.0 && isfinite(frame_duration_seconds)) {
+                    fps = 1.0 / frame_duration_seconds;
+                }
+            }
+            if (!isfinite(fps) || fps <= 0.0) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("videotoolbox requires frame rate metadata to seek");
+                }
+                return false;
+            }
+
+            Float64 start_seconds = (Float64)start_frame / fps;
+            if (!isfinite(start_seconds) || start_seconds < 0.0) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("videotoolbox failed to compute seek time");
+                }
+                return false;
+            }
+
+            CMTime start_time = CMTimeMakeWithSeconds(start_seconds, 600);
+            reader.timeRange = CMTimeRangeMake(start_time, kCMTimePositiveInfinity);
+        }
+
         if (![reader startReading]) {
             if (out_error != NULL) {
                 *out_error = vt_copy_error_message(reader.error, "failed to start AVAssetReader");
@@ -385,7 +430,7 @@ bool videotoolbox_decode(
             return false;
         }
 
-        uint64_t frame_index = 0;
+        uint64_t frame_index = has_start_frame ? start_frame : 0;
 
         while (true) {
             CMSampleBufferRef sample = [output copyNextSampleBuffer];
@@ -498,6 +543,8 @@ bool videotoolbox_decode(
 
 bool videotoolbox_decode_handle(
     const char *path,
+    bool has_start_frame,
+    uint64_t start_frame,
     VideoToolboxHandleFrameCallback callback,
     void *context,
     char **out_error
@@ -538,6 +585,49 @@ bool videotoolbox_decode_handle(
             return false;
         }
 
+        if (has_start_frame) {
+            NSArray<AVAssetTrack *> *tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+            if (tracks == nil || tracks.count == 0) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("asset contains no video tracks");
+                }
+                return false;
+            }
+            AVAssetTrack *track = tracks.firstObject;
+            if (track == nil) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("asset contains no primary video track");
+                }
+                return false;
+            }
+
+            Float64 fps = track.nominalFrameRate;
+            if (!isfinite(fps) || fps <= 0.0) {
+                CMTime min_frame_duration = track.minFrameDuration;
+                Float64 frame_duration_seconds = CMTimeGetSeconds(min_frame_duration);
+                if (frame_duration_seconds > 0.0 && isfinite(frame_duration_seconds)) {
+                    fps = 1.0 / frame_duration_seconds;
+                }
+            }
+            if (!isfinite(fps) || fps <= 0.0) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("videotoolbox requires frame rate metadata to seek");
+                }
+                return false;
+            }
+
+            Float64 start_seconds = (Float64)start_frame / fps;
+            if (!isfinite(start_seconds) || start_seconds < 0.0) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("videotoolbox failed to compute seek time");
+                }
+                return false;
+            }
+
+            CMTime start_time = CMTimeMakeWithSeconds(start_seconds, 600);
+            reader.timeRange = CMTimeRangeMake(start_time, kCMTimePositiveInfinity);
+        }
+
         if (![reader startReading]) {
             if (out_error != NULL) {
                 *out_error = vt_copy_error_message(reader.error, "failed to start AVAssetReader");
@@ -545,7 +635,7 @@ bool videotoolbox_decode_handle(
             return false;
         }
 
-        uint64_t frame_index = 0;
+        uint64_t frame_index = has_start_frame ? start_frame : 0;
 
         while (true) {
             CMSampleBufferRef sample = [output copyNextSampleBuffer];

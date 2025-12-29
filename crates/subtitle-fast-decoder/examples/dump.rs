@@ -50,6 +50,7 @@ async fn main() -> io::Result<()> {
         input: Some(input_path.clone()),
         channel_capacity: None,
         output_format: OutputFormat::Nv12,
+        start_frame: None,
     };
     let provider = config.create_provider().map_err(io::Error::other)?;
     let metadata = provider.metadata();

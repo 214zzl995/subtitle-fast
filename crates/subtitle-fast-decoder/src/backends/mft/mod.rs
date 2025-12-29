@@ -50,6 +50,8 @@ mod platform {
         fn mft_probe_total_frames(path: *const c_char, result: *mut CMftProbeResult) -> bool;
         fn mft_decode(
             path: *const c_char,
+            has_start_frame: bool,
+            start_frame: u64,
             callback: CMftFrameCallback,
             context: *mut c_void,
             out_error: *mut *mut c_char,
@@ -61,10 +63,15 @@ mod platform {
         input: PathBuf,
         metadata: crate::core::VideoMetadata,
         channel_capacity: usize,
+        start_frame: Option<u64>,
     }
 
     impl MftProvider {
-        pub fn open<P: AsRef<Path>>(path: P, channel_capacity: Option<usize>) -> FrameResult<Self> {
+        pub fn open<P: AsRef<Path>>(
+            path: P,
+            channel_capacity: Option<usize>,
+            start_frame: Option<u64>,
+        ) -> FrameResult<Self> {
             let path = path.as_ref();
             if !path.exists() {
                 return Err(FrameError::Io(std::io::Error::new(
@@ -78,6 +85,7 @@ mod platform {
                 input: path.to_path_buf(),
                 metadata,
                 channel_capacity: capacity,
+                start_frame,
             })
         }
     }
@@ -90,21 +98,32 @@ mod platform {
         fn into_stream(self: Box<Self>) -> FrameStream {
             let provider = *self;
             let capacity = provider.channel_capacity;
+            let start_frame = provider.start_frame;
             spawn_stream_from_channel(capacity, move |tx| {
-                if let Err(err) = decode_mft(provider.input.clone(), tx.clone()) {
+                if let Err(err) = decode_mft(provider.input.clone(), tx.clone(), start_frame) {
                     let _ = tx.blocking_send(Err(err));
                 }
             })
         }
     }
 
-    fn decode_mft(path: PathBuf, tx: Sender<FrameResult<VideoFrame>>) -> FrameResult<()> {
+    fn decode_mft(
+        path: PathBuf,
+        tx: Sender<FrameResult<VideoFrame>>,
+        start_frame: Option<u64>,
+    ) -> FrameResult<()> {
         let c_path = cstring_from_path(&path)?;
         let mut context = DecodeContext::new(tx);
         let mut error_ptr: *mut c_char = ptr::null_mut();
+        let (has_start_frame, start_frame) = match start_frame {
+            Some(value) => (true, value),
+            None => (false, 0),
+        };
         let ok = unsafe {
             mft_decode(
                 c_path.as_ptr(),
+                has_start_frame,
+                start_frame,
                 handle_frame,
                 &mut context as *mut _ as *mut c_void,
                 &mut error_ptr,
@@ -244,8 +263,13 @@ mod platform {
     pub fn boxed_mft<P: AsRef<Path>>(
         path: P,
         channel_capacity: Option<usize>,
+        start_frame: Option<u64>,
     ) -> FrameResult<DynFrameProvider> {
-        Ok(Box::new(MftProvider::open(path, channel_capacity)?))
+        Ok(Box::new(MftProvider::open(
+            path,
+            channel_capacity,
+            start_frame,
+        )?))
     }
 }
 
@@ -260,6 +284,7 @@ mod platform {
         pub fn open<P: AsRef<Path>>(
             _path: P,
             _channel_capacity: Option<usize>,
+            _start_frame: Option<u64>,
         ) -> FrameResult<Self> {
             Err(FrameError::unsupported("mft"))
         }
@@ -274,6 +299,7 @@ mod platform {
     pub fn boxed_mft<P: AsRef<Path>>(
         _path: P,
         _channel_capacity: Option<usize>,
+        _start_frame: Option<u64>,
     ) -> FrameResult<DynFrameProvider> {
         Err(FrameError::unsupported("mft"))
     }
