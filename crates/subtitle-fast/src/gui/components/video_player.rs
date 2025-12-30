@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{Context, Frame, ObjectFit, Render, VideoHandle, Window, div, prelude::*, rgb, video};
 use subtitle_fast_decoder::{
-    Configuration, DecoderController, OutputFormat, SeekInfo, VideoFrame, VideoMetadata,
+    Configuration, DecoderController, OutputFormat, SeekInfo, SeekMode, VideoFrame, VideoMetadata,
 };
 use tokio_stream::StreamExt;
 
@@ -47,11 +47,17 @@ impl VideoPlayerControlHandle {
     }
 
     pub fn seek_to(&self, position: Duration) {
-        self.send_seek(SeekInfo::Time(position));
+        self.send_seek(SeekInfo::Time {
+            position,
+            mode: SeekMode::Accurate,
+        });
     }
 
     pub fn seek_to_frame(&self, frame: u64) {
-        self.send_seek(SeekInfo::Frame(frame));
+        self.send_seek(SeekInfo::Frame {
+            frame,
+            mode: SeekMode::Accurate,
+        });
     }
 
     fn is_paused(&self) -> bool {

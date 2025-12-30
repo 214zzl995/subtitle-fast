@@ -14,10 +14,16 @@ pub type FrameStream = Pin<Box<dyn Stream<Item = FrameResult<VideoFrame>> + Send
 
 pub type DynFrameProvider = Box<dyn FrameStreamProvider>;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeekMode {
+    Fast,
+    Accurate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeekInfo {
-    Time(Duration),
-    Frame(u64),
+    Time { position: Duration, mode: SeekMode },
+    Frame { frame: u64, mode: SeekMode },
 }
 
 pub type SeekReceiver = watch::Receiver<Option<SeekInfo>>;
