@@ -379,11 +379,11 @@ impl DecoderProvider for FFmpegProvider {
             Box::pin(stream)
         };
 
+        if let Err(err) = init_result {
+            let _ = tx.blocking_send(Err(err));
+        }
+
         tokio::task::spawn_blocking(move || {
-            if let Err(err) = init_result {
-                let _ = tx.blocking_send(Err(err));
-                return;
-            }
             let result = provider.decode_loop();
             if let Err(err) = result {
                 let _ = tx.blocking_send(Err(err));
