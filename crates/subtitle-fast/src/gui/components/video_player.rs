@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -15,6 +15,7 @@ use tokio_stream::StreamExt;
 pub struct VideoPlayerControlHandle {
     paused: Arc<AtomicBool>,
     decoder: Arc<Mutex<Option<DecoderController>>>,
+    seek_epoch: Arc<AtomicU64>,
 }
 
 impl VideoPlayerControlHandle {
@@ -22,6 +23,7 @@ impl VideoPlayerControlHandle {
         Self {
             paused: Arc::new(AtomicBool::new(false)),
             decoder: Arc::new(Mutex::new(None)),
+            seek_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -74,7 +76,13 @@ impl VideoPlayerControlHandle {
         };
         if let Err(err) = controller.seek(info) {
             eprintln!("decoder seek failed: {err}");
+        } else {
+            self.seek_epoch.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    fn current_seek_epoch(&self) -> u64 {
+        self.seek_epoch.load(Ordering::SeqCst)
     }
 }
 
@@ -136,7 +144,6 @@ impl Default for VideoPlayerInfoState {
 pub struct VideoPlayer {
     handle: VideoHandle,
     receiver: Receiver<Frame>,
-    _control: VideoPlayerControlHandle,
     _info: VideoPlayerInfoHandle,
 }
 
@@ -156,7 +163,6 @@ impl VideoPlayer {
             Self {
                 handle,
                 receiver,
-                _control: control.clone(),
                 _info: info.clone(),
             },
             control,
@@ -220,7 +226,7 @@ fn spawn_decoder(
                 return;
             }
 
-            let backend = available[0];
+            let backend = subtitle_fast_decoder::Backend::FFmpeg;
             let config = Configuration {
                 backend,
                 input: Some(input_path),
@@ -251,6 +257,7 @@ fn spawn_decoder(
             let mut first_timestamp: Option<Duration> = None;
             let mut next_deadline = Instant::now();
             let mut paused_at: Option<Instant> = None;
+            let mut last_seek_epoch = control.current_seek_epoch();
 
             loop {
                 if control.is_paused() {
@@ -270,6 +277,15 @@ fn spawn_decoder(
                 let frame = stream.next().await;
                 match frame {
                     Some(Ok(frame)) => {
+                        let current_seek_epoch = control.current_seek_epoch();
+                        if current_seek_epoch != last_seek_epoch {
+                            last_seek_epoch = current_seek_epoch;
+                            started = false;
+                            first_timestamp = None;
+                            start_instant = Instant::now();
+                            next_deadline = start_instant;
+                            paused_at = None;
+                        }
                         if !started {
                             start_instant = Instant::now();
                             next_deadline = start_instant;
