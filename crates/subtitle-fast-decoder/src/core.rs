@@ -39,9 +39,15 @@ impl DecoderController {
     }
 
     pub fn seek(&self, info: SeekInfo) -> FrameResult<()> {
-        self.seek_tx
-            .send(Some(info))
-            .map_err(|err| FrameError::backend_failure("decoder", err.to_string()))
+        // Overwrite any pending seek so the latest request wins.
+        self.seek_tx.send_replace(Some(info));
+        if self.seek_tx.is_closed() {
+            return Err(FrameError::backend_failure(
+                "decoder",
+                "seek channel closed",
+            ));
+        }
+        Ok(())
     }
 }
 
