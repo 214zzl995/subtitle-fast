@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ffmpeg::util::error::{EAGAIN, EWOULDBLOCK};
@@ -11,7 +12,7 @@ use parking_lot::Mutex;
 use crate::core::{
     DecoderController, DecoderError, DecoderProvider, DecoderResult, FrameStream, VideoFrame,
 };
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{self, Sender};
 
 const BACKEND_NAME: &str = "ffmpeg";
 const FILTER_SPEC: &str = "format=nv12";
@@ -202,6 +203,10 @@ struct FFmpegHandles {
     time_base: ffmpeg::Rational,
     frame_rate: Option<(i32, i32)>,
     tx: Sender<DecoderResult<VideoFrame>>,
+    #[allow(dead_code)]
+    abort_decode: AtomicBool,
+    #[allow(dead_code)]
+    seeking: AtomicBool,
 }
 
 pub struct FFmpegProvider {
@@ -271,6 +276,8 @@ impl FFmpegProvider {
             time_base,
             frame_rate,
             tx,
+            abort_decode: AtomicBool::new(false),
+            seeking: AtomicBool::new(false),
         });
 
         Ok(())
@@ -328,6 +335,73 @@ impl FFmpegProvider {
             filter.flush()?;
             filter.drain(time_base, &tx)?;
         }
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    fn interrupt_and_seek(
+        &self,
+        target_ts: i64,
+        flags: i32,
+        frame_rx: Option<&mut mpsc::Receiver<DecoderResult<VideoFrame>>>,
+        filter: Option<&mut Option<VideoFilterPipeline>>,
+    ) -> DecoderResult<()> {
+        let handles = self.handles.as_ref().ok_or_else(|| {
+            DecoderError::backend_failure(BACKEND_NAME, "ffmpeg backend was not initialized")
+        })?;
+        handles.abort_decode.store(true, Ordering::SeqCst);
+        handles.seeking.store(true, Ordering::SeqCst);
+
+        let mut ictx = handles.ictx.lock();
+        let mut decoder = handles.decoder.lock();
+
+        if let Some(frame_rx) = frame_rx {
+            loop {
+                match frame_rx.try_recv() {
+                    Ok(_) => {}
+                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Disconnected) => break,
+                }
+            }
+        }
+
+        unsafe {
+            let fmt_ctx = ictx.as_mut_ptr();
+            if !fmt_ctx.is_null() {
+                ffmpeg::ffi::avformat_flush(fmt_ctx);
+                let stream_index = handles.stream_index as i32;
+                let seek_result = ffmpeg::ffi::avformat_seek_file(
+                    fmt_ctx,
+                    stream_index,
+                    i64::MIN,
+                    target_ts,
+                    i64::MAX,
+                    flags,
+                );
+                if seek_result < 0 {
+                    let fallback =
+                        ffmpeg::ffi::av_seek_frame(fmt_ctx, stream_index, target_ts, flags);
+                    if fallback < 0 {
+                        return Err(DecoderError::backend_failure(
+                            BACKEND_NAME,
+                            format!(
+                                "ffmpeg seek failed (avformat_seek_file={seek_result}, av_seek_frame={fallback})",
+                            ),
+                        ));
+                    }
+                }
+            }
+
+            let codec_ctx = decoder.as_mut_ptr();
+            if !codec_ctx.is_null() {
+                ffmpeg::ffi::avcodec_flush_buffers(codec_ctx);
+            }
+        }
+
+        if let Some(filter) = filter {
+            *filter = None;
+        }
+
         Ok(())
     }
 }
