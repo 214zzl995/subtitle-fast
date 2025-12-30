@@ -32,6 +32,7 @@ impl VideoPlayerControlHandle {
             .decoder
             .lock()
             .expect("decoder controller mutex poisoned");
+        self.seek_epoch.store(controller.serial(), Ordering::SeqCst);
         *slot = Some(controller);
     }
 
@@ -74,10 +75,13 @@ impl VideoPlayerControlHandle {
         let Some(controller) = slot.as_ref() else {
             return;
         };
-        if let Err(err) = controller.seek(info) {
-            eprintln!("decoder seek failed: {err}");
-        } else {
-            self.seek_epoch.fetch_add(1, Ordering::SeqCst);
+        match controller.seek(info) {
+            Ok(serial) => {
+                self.seek_epoch.store(serial, Ordering::SeqCst);
+            }
+            Err(err) => {
+                eprintln!("decoder seek failed: {err}");
+            }
         }
     }
 

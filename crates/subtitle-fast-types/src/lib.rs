@@ -20,6 +20,7 @@ pub type DecoderResult<T> = Result<T, DecoderError>;
 pub struct VideoFrame {
     width: u32,
     height: u32,
+    serial: u64,
     frame_index: Option<u64>,
     timestamp: Option<Duration>,
     buffer: FrameBuffer,
@@ -106,6 +107,7 @@ impl fmt::Debug for VideoFrame {
                 .field("y_bytes", &buffer.y_plane.len())
                 .field("uv_bytes", &buffer.uv_plane.len())
                 .field("timestamp", &self.timestamp)
+                .field("serial", &self.serial)
                 .field("frame_index", &self.frame_index)
                 .finish(),
             FrameBuffer::Native(buffer) => f
@@ -117,6 +119,7 @@ impl fmt::Debug for VideoFrame {
                 .field("pixel_format", &buffer.pixel_format)
                 .field("handle", &buffer.handle())
                 .field("timestamp", &self.timestamp)
+                .field("serial", &self.serial)
                 .field("frame_index", &self.frame_index)
                 .finish(),
         }
@@ -173,6 +176,7 @@ impl VideoFrame {
             width,
             height,
             timestamp,
+            serial: 0,
             frame_index: None,
             buffer: FrameBuffer::Nv12(Nv12Buffer {
                 y_stride,
@@ -201,6 +205,7 @@ impl VideoFrame {
             width,
             height,
             timestamp,
+            serial: 0,
             frame_index,
             buffer: FrameBuffer::Native(NativeBuffer {
                 backend,
@@ -220,6 +225,10 @@ impl VideoFrame {
 
     pub fn timestamp(&self) -> Option<Duration> {
         self.timestamp
+    }
+
+    pub fn serial(&self) -> u64 {
+        self.serial
     }
 
     pub fn frame_index(&self) -> Option<u64> {
@@ -263,6 +272,15 @@ impl VideoFrame {
 
     pub fn uv_plane(&self) -> &[u8] {
         &self.expect_nv12().uv_plane
+    }
+
+    pub fn with_serial(mut self, serial: u64) -> Self {
+        self.serial = serial;
+        self
+    }
+
+    pub fn set_serial(&mut self, serial: u64) {
+        self.serial = serial;
     }
 
     pub fn with_frame_index(mut self, index: Option<u64>) -> Self {

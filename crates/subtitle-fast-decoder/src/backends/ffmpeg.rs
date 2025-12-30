@@ -531,7 +531,7 @@ fn frame_from_converted(
     let frame = VideoFrame::from_nv12_owned(
         width, height, y_stride, uv_stride, timestamp, y_plane, uv_plane,
     )?;
-    Ok(frame.with_frame_index(frame_index))
+    Ok(frame.with_serial(0).with_frame_index(frame_index))
 }
 
 fn copy_plane(plane: &[u8], stride: usize, rows: usize, label: &str) -> DecoderResult<Vec<u8>> {

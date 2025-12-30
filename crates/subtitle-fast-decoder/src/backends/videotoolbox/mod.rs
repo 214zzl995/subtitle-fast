@@ -17,6 +17,8 @@ mod platform {
     use std::path::{Path, PathBuf};
     use std::ptr;
     use std::slice;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
     use tokio::sync::mpsc;
 
@@ -207,14 +209,23 @@ mod platform {
             let start_frame = self.start_frame;
             let controller = DecoderController::new();
             let seek_rx = controller.seek_receiver();
+            let serial = controller.serial_handle();
             let stream = spawn_stream_from_channel(capacity, move |tx| {
                 let result = match output_format {
-                    OutputFormat::Nv12 => {
-                        decode_videotoolbox_nv12(path.clone(), tx.clone(), start_frame, seek_rx)
-                    }
-                    OutputFormat::CVPixelBuffer => {
-                        decode_videotoolbox_handle(path.clone(), tx.clone(), start_frame, seek_rx)
-                    }
+                    OutputFormat::Nv12 => decode_videotoolbox_nv12(
+                        path.clone(),
+                        tx.clone(),
+                        start_frame,
+                        seek_rx,
+                        serial.clone(),
+                    ),
+                    OutputFormat::CVPixelBuffer => decode_videotoolbox_handle(
+                        path.clone(),
+                        tx.clone(),
+                        start_frame,
+                        seek_rx,
+                        serial.clone(),
+                    ),
                 };
                 if let Err(err) = result {
                     let _ = tx.blocking_send(Err(err));
@@ -229,9 +240,10 @@ mod platform {
         tx: mpsc::Sender<DecoderResult<VideoFrame>>,
         start_frame: Option<u64>,
         seek_rx: SeekReceiver,
+        serial: Arc<AtomicU64>,
     ) -> DecoderResult<()> {
         let c_path = cstring_from_path(&path)?;
-        let mut context = Box::new(DecodeContext::new(tx, seek_rx));
+        let mut context = Box::new(DecodeContext::new(tx, seek_rx, serial));
         let mut error_ptr: *mut c_char = ptr::null_mut();
         let (has_start_frame, start_frame) = match start_frame {
             Some(value) => (true, value),
@@ -267,9 +279,10 @@ mod platform {
         tx: mpsc::Sender<DecoderResult<VideoFrame>>,
         start_frame: Option<u64>,
         seek_rx: SeekReceiver,
+        serial: Arc<AtomicU64>,
     ) -> DecoderResult<()> {
         let c_path = cstring_from_path(&path)?;
-        let mut context = Box::new(DecodeContext::new(tx, seek_rx));
+        let mut context = Box::new(DecodeContext::new(tx, seek_rx, serial));
         let mut error_ptr: *mut c_char = ptr::null_mut();
         let (has_start_frame, start_frame) = match start_frame {
             Some(value) => (true, value),
@@ -303,11 +316,23 @@ mod platform {
     struct DecodeContext {
         sender: mpsc::Sender<DecoderResult<VideoFrame>>,
         seek_rx: SeekReceiver,
+        serial: Arc<AtomicU64>,
+        current_serial: u64,
     }
 
     impl DecodeContext {
-        fn new(sender: mpsc::Sender<DecoderResult<VideoFrame>>, seek_rx: SeekReceiver) -> Self {
-            Self { sender, seek_rx }
+        fn new(
+            sender: mpsc::Sender<DecoderResult<VideoFrame>>,
+            seek_rx: SeekReceiver,
+            serial: Arc<AtomicU64>,
+        ) -> Self {
+            let current_serial = serial.load(Ordering::SeqCst);
+            Self {
+                sender,
+                seek_rx,
+                serial,
+                current_serial,
+            }
         }
 
         fn send(&self, message: DecoderResult<VideoFrame>) -> bool {
@@ -319,6 +344,7 @@ mod platform {
                 return;
             }
             if let Some(info) = *self.seek_rx.borrow_and_update() {
+                self.current_serial = self.serial.load(Ordering::SeqCst);
                 handle_seek_request(info);
             }
         }
@@ -358,7 +384,9 @@ mod platform {
             y_data.to_vec(),
             uv_data.to_vec(),
         ) {
-            Ok(value) => value.with_frame_index(Some(frame.frame_index)),
+            Ok(value) => value
+                .with_frame_index(Some(frame.frame_index))
+                .with_serial(context.current_serial),
             Err(err) => {
                 let _ = context.send(Err(err));
                 return false;
@@ -412,7 +440,7 @@ mod platform {
             frame.pixel_buffer,
             release_native_handle,
         ) {
-            Ok(value) => value,
+            Ok(value) => value.with_serial(context.current_serial),
             Err(err) => {
                 unsafe { release_native_handle(frame.pixel_buffer) };
                 let _ = context.send(Err(err));

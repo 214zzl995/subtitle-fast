@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -23,10 +25,16 @@ pub struct MockProvider {
 impl MockProvider {
     const DEFAULT_CHANNEL_CAPACITY: usize = 8;
 
-    fn emit_frames(&self, tx: Sender<DecoderResult<VideoFrame>>, mut seek_rx: SeekReceiver) {
+    fn emit_frames(
+        &self,
+        tx: Sender<DecoderResult<VideoFrame>>,
+        mut seek_rx: SeekReceiver,
+        serial: Arc<AtomicU64>,
+    ) {
         let start_index = self.start_frame.min(self.frame_count as u64) as usize;
+        let mut current_serial = serial.load(Ordering::SeqCst);
         for index in start_index..self.frame_count {
-            drain_seek_requests(&mut seek_rx);
+            drain_seek_requests(&mut seek_rx, &serial, &mut current_serial);
             if tx.is_closed() {
                 break;
             }
@@ -48,7 +56,11 @@ impl MockProvider {
                 buffer,
                 uv_plane,
             )
-            .map(|frame| frame.with_frame_index(Some(index as u64)));
+            .map(|frame| {
+                frame
+                    .with_frame_index(Some(index as u64))
+                    .with_serial(current_serial)
+            });
             if tx.blocking_send(frame).is_err() {
                 break;
             }
@@ -94,18 +106,20 @@ impl DecoderProvider for MockProvider {
         let capacity = provider.channel_capacity;
         let controller = DecoderController::new();
         let seek_rx = controller.seek_receiver();
+        let serial = controller.serial_handle();
         let stream = spawn_stream_from_channel(capacity, move |tx| {
-            provider.emit_frames(tx, seek_rx);
+            provider.emit_frames(tx, seek_rx, serial);
         });
         Ok((controller, stream))
     }
 }
 
-fn drain_seek_requests(seek_rx: &mut SeekReceiver) {
+fn drain_seek_requests(seek_rx: &mut SeekReceiver, serial: &AtomicU64, current_serial: &mut u64) {
     if !seek_rx.has_changed().unwrap_or(false) {
         return;
     }
     if let Some(info) = *seek_rx.borrow_and_update() {
+        *current_serial = serial.load(Ordering::SeqCst);
         handle_seek_request(info);
     }
 }

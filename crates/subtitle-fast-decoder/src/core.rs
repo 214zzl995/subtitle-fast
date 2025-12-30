@@ -1,4 +1,6 @@
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures_core::Stream;
@@ -30,22 +32,36 @@ pub type SeekReceiver = watch::Receiver<Option<SeekInfo>>;
 
 pub struct DecoderController {
     seek_tx: watch::Sender<Option<SeekInfo>>,
+    serial: Arc<AtomicU64>,
 }
 
 impl DecoderController {
     pub fn new() -> Self {
         let (seek_tx, _seek_rx) = watch::channel(None);
-        Self { seek_tx }
+        Self {
+            seek_tx,
+            serial: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     pub(crate) fn seek_receiver(&self) -> SeekReceiver {
         self.seek_tx.subscribe()
     }
 
-    pub fn seek(&self, info: SeekInfo) -> DecoderResult<()> {
+    pub(crate) fn serial_handle(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.serial)
+    }
+
+    pub fn serial(&self) -> u64 {
+        self.serial.load(Ordering::SeqCst)
+    }
+
+    pub fn seek(&self, info: SeekInfo) -> DecoderResult<u64> {
+        let serial = self.serial.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
         self.seek_tx
             .send(Some(info))
             .map_err(|err| DecoderError::backend_failure("decoder", err.to_string()))
+            .map(|()| serial)
     }
 }
 
@@ -150,6 +166,7 @@ mod tests {
         assert_eq!(frame.height(), 2);
         assert_eq!(frame.stride(), 4);
         assert_eq!(frame.timestamp(), Some(Duration::from_millis(10)));
+        assert_eq!(frame.serial(), 0);
         assert_eq!(frame.data().len(), 8);
         assert_eq!(frame.frame_index(), None);
     }

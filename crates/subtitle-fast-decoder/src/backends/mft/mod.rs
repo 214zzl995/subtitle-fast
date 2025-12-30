@@ -15,6 +15,8 @@ mod platform {
     use std::path::{Path, PathBuf};
     use std::ptr;
     use std::slice;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
     use tokio::sync::mpsc::Sender;
 
@@ -106,10 +108,15 @@ mod platform {
             let start_frame = provider.start_frame;
             let controller = DecoderController::new();
             let seek_rx = controller.seek_receiver();
+            let serial = controller.serial_handle();
             let stream = spawn_stream_from_channel(capacity, move |tx| {
-                if let Err(err) =
-                    decode_mft(provider.input.clone(), tx.clone(), start_frame, seek_rx)
-                {
+                if let Err(err) = decode_mft(
+                    provider.input.clone(),
+                    tx.clone(),
+                    start_frame,
+                    seek_rx,
+                    serial,
+                ) {
                     let _ = tx.blocking_send(Err(err));
                 }
             });
@@ -122,9 +129,10 @@ mod platform {
         tx: Sender<DecoderResult<VideoFrame>>,
         start_frame: Option<u64>,
         seek_rx: SeekReceiver,
+        serial: Arc<AtomicU64>,
     ) -> DecoderResult<()> {
         let c_path = cstring_from_path(&path)?;
-        let mut context = DecodeContext::new(tx, seek_rx);
+        let mut context = DecodeContext::new(tx, seek_rx, serial);
         let mut error_ptr: *mut c_char = ptr::null_mut();
         let (has_start_frame, start_frame) = match start_frame {
             Some(value) => (true, value),
@@ -216,11 +224,23 @@ mod platform {
     struct DecodeContext {
         tx: Sender<DecoderResult<VideoFrame>>,
         seek_rx: SeekReceiver,
+        serial: Arc<AtomicU64>,
+        current_serial: u64,
     }
 
     impl DecodeContext {
-        fn new(tx: Sender<DecoderResult<VideoFrame>>, seek_rx: SeekReceiver) -> Self {
-            Self { tx, seek_rx }
+        fn new(
+            tx: Sender<DecoderResult<VideoFrame>>,
+            seek_rx: SeekReceiver,
+            serial: Arc<AtomicU64>,
+        ) -> Self {
+            let current_serial = serial.load(Ordering::SeqCst);
+            Self {
+                tx,
+                seek_rx,
+                serial,
+                current_serial,
+            }
         }
 
         fn send_frame(&self, frame: VideoFrame) -> bool {
@@ -236,6 +256,7 @@ mod platform {
                 return;
             }
             if let Some(info) = *self.seek_rx.borrow_and_update() {
+                self.current_serial = self.serial.load(Ordering::SeqCst);
                 handle_seek_request(info);
             }
         }
@@ -272,7 +293,9 @@ mod platform {
             uv_data.to_vec(),
         ) {
             Ok(frame_value) => {
-                let frame_value = frame_value.with_frame_index(Some(frame.frame_index));
+                let frame_value = frame_value
+                    .with_frame_index(Some(frame.frame_index))
+                    .with_serial(context.current_serial);
                 context.send_frame(frame_value)
             }
             Err(err) => {
