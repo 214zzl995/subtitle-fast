@@ -1,7 +1,7 @@
 #[cfg(all(target_os = "macos", feature = "backend-videotoolbox"))]
 use crate::core::{
-    DecoderController, DecoderProvider, DynDecoderProvider, DecoderError, DecoderResult, FrameStream,
-    SeekInfo, SeekReceiver,
+    DecoderController, DecoderError, DecoderProvider, DecoderResult, FrameStream, SeekInfo,
+    SeekReceiver,
 };
 
 use crate::config::OutputFormat;
@@ -94,8 +94,7 @@ mod platform {
         start_frame: Option<u64>,
     }
 
-    impl VideoToolboxProvider {
-    }
+    impl VideoToolboxProvider {}
 
     fn probe_video_metadata(path: &Path) -> DecoderResult<crate::core::VideoMetadata> {
         probe_metadata_videotoolbox(path)
@@ -174,9 +173,7 @@ mod platform {
     impl DecoderProvider for VideoToolboxProvider {
         fn new(config: &crate::config::Configuration) -> DecoderResult<Self> {
             let path = config.input.as_ref().ok_or_else(|| {
-                DecoderError::configuration(
-                    "VideoToolbox backend requires SUBFAST_INPUT to be set",
-                )
+                DecoderError::configuration("VideoToolbox backend requires SUBFAST_INPUT to be set")
             })?;
             if !path.exists() {
                 return Err(DecoderError::Io(std::io::Error::new(
@@ -185,7 +182,11 @@ mod platform {
                 )));
             }
             let metadata = probe_video_metadata(path)?;
-            let capacity = config.channel_capacity.map(|n| n.get()).unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
+            let capacity = config
+                .channel_capacity
+                .map(|n| n.get())
+                .unwrap_or(DEFAULT_CHANNEL_CAPACITY)
+                .max(1);
             Ok(Self {
                 input: path.to_path_buf(),
                 metadata,

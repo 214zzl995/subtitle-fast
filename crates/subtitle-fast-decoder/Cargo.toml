@@ -37,6 +37,7 @@ ffmpeg-next = { version = "8", optional = true, default-features = false, featur
     "static",
 ] }
 rayon = { version = "1.10", optional = true }
+parking_lot = "0.12"
 
 [build-dependencies]
 cc = "1"

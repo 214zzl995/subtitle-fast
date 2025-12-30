@@ -5908,6 +5908,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "indicatif 0.17.11",
+ "parking_lot",
  "png 0.18.0",
  "rayon",
  "subtitle-fast-types",
