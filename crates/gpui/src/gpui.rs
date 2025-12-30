@@ -76,7 +76,7 @@ pub use ctor::ctor;
 pub use element::*;
 #[allow(ambiguous_glob_reexports)]
 pub use elements::*;
-pub use elements::{Frame, FrameError, FrameResult, Video, VideoFrame, VideoHandle, video};
+pub use elements::{Frame, DecoderError, DecoderResult, Video, VideoFrame, VideoHandle, video};
 pub use executor::*;
 pub use geometry::*;
 pub use global::*;

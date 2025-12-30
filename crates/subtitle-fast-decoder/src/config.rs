@@ -7,7 +7,7 @@ use std::str::FromStr;
 #[cfg(feature = "backend-ffmpeg")]
 use std::sync::OnceLock;
 
-use crate::core::{DynFrameProvider, FrameError, FrameResult, FrameStreamProvider};
+use crate::core::{DecoderError, DecoderProvider, DecoderResult, DynDecoderProvider};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -44,7 +44,7 @@ impl Default for OutputFormat {
 }
 
 impl FromStr for Backend {
-    type Err = FrameError;
+    type Err = DecoderError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
@@ -57,7 +57,7 @@ impl FromStr for Backend {
             "dxva" => Ok(Backend::Dxva),
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             "mft" => Ok(Backend::Mft),
-            other => Err(FrameError::configuration(format!(
+            other => Err(DecoderError::configuration(format!(
                 "unknown backend '{other}'"
             ))),
         }
@@ -167,7 +167,7 @@ impl Default for Configuration {
 }
 
 impl Configuration {
-    pub fn from_env() -> FrameResult<Self> {
+    pub fn from_env() -> DecoderResult<Self> {
         let mut config = Configuration::default();
         if let Ok(backend) = env::var("SUBFAST_BACKEND") {
             config.backend = Backend::from_str(&backend)?;
@@ -177,12 +177,12 @@ impl Configuration {
         }
         if let Ok(capacity) = env::var("SUBFAST_CHANNEL_CAPACITY") {
             let parsed: usize = capacity.parse().map_err(|_| {
-                FrameError::configuration(format!(
+                DecoderError::configuration(format!(
                     "failed to parse SUBFAST_CHANNEL_CAPACITY='{capacity}' as a positive integer"
                 ))
             })?;
             let Some(value) = NonZeroUsize::new(parsed) else {
-                return Err(FrameError::configuration(
+                return Err(DecoderError::configuration(
                     "SUBFAST_CHANNEL_CAPACITY must be greater than zero",
                 ));
             };
@@ -190,7 +190,7 @@ impl Configuration {
         }
         if let Ok(start_frame) = env::var("SUBFAST_START_FRAME") {
             let parsed: u64 = start_frame.parse().map_err(|_| {
-                FrameError::configuration(format!(
+                DecoderError::configuration(format!(
                     "failed to parse SUBFAST_START_FRAME='{start_frame}' as a non-negative integer"
                 ))
             })?;
@@ -203,13 +203,13 @@ impl Configuration {
         compiled_backends()
     }
 
-    pub fn create_provider(&self) -> FrameResult<DynFrameProvider> {
+    pub fn create_provider(&self) -> DecoderResult<DynDecoderProvider> {
         self.validate_output_format()?;
 
         match self.backend {
             Backend::Mock => {
                 if !github_ci_active() {
-                    Err(FrameError::unsupported("mock"))
+                    Err(DecoderError::unsupported("mock"))
                 } else {
                     Ok(Box::new(crate::backends::mock::MockProvider::new(self)?))
                 }
@@ -223,13 +223,13 @@ impl Configuration {
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             Backend::Mft => Ok(Box::new(crate::backends::mft::MftProvider::new(self)?)),
             #[allow(unreachable_patterns)]
-            other => Err(FrameError::unsupported(other.as_str())),
+            other => Err(DecoderError::unsupported(other.as_str())),
         }
     }
 }
 
 impl Configuration {
-    fn validate_output_format(&self) -> FrameResult<()> {
+    fn validate_output_format(&self) -> DecoderResult<()> {
         match self.output_format {
             OutputFormat::Nv12 => Ok(()),
             OutputFormat::CVPixelBuffer => {
@@ -240,7 +240,7 @@ impl Configuration {
                     }
                 }
 
-                Err(FrameError::configuration(format!(
+                Err(DecoderError::configuration(format!(
                     "output format '{}' is only supported by videotoolbox backend (selected: {})",
                     self.output_format.as_str(),
                     self.backend.as_str()

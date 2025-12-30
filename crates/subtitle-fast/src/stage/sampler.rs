@@ -6,14 +6,14 @@ use futures_util::{StreamExt, stream::unfold};
 use tokio::sync::mpsc;
 
 use super::StreamBundle;
-use subtitle_fast_types::{FrameError, FrameResult, VideoFrame};
+use subtitle_fast_types::{DecoderError, DecoderResult, VideoFrame};
 
 const SAMPLER_CHANNEL_CAPACITY: usize = 1;
 const DEFAULT_POOL_CAPACITY: usize = 24;
 const MAX_POOL_CAPACITY: usize = 240;
 const EPSILON: f64 = 1e-6;
 
-pub type SamplerResult = Result<SampledFrame, FrameError>;
+pub type SamplerResult = Result<SampledFrame, DecoderError>;
 
 #[derive(Debug, Clone, Copy)]
 pub enum FrameType {
@@ -100,7 +100,7 @@ impl FrameSampler {
 impl FrameSampler {
     pub fn attach(
         self,
-        input: StreamBundle<FrameResult<VideoFrame>>,
+        input: StreamBundle<DecoderResult<VideoFrame>>,
     ) -> StreamBundle<SamplerResult> {
         let StreamBundle {
             stream,

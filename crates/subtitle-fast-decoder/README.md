@@ -83,7 +83,7 @@ while let Some(frame) = stream.next().await {
 
 ## Error handling
 
-All failures map to `FrameError` variants:
+All failures map to `DecoderError` variants:
 
 - `Unsupported` – the chosen backend was not compiled into this build.
 - `BackendFailure` – the native backend returned an error string.

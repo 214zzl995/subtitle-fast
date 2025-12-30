@@ -14,7 +14,7 @@ use std::time::Duration;
 use serde::Serialize;
 use thiserror::Error;
 
-pub type FrameResult<T> = Result<T, FrameError>;
+pub type DecoderResult<T> = Result<T, DecoderError>;
 
 #[derive(Clone)]
 pub struct VideoFrame {
@@ -132,23 +132,23 @@ impl VideoFrame {
         timestamp: Option<Duration>,
         mut y_plane: Vec<u8>,
         mut uv_plane: Vec<u8>,
-    ) -> FrameResult<Self> {
+    ) -> DecoderResult<Self> {
         let y_required =
             y_stride
                 .checked_mul(height as usize)
-                .ok_or_else(|| FrameError::InvalidFrame {
+                .ok_or_else(|| DecoderError::InvalidFrame {
                     reason: "calculated NV12 Y plane length overflowed".into(),
                 })?;
         let uv_rows = nv12_uv_rows(height);
         let uv_required =
             uv_stride
                 .checked_mul(uv_rows)
-                .ok_or_else(|| FrameError::InvalidFrame {
+                .ok_or_else(|| DecoderError::InvalidFrame {
                     reason: "calculated NV12 UV plane length overflowed".into(),
                 })?;
 
         if y_plane.len() < y_required {
-            return Err(FrameError::InvalidFrame {
+            return Err(DecoderError::InvalidFrame {
                 reason: format!(
                     "insufficient NV12 Y plane bytes: got {} expected at least {}",
                     y_plane.len(),
@@ -157,7 +157,7 @@ impl VideoFrame {
             });
         }
         if uv_plane.len() < uv_required {
-            return Err(FrameError::InvalidFrame {
+            return Err(DecoderError::InvalidFrame {
                 reason: format!(
                     "insufficient NV12 UV plane bytes: got {} expected at least {}",
                     uv_plane.len(),
@@ -192,8 +192,8 @@ impl VideoFrame {
         pixel_format: u32,
         handle: *mut c_void,
         release: unsafe extern "C" fn(*mut c_void),
-    ) -> FrameResult<Self> {
-        let handle = NonNull::new(handle).ok_or_else(|| FrameError::InvalidFrame {
+    ) -> DecoderResult<Self> {
+        let handle = NonNull::new(handle).ok_or_else(|| DecoderError::InvalidFrame {
             reason: "native handle is null".into(),
         })?;
 
@@ -289,7 +289,7 @@ fn nv12_uv_rows(height: u32) -> usize {
 }
 
 #[derive(Debug, Error)]
-pub enum FrameError {
+pub enum DecoderError {
     #[error("backend {backend} is not supported in this build")]
     Unsupported { backend: &'static str },
 
@@ -309,7 +309,7 @@ pub enum FrameError {
     Io(#[from] std::io::Error),
 }
 
-impl FrameError {
+impl DecoderError {
     pub fn unsupported(backend: &'static str) -> Self {
         Self::Unsupported { backend }
     }

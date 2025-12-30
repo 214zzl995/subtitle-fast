@@ -6,8 +6,8 @@ use ffmpeg::util::mathematics::rescale::{Rescale, TIME_BASE};
 use ffmpeg_next as ffmpeg;
 
 use crate::core::{
-    DecoderController, FrameError, FrameResult, FrameStream, FrameStreamProvider,
-    SeekInfo, SeekReceiver, VideoFrame, spawn_stream_from_channel,
+    DecoderController, DecoderError, DecoderProvider, DecoderResult, FrameStream, SeekInfo,
+    SeekReceiver, VideoFrame, spawn_stream_from_channel,
 };
 use tokio::sync::mpsc::Sender;
 
@@ -31,7 +31,7 @@ impl VideoFilterPipeline {
         frame_rate: Option<(i32, i32)>,
         frame: &ffmpeg::util::frame::Video,
         start_frame: Option<u64>,
-    ) -> FrameResult<Self> {
+    ) -> DecoderResult<Self> {
         let mut graph = ffmpeg::filter::Graph::new();
 
         let (time_base_num, time_base_den) = sanitize_rational(time_base, (1, 1));
@@ -64,42 +64,42 @@ impl VideoFilterPipeline {
         graph
             .add(
                 &ffmpeg::filter::find("buffer").ok_or_else(|| {
-                    FrameError::backend_failure(BACKEND_NAME, "ffmpeg buffer filter not found")
+                    DecoderError::backend_failure(BACKEND_NAME, "ffmpeg buffer filter not found")
                 })?,
                 "in",
                 &args,
             )
-            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
 
         graph
             .add(
                 &ffmpeg::filter::find("buffersink").ok_or_else(|| {
-                    FrameError::backend_failure(BACKEND_NAME, "ffmpeg buffersink filter not found")
+                    DecoderError::backend_failure(BACKEND_NAME, "ffmpeg buffersink filter not found")
                 })?,
                 "out",
                 "",
             )
-            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
 
         graph
             .output("in", 0)
             .and_then(|parser| parser.input("out", 0))
             .and_then(|parser| parser.parse(FILTER_SPEC))
-            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
 
         graph
             .validate()
-            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
 
         let source_ctx = {
             let mut context = graph.get("in").ok_or_else(|| {
-                FrameError::backend_failure(BACKEND_NAME, "failed to access buffer source context")
+                DecoderError::backend_failure(BACKEND_NAME, "failed to access buffer source context")
             })?;
             unsafe { context.as_mut_ptr() }
         };
         let sink_ctx = {
             let mut context = graph.get("out").ok_or_else(|| {
-                FrameError::backend_failure(BACKEND_NAME, "failed to access buffersink context")
+                DecoderError::backend_failure(BACKEND_NAME, "failed to access buffersink context")
             })?;
             unsafe { context.as_mut_ptr() }
         };
@@ -116,22 +116,22 @@ impl VideoFilterPipeline {
         })
     }
 
-    fn push(&mut self, frame: &ffmpeg::util::frame::Video) -> FrameResult<()> {
+    fn push(&mut self, frame: &ffmpeg::util::frame::Video) -> DecoderResult<()> {
         unsafe {
             let mut context = ffmpeg::filter::context::Context::wrap(self.source_ctx);
             let mut src = ffmpeg::filter::context::Source::wrap(&mut context);
             src.add(frame)
-                .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+                .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
         }
         Ok(())
     }
 
-    fn flush(&mut self) -> FrameResult<()> {
+    fn flush(&mut self) -> DecoderResult<()> {
         unsafe {
             let mut context = ffmpeg::filter::context::Context::wrap(self.source_ctx);
             let mut src = ffmpeg::filter::context::Source::wrap(&mut context);
             src.flush()
-                .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+                .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
         }
         Ok(())
     }
@@ -139,8 +139,8 @@ impl VideoFilterPipeline {
     fn drain(
         &mut self,
         fallback_time_base: ffmpeg::Rational,
-        tx: &Sender<FrameResult<VideoFrame>>,
-    ) -> FrameResult<()> {
+        tx: &Sender<DecoderResult<VideoFrame>>,
+    ) -> DecoderResult<()> {
         unsafe {
             let mut context = ffmpeg::filter::context::Context::wrap(self.sink_ctx);
             let mut sink = ffmpeg::filter::context::Sink::wrap(&mut context);
@@ -178,7 +178,7 @@ impl VideoFilterPipeline {
                         if is_retryable_error(&err) || matches!(err, ffmpeg::Error::Eof) {
                             break;
                         }
-                        return Err(FrameError::backend_failure(BACKEND_NAME, err.to_string()));
+                        return Err(DecoderError::backend_failure(BACKEND_NAME, err.to_string()));
                     }
                 }
             }
@@ -198,24 +198,24 @@ impl FFmpegProvider {
 
     fn decode_loop(
         &self,
-        tx: Sender<FrameResult<VideoFrame>>,
+        tx: Sender<DecoderResult<VideoFrame>>,
         mut seek_rx: SeekReceiver,
-    ) -> FrameResult<()> {
+    ) -> DecoderResult<()> {
         let mut ictx = ffmpeg::format::input(&self.input)
-            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
         let frame_rate = {
             let input_stream =
                 ictx.streams()
                     .best(ffmpeg::media::Type::Video)
                     .ok_or_else(|| {
-                        FrameError::backend_failure(BACKEND_NAME, "no video stream found")
+                        DecoderError::backend_failure(BACKEND_NAME, "no video stream found")
                     })?;
             stream_frame_rate(&input_stream)
         };
 
         if let Some(start_frame) = self.start_frame.filter(|value| *value > 0) {
             let frame_rate = frame_rate.ok_or_else(|| {
-                FrameError::configuration(
+                DecoderError::configuration(
                     "ffmpeg backend requires frame rate metadata to seek to start_frame",
                 )
             })?;
@@ -227,7 +227,7 @@ impl FFmpegProvider {
                 ictx.streams()
                     .best(ffmpeg::media::Type::Video)
                     .ok_or_else(|| {
-                        FrameError::backend_failure(BACKEND_NAME, "no video stream found")
+                        DecoderError::backend_failure(BACKEND_NAME, "no video stream found")
                     })?;
             (
                 input_stream.index(),
@@ -238,14 +238,14 @@ impl FFmpegProvider {
         };
 
         let mut context = ffmpeg::codec::context::Context::from_parameters(parameters)
-            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
         let mut threading = ffmpeg::codec::threading::Config::default();
         threading.kind = ffmpeg::codec::threading::Type::Frame;
         context.set_threading(threading);
         let mut decoder = context
             .decoder()
             .video()
-            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
 
         let mut filter: Option<VideoFilterPipeline> = None;
         let mut decoded = ffmpeg::util::frame::Video::empty();
@@ -259,7 +259,7 @@ impl FFmpegProvider {
                 Ok(_) => {}
                 Err(err) if is_retryable_error(&err) => {}
                 Err(err) => {
-                    return Err(FrameError::backend_failure(BACKEND_NAME, err.to_string()));
+                    return Err(DecoderError::backend_failure(BACKEND_NAME, err.to_string()));
                 }
             }
             drain_decoder(
@@ -275,7 +275,7 @@ impl FFmpegProvider {
 
         decoder
             .send_eof()
-            .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+            .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
         drain_decoder(
             &mut decoder,
             &mut decoded,
@@ -293,18 +293,18 @@ impl FFmpegProvider {
     }
 }
 
-impl FrameStreamProvider for FFmpegProvider {
-    fn new(config: &crate::config::Configuration) -> FrameResult<Self> {
+impl DecoderProvider for FFmpegProvider {
+    fn new(config: &crate::config::Configuration) -> DecoderResult<Self> {
         let path = config.input.as_ref().ok_or_else(|| {
-            FrameError::configuration("FFmpeg backend requires SUBFAST_INPUT")
+            DecoderError::configuration("FFmpeg backend requires SUBFAST_INPUT")
         })?;
         if !path.exists() {
-            return Err(FrameError::Io(std::io::Error::new(
+            return Err(DecoderError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("input file {} does not exist", path.display()),
             )));
         }
-        ffmpeg::init().map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+        ffmpeg::init().map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
         let metadata = probe_video_metadata(path)?;
         let capacity = config.channel_capacity.map(|n| n.get()).unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
         Ok(Self {
@@ -353,8 +353,8 @@ fn drain_decoder(
     fallback_time_base: ffmpeg::Rational,
     frame_rate: Option<(i32, i32)>,
     start_frame: Option<u64>,
-    tx: &Sender<FrameResult<VideoFrame>>,
-) -> FrameResult<()> {
+    tx: &Sender<DecoderResult<VideoFrame>>,
+) -> DecoderResult<()> {
     loop {
         match decoder.receive_frame(decoded) {
             Ok(_) => {
@@ -385,7 +385,7 @@ fn drain_decoder(
                 if is_retryable_error(&err) || matches!(err, ffmpeg::Error::Eof) {
                     break;
                 }
-                return Err(FrameError::backend_failure(BACKEND_NAME, err.to_string()));
+                return Err(DecoderError::backend_failure(BACKEND_NAME, err.to_string()));
             }
         }
     }
@@ -397,7 +397,7 @@ fn frame_from_converted(
     time_base: ffmpeg::Rational,
     frame_rate: Option<(i32, i32)>,
     next_fallback_index: &mut u64,
-) -> FrameResult<VideoFrame> {
+) -> DecoderResult<VideoFrame> {
     let width = frame.width();
     let height = frame.height();
     let y_stride = frame.stride(0);
@@ -416,19 +416,19 @@ fn frame_from_converted(
     Ok(frame.with_frame_index(frame_index))
 }
 
-fn copy_plane(plane: &[u8], stride: usize, rows: usize, label: &str) -> FrameResult<Vec<u8>> {
+fn copy_plane(plane: &[u8], stride: usize, rows: usize, label: &str) -> DecoderResult<Vec<u8>> {
     if stride == 0 && rows > 0 {
-        return Err(FrameError::InvalidFrame {
+        return Err(DecoderError::InvalidFrame {
             reason: format!("NV12 {label} plane stride is zero"),
         });
     }
     let required = stride
         .checked_mul(rows)
-        .ok_or_else(|| FrameError::InvalidFrame {
+        .ok_or_else(|| DecoderError::InvalidFrame {
             reason: format!("calculated NV12 {label} plane length overflowed"),
         })?;
     if plane.len() < required {
-        return Err(FrameError::InvalidFrame {
+        return Err(DecoderError::InvalidFrame {
             reason: format!(
                 "insufficient NV12 {label} plane bytes: got {} expected at least {}",
                 plane.len(),
@@ -479,14 +479,14 @@ fn seek_to_start_frame(
     ictx: &mut ffmpeg::format::context::Input,
     start_frame: u64,
     frame_rate: (i32, i32),
-) -> FrameResult<()> {
+) -> DecoderResult<()> {
     let (num, den) = frame_rate;
     let start_frame = i64::try_from(start_frame)
-        .map_err(|_| FrameError::configuration("start_frame is too large for ffmpeg seeking"))?;
+        .map_err(|_| DecoderError::configuration("start_frame is too large for ffmpeg seeking"))?;
     let frame_time_base = ffmpeg::Rational::new(den, num);
     let timestamp = start_frame.rescale(frame_time_base, TIME_BASE);
     ictx.seek(timestamp, ..)
-        .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+        .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
     Ok(())
 }
 
@@ -498,15 +498,15 @@ fn is_retryable_error(error: &ffmpeg::Error) -> bool {
     )
 }
 
-fn probe_video_metadata(path: &Path) -> FrameResult<crate::core::VideoMetadata> {
+fn probe_video_metadata(path: &Path) -> DecoderResult<crate::core::VideoMetadata> {
     use crate::core::VideoMetadata;
 
     let ictx = ffmpeg::format::input(path)
-        .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+        .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
     let input_stream = ictx
         .streams()
         .best(ffmpeg::media::Type::Video)
-        .ok_or_else(|| FrameError::backend_failure(BACKEND_NAME, "no video stream found"))?;
+        .ok_or_else(|| DecoderError::backend_failure(BACKEND_NAME, "no video stream found"))?;
 
     let time_base = input_stream.time_base();
     let duration = if !is_invalid_time_base(time_base) {
@@ -529,11 +529,11 @@ fn probe_video_metadata(path: &Path) -> FrameResult<crate::core::VideoMetadata> 
         .map(|(num, den)| num as f64 / den as f64);
 
     let context = ffmpeg::codec::context::Context::from_parameters(input_stream.parameters())
-        .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+        .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
     let decoder = context
         .decoder()
         .video()
-        .map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+        .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
     let width = decoder.width() as u32;
     let height = decoder.height() as u32;
 

@@ -1,6 +1,6 @@
 #[cfg(all(target_os = "macos", feature = "backend-videotoolbox"))]
 use crate::core::{
-    DecoderController, DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider,
+    DecoderController, DecoderProvider, DynDecoderProvider, DecoderError, DecoderResult, FrameStream,
     SeekInfo, SeekReceiver,
 };
 
@@ -97,11 +97,11 @@ mod platform {
     impl VideoToolboxProvider {
     }
 
-    fn probe_video_metadata(path: &Path) -> FrameResult<crate::core::VideoMetadata> {
+    fn probe_video_metadata(path: &Path) -> DecoderResult<crate::core::VideoMetadata> {
         probe_metadata_videotoolbox(path)
     }
 
-    fn probe_metadata_videotoolbox(path: &Path) -> FrameResult<crate::core::VideoMetadata> {
+    fn probe_metadata_videotoolbox(path: &Path) -> DecoderResult<crate::core::VideoMetadata> {
         use crate::core::VideoMetadata;
 
         let c_path = cstring_from_path(path)?;
@@ -118,12 +118,12 @@ mod platform {
         let error = take_bridge_string(result.error);
         if !ok {
             let message = error.unwrap_or_else(|| "videotoolbox probe failed".to_string());
-            return Err(FrameError::backend_failure("videotoolbox", message));
+            return Err(DecoderError::backend_failure("videotoolbox", message));
         }
         if let Some(message) = error
             && !message.is_empty()
         {
-            return Err(FrameError::backend_failure("videotoolbox", message));
+            return Err(DecoderError::backend_failure("videotoolbox", message));
         }
 
         let mut metadata = VideoMetadata::new();
@@ -146,9 +146,9 @@ mod platform {
         Ok(metadata)
     }
 
-    fn cstring_from_path(path: &Path) -> FrameResult<CString> {
+    fn cstring_from_path(path: &Path) -> DecoderResult<CString> {
         CString::new(path.to_string_lossy().as_bytes()).map_err(|err| {
-            FrameError::backend_failure("videotoolbox", format!("invalid path encoding: {err}"))
+            DecoderError::backend_failure("videotoolbox", format!("invalid path encoding: {err}"))
         })
     }
 
@@ -171,15 +171,15 @@ mod platform {
         }
     }
 
-    impl FrameStreamProvider for VideoToolboxProvider {
-        fn new(config: &crate::config::Configuration) -> FrameResult<Self> {
+    impl DecoderProvider for VideoToolboxProvider {
+        fn new(config: &crate::config::Configuration) -> DecoderResult<Self> {
             let path = config.input.as_ref().ok_or_else(|| {
-                FrameError::configuration(
+                DecoderError::configuration(
                     "VideoToolbox backend requires SUBFAST_INPUT to be set",
                 )
             })?;
             if !path.exists() {
-                return Err(FrameError::Io(std::io::Error::new(
+                return Err(DecoderError::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("input file {} does not exist", path.display()),
                 )));
@@ -224,10 +224,10 @@ mod platform {
 
     fn decode_videotoolbox_nv12(
         path: PathBuf,
-        tx: mpsc::Sender<FrameResult<VideoFrame>>,
+        tx: mpsc::Sender<DecoderResult<VideoFrame>>,
         start_frame: Option<u64>,
         seek_rx: SeekReceiver,
-    ) -> FrameResult<()> {
+    ) -> DecoderResult<()> {
         let c_path = cstring_from_path(&path)?;
         let mut context = Box::new(DecodeContext::new(tx, seek_rx));
         let mut error_ptr: *mut c_char = ptr::null_mut();
@@ -250,22 +250,22 @@ mod platform {
         let error = take_bridge_string(error_ptr);
         if !ok {
             let message = error.unwrap_or_else(|| "videotoolbox decode failed".to_string());
-            return Err(FrameError::backend_failure("videotoolbox", message));
+            return Err(DecoderError::backend_failure("videotoolbox", message));
         }
         if let Some(message) = error
             && !message.is_empty()
         {
-            return Err(FrameError::backend_failure("videotoolbox", message));
+            return Err(DecoderError::backend_failure("videotoolbox", message));
         }
         Ok(())
     }
 
     fn decode_videotoolbox_handle(
         path: PathBuf,
-        tx: mpsc::Sender<FrameResult<VideoFrame>>,
+        tx: mpsc::Sender<DecoderResult<VideoFrame>>,
         start_frame: Option<u64>,
         seek_rx: SeekReceiver,
-    ) -> FrameResult<()> {
+    ) -> DecoderResult<()> {
         let c_path = cstring_from_path(&path)?;
         let mut context = Box::new(DecodeContext::new(tx, seek_rx));
         let mut error_ptr: *mut c_char = ptr::null_mut();
@@ -288,27 +288,27 @@ mod platform {
         let error = take_bridge_string(error_ptr);
         if !ok {
             let message = error.unwrap_or_else(|| "videotoolbox handle decode failed".to_string());
-            return Err(FrameError::backend_failure("videotoolbox", message));
+            return Err(DecoderError::backend_failure("videotoolbox", message));
         }
         if let Some(message) = error
             && !message.is_empty()
         {
-            return Err(FrameError::backend_failure("videotoolbox", message));
+            return Err(DecoderError::backend_failure("videotoolbox", message));
         }
         Ok(())
     }
 
     struct DecodeContext {
-        sender: mpsc::Sender<FrameResult<VideoFrame>>,
+        sender: mpsc::Sender<DecoderResult<VideoFrame>>,
         seek_rx: SeekReceiver,
     }
 
     impl DecodeContext {
-        fn new(sender: mpsc::Sender<FrameResult<VideoFrame>>, seek_rx: SeekReceiver) -> Self {
+        fn new(sender: mpsc::Sender<DecoderResult<VideoFrame>>, seek_rx: SeekReceiver) -> Self {
             Self { sender, seek_rx }
         }
 
-        fn send(&self, message: FrameResult<VideoFrame>) -> bool {
+        fn send(&self, message: DecoderResult<VideoFrame>) -> bool {
             self.sender.blocking_send(message).is_ok()
         }
 
@@ -331,7 +331,7 @@ mod platform {
         context.drain_seek_requests();
 
         if frame.y_data.is_null() || frame.uv_data.is_null() {
-            let _ = context.send(Err(FrameError::backend_failure(
+            let _ = context.send(Err(DecoderError::backend_failure(
                 "videotoolbox",
                 "frame missing pixel data",
             )));
@@ -387,7 +387,7 @@ mod platform {
         context.drain_seek_requests();
 
         if frame.pixel_buffer.is_null() {
-            let _ = context.send(Err(FrameError::backend_failure(
+            let _ = context.send(Err(DecoderError::backend_failure(
                 "videotoolbox",
                 "native frame missing pixel buffer handle",
             )));
@@ -442,12 +442,12 @@ mod platform {
             _channel_capacity: Option<usize>,
             _output_format: OutputFormat,
             _start_frame: Option<u64>,
-        ) -> FrameResult<Self> {
-            Err(FrameError::unsupported("videotoolbox"))
+        ) -> DecoderResult<Self> {
+            Err(DecoderError::unsupported("videotoolbox"))
         }
     }
 
-    impl FrameStreamProvider for VideoToolboxProvider {
+    impl DecoderProvider for VideoToolboxProvider {
         fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
             panic!("VideoToolbox backend is only available on macOS builds");
         }

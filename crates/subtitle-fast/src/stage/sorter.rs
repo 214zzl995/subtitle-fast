@@ -4,7 +4,7 @@ use std::pin::Pin;
 use futures_util::{Stream, StreamExt};
 
 use super::StreamBundle;
-use subtitle_fast_types::{FrameResult, VideoFrame};
+use subtitle_fast_types::{DecoderResult, VideoFrame};
 
 pub struct FrameSorter;
 
@@ -15,8 +15,8 @@ impl FrameSorter {
 
     pub fn attach(
         self,
-        input: StreamBundle<FrameResult<VideoFrame>>,
-    ) -> StreamBundle<FrameResult<VideoFrame>> {
+        input: StreamBundle<DecoderResult<VideoFrame>>,
+    ) -> StreamBundle<DecoderResult<VideoFrame>> {
         let StreamBundle {
             stream,
             total_frames,
@@ -40,13 +40,13 @@ impl Default for FrameSorter {
 }
 
 struct SorterState {
-    upstream: Pin<Box<dyn Stream<Item = FrameResult<VideoFrame>> + Send>>,
+    upstream: Pin<Box<dyn Stream<Item = DecoderResult<VideoFrame>> + Send>>,
     pool: FramePool,
     finished: bool,
 }
 
 impl SorterState {
-    async fn next(mut state: SorterState) -> Option<(FrameResult<VideoFrame>, SorterState)> {
+    async fn next(mut state: SorterState) -> Option<(DecoderResult<VideoFrame>, SorterState)> {
         loop {
             if let Some(frame) = state.pool.pop_next() {
                 return Some((Ok(frame), state));

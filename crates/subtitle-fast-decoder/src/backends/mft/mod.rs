@@ -1,6 +1,6 @@
 #[cfg(all(target_os = "windows", feature = "backend-mft"))]
 use crate::core::{
-    DecoderController, FrameError, FrameResult, FrameStream, FrameStreamProvider,
+    DecoderController, DecoderProvider, DecoderError, DecoderResult, FrameStream,
     SeekInfo, SeekReceiver,
 };
 
@@ -72,13 +72,13 @@ mod platform {
     impl MftProvider {
     }
 
-    impl FrameStreamProvider for MftProvider {
-        fn new(config: &crate::config::Configuration) -> FrameResult<Self> {
+    impl DecoderProvider for MftProvider {
+        fn new(config: &crate::config::Configuration) -> DecoderResult<Self> {
             let path = config.input.as_ref().ok_or_else(|| {
-                FrameError::configuration("MFT backend requires SUBFAST_INPUT to be set")
+                DecoderError::configuration("MFT backend requires SUBFAST_INPUT to be set")
             })?;
             if !path.exists() {
-                return Err(FrameError::Io(std::io::Error::new(
+                return Err(DecoderError::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("input file {} does not exist", path.display()),
                 )));
@@ -115,10 +115,10 @@ mod platform {
 
     fn decode_mft(
         path: PathBuf,
-        tx: Sender<FrameResult<VideoFrame>>,
+        tx: Sender<DecoderResult<VideoFrame>>,
         start_frame: Option<u64>,
         seek_rx: SeekReceiver,
-    ) -> FrameResult<()> {
+    ) -> DecoderResult<()> {
         let c_path = cstring_from_path(&path)?;
         let mut context = DecodeContext::new(tx, seek_rx);
         let mut error_ptr: *mut c_char = ptr::null_mut();
@@ -139,17 +139,17 @@ mod platform {
         let bridge_error = take_bridge_string(error_ptr);
         if !ok {
             let message = bridge_error.unwrap_or_else(|| "decode failed".to_string());
-            return Err(FrameError::backend_failure(BACKEND_NAME, message));
+            return Err(DecoderError::backend_failure(BACKEND_NAME, message));
         }
         if let Some(message) = bridge_error {
             if !message.is_empty() {
-                return Err(FrameError::backend_failure(BACKEND_NAME, message));
+                return Err(DecoderError::backend_failure(BACKEND_NAME, message));
             }
         }
         Ok(())
     }
 
-    fn probe_video_metadata(path: &Path) -> FrameResult<crate::core::VideoMetadata> {
+    fn probe_video_metadata(path: &Path) -> DecoderResult<crate::core::VideoMetadata> {
         use crate::core::VideoMetadata;
 
         let c_path = cstring_from_path(path)?;
@@ -166,11 +166,11 @@ mod platform {
         let bridge_error = take_bridge_string(result.error);
         if !ok {
             let message = bridge_error.unwrap_or_else(|| "probe failed".to_string());
-            return Err(FrameError::backend_failure(BACKEND_NAME, message));
+            return Err(DecoderError::backend_failure(BACKEND_NAME, message));
         }
         if let Some(message) = bridge_error {
             if !message.is_empty() {
-                return Err(FrameError::backend_failure(BACKEND_NAME, message));
+                return Err(DecoderError::backend_failure(BACKEND_NAME, message));
             }
         }
 
@@ -194,9 +194,9 @@ mod platform {
         Ok(metadata)
     }
 
-    fn cstring_from_path(path: &Path) -> FrameResult<CString> {
+    fn cstring_from_path(path: &Path) -> DecoderResult<CString> {
         CString::new(path.to_string_lossy().as_bytes()).map_err(|err| {
-            FrameError::backend_failure(BACKEND_NAME, format!("invalid path encoding: {err}"))
+            DecoderError::backend_failure(BACKEND_NAME, format!("invalid path encoding: {err}"))
         })
     }
 
@@ -210,12 +210,12 @@ mod platform {
     }
 
     struct DecodeContext {
-        tx: Sender<FrameResult<VideoFrame>>,
+        tx: Sender<DecoderResult<VideoFrame>>,
         seek_rx: SeekReceiver,
     }
 
     impl DecodeContext {
-        fn new(tx: Sender<FrameResult<VideoFrame>>, seek_rx: SeekReceiver) -> Self {
+        fn new(tx: Sender<DecoderResult<VideoFrame>>, seek_rx: SeekReceiver) -> Self {
             Self { tx, seek_rx }
         }
 
@@ -223,7 +223,7 @@ mod platform {
             self.tx.blocking_send(Ok(frame)).is_ok()
         }
 
-        fn send_error(&self, error: FrameError) {
+        fn send_error(&self, error: DecoderError) {
             let _ = self.tx.blocking_send(Err(error));
         }
 
@@ -245,7 +245,7 @@ mod platform {
         let context = unsafe { &mut *(context as *mut DecodeContext) };
         context.drain_seek_requests();
         if frame.y_data.is_null() || frame.uv_data.is_null() {
-            context.send_error(FrameError::backend_failure(
+            context.send_error(DecoderError::backend_failure(
                 BACKEND_NAME,
                 "NV12 plane pointer is null",
             ));
@@ -286,8 +286,8 @@ mod platform {
 #[cfg(not(target_os = "windows"))]
 mod platform {
     use crate::{
-        DecoderController, DynFrameProvider, FrameError, FrameResult, FrameStream,
-        FrameStreamProvider,
+        DecoderController, DynDecoderProvider, DecoderError, DecoderResult, FrameStream,
+        DecoderProvider,
     };
     use std::path::Path;
 
@@ -298,12 +298,12 @@ mod platform {
             _path: P,
             _channel_capacity: Option<usize>,
             _start_frame: Option<u64>,
-        ) -> FrameResult<Self> {
-            Err(FrameError::unsupported("mft"))
+        ) -> DecoderResult<Self> {
+            Err(DecoderError::unsupported("mft"))
         }
     }
 
-    impl FrameStreamProvider for MftProvider {
+    impl DecoderProvider for MftProvider {
         fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
             panic!("MFT backend is only available on Windows builds");
         }

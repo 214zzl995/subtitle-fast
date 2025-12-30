@@ -16,11 +16,11 @@ use crate::scene::{Nv12Frame, SurfaceId, SurfaceSource};
 static NEXT_SURFACE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Result type returned by NV12 frame constructors.
-pub type FrameResult<T> = std::result::Result<T, FrameError>;
+pub type DecoderResult<T> = std::result::Result<T, DecoderError>;
 
 /// Errors returned when validating frame inputs.
 #[derive(Debug, Error, Clone)]
-pub enum FrameError {
+pub enum DecoderError {
     /// Frame input failed validation.
     #[error("invalid frame: {reason}")]
     InvalidFrame {
@@ -49,38 +49,38 @@ impl Frame {
         uv_stride: usize,
         y_plane: Arc<[u8]>,
         uv_plane: Arc<[u8]>,
-    ) -> FrameResult<Self> {
+    ) -> DecoderResult<Self> {
         if y_stride == 0 || uv_stride == 0 {
-            return Err(FrameError::InvalidFrame {
+            return Err(DecoderError::InvalidFrame {
                 reason: "NV12 plane stride is zero".into(),
             });
         }
         if y_stride < width as usize {
-            return Err(FrameError::InvalidFrame {
+            return Err(DecoderError::InvalidFrame {
                 reason: "NV12 Y plane stride is smaller than width".into(),
             });
         }
         if uv_stride < width as usize {
-            return Err(FrameError::InvalidFrame {
+            return Err(DecoderError::InvalidFrame {
                 reason: "NV12 UV plane stride is smaller than width".into(),
             });
         }
         let y_required =
             y_stride
                 .checked_mul(height as usize)
-                .ok_or_else(|| FrameError::InvalidFrame {
+                .ok_or_else(|| DecoderError::InvalidFrame {
                     reason: "calculated NV12 Y plane length overflowed".into(),
                 })?;
         let uv_rows = nv12_uv_rows(height);
         let uv_required =
             uv_stride
                 .checked_mul(uv_rows)
-                .ok_or_else(|| FrameError::InvalidFrame {
+                .ok_or_else(|| DecoderError::InvalidFrame {
                     reason: "calculated NV12 UV plane length overflowed".into(),
                 })?;
 
         if y_plane.len() < y_required {
-            return Err(FrameError::InvalidFrame {
+            return Err(DecoderError::InvalidFrame {
                 reason: format!(
                     "insufficient NV12 Y plane bytes: got {} expected at least {}",
                     y_plane.len(),
@@ -89,7 +89,7 @@ impl Frame {
             });
         }
         if uv_plane.len() < uv_required {
-            return Err(FrameError::InvalidFrame {
+            return Err(DecoderError::InvalidFrame {
                 reason: format!(
                     "insufficient NV12 UV plane bytes: got {} expected at least {}",
                     uv_plane.len(),
@@ -116,38 +116,38 @@ impl Frame {
         uv_stride: usize,
         mut y_plane: Vec<u8>,
         mut uv_plane: Vec<u8>,
-    ) -> FrameResult<Self> {
+    ) -> DecoderResult<Self> {
         if y_stride == 0 || uv_stride == 0 {
-            return Err(FrameError::InvalidFrame {
+            return Err(DecoderError::InvalidFrame {
                 reason: "NV12 plane stride is zero".into(),
             });
         }
         if y_stride < width as usize {
-            return Err(FrameError::InvalidFrame {
+            return Err(DecoderError::InvalidFrame {
                 reason: "NV12 Y plane stride is smaller than width".into(),
             });
         }
         if uv_stride < width as usize {
-            return Err(FrameError::InvalidFrame {
+            return Err(DecoderError::InvalidFrame {
                 reason: "NV12 UV plane stride is smaller than width".into(),
             });
         }
         let y_required =
             y_stride
                 .checked_mul(height as usize)
-                .ok_or_else(|| FrameError::InvalidFrame {
+                .ok_or_else(|| DecoderError::InvalidFrame {
                     reason: "calculated NV12 Y plane length overflowed".into(),
                 })?;
         let uv_rows = nv12_uv_rows(height);
         let uv_required =
             uv_stride
                 .checked_mul(uv_rows)
-                .ok_or_else(|| FrameError::InvalidFrame {
+                .ok_or_else(|| DecoderError::InvalidFrame {
                     reason: "calculated NV12 UV plane length overflowed".into(),
                 })?;
 
         if y_plane.len() < y_required {
-            return Err(FrameError::InvalidFrame {
+            return Err(DecoderError::InvalidFrame {
                 reason: format!(
                     "insufficient NV12 Y plane bytes: got {} expected at least {}",
                     y_plane.len(),
@@ -156,7 +156,7 @@ impl Frame {
             });
         }
         if uv_plane.len() < uv_required {
-            return Err(FrameError::InvalidFrame {
+            return Err(DecoderError::InvalidFrame {
                 reason: format!(
                     "insufficient NV12 UV plane bytes: got {} expected at least {}",
                     uv_plane.len(),

@@ -7,12 +7,12 @@ use tokio::sync::mpsc::{self, Sender};
 use tokio::sync::watch;
 
 pub use subtitle_fast_types::{
-    FrameBuffer, FrameError, FrameResult, NativeBuffer, Nv12Buffer, VideoFrame,
+    DecoderError, DecoderResult, FrameBuffer, NativeBuffer, Nv12Buffer, VideoFrame,
 };
 
-pub type FrameStream = Pin<Box<dyn Stream<Item = FrameResult<VideoFrame>> + Send>>;
+pub type FrameStream = Pin<Box<dyn Stream<Item = DecoderResult<VideoFrame>> + Send>>;
 
-pub type DynFrameProvider = Box<dyn FrameStreamProvider>;
+pub type DynDecoderProvider = Box<dyn DecoderProvider>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeekMode {
@@ -38,11 +38,11 @@ impl DecoderController {
         (Self { seek_tx }, seek_rx)
     }
 
-    pub fn seek(&self, info: SeekInfo) -> FrameResult<()> {
+    pub fn seek(&self, info: SeekInfo) -> DecoderResult<()> {
         // Overwrite any pending seek so the latest request wins.
         self.seek_tx.send_replace(Some(info));
         if self.seek_tx.is_closed() {
-            return Err(FrameError::backend_failure(
+            return Err(DecoderError::backend_failure(
                 "decoder",
                 "seek channel closed",
             ));
@@ -106,8 +106,8 @@ impl VideoMetadata {
     }
 }
 
-pub trait FrameStreamProvider: Send + 'static {
-    fn new(config: &crate::config::Configuration) -> crate::core::FrameResult<Self>
+pub trait DecoderProvider: Send + 'static {
+    fn new(config: &crate::config::Configuration) -> crate::core::DecoderResult<Self>
     where
         Self: Sized;
 
@@ -120,7 +120,7 @@ pub trait FrameStreamProvider: Send + 'static {
 
 pub fn spawn_stream_from_channel(
     capacity: usize,
-    task: impl FnOnce(Sender<FrameResult<VideoFrame>>) + Send + 'static,
+    task: impl FnOnce(Sender<DecoderResult<VideoFrame>>) + Send + 'static,
 ) -> FrameStream {
     let (tx, rx) = mpsc::channel(capacity);
     tokio::task::spawn_blocking(move || task(tx));

@@ -1,4 +1,4 @@
-use subtitle_fast_decoder::{Backend, Configuration, FrameError, OutputFormat};
+use subtitle_fast_decoder::{Backend, Configuration, DecoderError, OutputFormat};
 
 #[test]
 fn handle_output_rejects_non_videotoolbox_backend() {
@@ -16,7 +16,7 @@ fn handle_output_rejects_non_videotoolbox_backend() {
     };
 
     match err {
-        FrameError::Configuration { message } => {
+        DecoderError::Configuration { message } => {
             assert!(message.contains("videotoolbox"));
             assert!(message.contains(OutputFormat::CVPixelBuffer.as_str()));
         }

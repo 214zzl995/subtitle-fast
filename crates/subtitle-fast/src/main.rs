@@ -6,10 +6,10 @@ use subtitle_fast::backend::{self, ExecutionPlan};
 use subtitle_fast::cli::{CliArgs, CliSources, parse_cli};
 use subtitle_fast::settings::{ConfigError, resolve_settings};
 use subtitle_fast::stage::PipelineConfig;
-use subtitle_fast_types::FrameError;
+use subtitle_fast_types::DecoderError;
 
 #[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<(), FrameError> {
+async fn main() -> Result<(), DecoderError> {
     #[allow(unused_variables)]
     let args: Vec<String> = env::args().collect();
 
@@ -24,7 +24,7 @@ async fn main() -> Result<(), FrameError> {
 }
 
 #[cfg(feature = "gui")]
-fn run_gui() -> Result<(), FrameError> {
+fn run_gui() -> Result<(), DecoderError> {
     use gpui::*;
     use subtitle_fast::gui::{AppAssets, SubtitleFastApp};
 
@@ -40,14 +40,14 @@ fn run_gui() -> Result<(), FrameError> {
     Ok(())
 }
 
-async fn run_cli() -> Result<(), FrameError> {
+async fn run_cli() -> Result<(), DecoderError> {
     match prepare_execution_plan().await? {
         Some(plan) => backend::run(plan).await,
         None => Ok(()),
     }
 }
 
-async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, FrameError> {
+async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, DecoderError> {
     let (cli_args, cli_sources): (CliArgs, CliSources) = parse_cli();
 
     if cli_args.list_backends {
@@ -64,7 +64,7 @@ async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, FrameError> {
     };
 
     if !input.exists() {
-        return Err(FrameError::configuration(format!(
+        return Err(DecoderError::configuration(format!(
             "input file '{}' does not exist",
             input.display()
         )));
@@ -106,6 +106,6 @@ fn usage() {
     backend::display_available_backends();
 }
 
-fn map_config_error(err: ConfigError) -> FrameError {
-    FrameError::configuration(err.to_string())
+fn map_config_error(err: ConfigError) -> DecoderError {
+    DecoderError::configuration(err.to_string())
 }

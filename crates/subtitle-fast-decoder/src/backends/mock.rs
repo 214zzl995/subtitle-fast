@@ -5,8 +5,8 @@ use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
 use crate::core::{
-    DecoderController, FrameResult, FrameStream, FrameStreamProvider, SeekInfo,
-    SeekReceiver, VideoFrame, spawn_stream_from_channel,
+    DecoderController, DecoderProvider, DecoderResult, FrameStream, SeekInfo, SeekReceiver,
+    VideoFrame, spawn_stream_from_channel,
 };
 
 pub struct MockProvider {
@@ -23,7 +23,7 @@ pub struct MockProvider {
 impl MockProvider {
     const DEFAULT_CHANNEL_CAPACITY: usize = 8;
 
-    fn emit_frames(&self, tx: Sender<FrameResult<VideoFrame>>, mut seek_rx: SeekReceiver) {
+    fn emit_frames(&self, tx: Sender<DecoderResult<VideoFrame>>, mut seek_rx: SeekReceiver) {
         let start_index = self.start_frame.min(self.frame_count as u64) as usize;
         for index in start_index..self.frame_count {
             drain_seek_requests(&mut seek_rx);
@@ -59,8 +59,8 @@ impl MockProvider {
     }
 }
 
-impl FrameStreamProvider for MockProvider {
-    fn new(config: &crate::config::Configuration) -> FrameResult<Self> {
+impl DecoderProvider for MockProvider {
+    fn new(config: &crate::config::Configuration) -> DecoderResult<Self> {
         let capacity = config.channel_capacity.map(|n| n.get()).unwrap_or(Self::DEFAULT_CHANNEL_CAPACITY);
         Ok(Self {
             _input: config.input.clone(),
@@ -113,6 +113,7 @@ fn handle_seek_request(_info: SeekInfo) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DynDecoderProvider;
     use tokio_stream::StreamExt;
 
     #[tokio::test(flavor = "multi_thread")]
@@ -124,9 +125,9 @@ mod tests {
             output_format: crate::config::OutputFormat::Nv12,
             start_frame: None,
         };
-        let provider = Box::new(MockProvider::new(&config).unwrap()) as DynFrameProvider;
-        let metadata = provider.metadata();
-        let (_controller, mut stream) = provider.open();
+        let decoder = Box::new(MockProvider::new(&config).unwrap()) as DynDecoderProvider;
+        let metadata = decoder.metadata();
+        let (_controller, mut stream) = decoder.open();
         assert_eq!(metadata.total_frames, Some(120));
         let frame = stream.next().await.unwrap().unwrap();
         assert_eq!(frame.width(), 640);
@@ -144,8 +145,8 @@ mod tests {
             output_format: crate::config::OutputFormat::Nv12,
             start_frame: Some(10),
         };
-        let provider = Box::new(MockProvider::new(&config).unwrap()) as DynFrameProvider;
-        let (_controller, mut stream) = provider.open();
+        let decoder = Box::new(MockProvider::new(&config).unwrap()) as DynDecoderProvider;
+        let (_controller, mut stream) = decoder.open();
         let frame = stream.next().await.unwrap().unwrap();
         assert_eq!(frame.frame_index(), Some(10));
     }

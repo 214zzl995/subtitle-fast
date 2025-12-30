@@ -24,11 +24,11 @@ use progress::Progress;
 use progress_gui::{GuiProgress, GuiProgressInner};
 use sampler::FrameSampler;
 use sorter::FrameSorter;
-use subtitle_fast_decoder::DynFrameProvider;
+use subtitle_fast_decoder::DynDecoderProvider;
 #[cfg(all(feature = "ocr-vision", target_os = "macos"))]
 use subtitle_fast_ocr::VisionOcrEngine;
 use subtitle_fast_ocr::{NoopOcrEngine, OcrEngine};
-use subtitle_fast_types::FrameError;
+use subtitle_fast_types::DecoderError;
 use subtitle_fast_validator::subtitle_detection::SubtitleDetectionError;
 use writer::{SubtitleWriter, SubtitleWriterError, WriterResult};
 
@@ -66,7 +66,7 @@ pub struct OutputPipelineConfig {
 }
 
 impl PipelineConfig {
-    pub fn from_settings(settings: &EffectiveSettings, input: &Path) -> Result<Self, FrameError> {
+    pub fn from_settings(settings: &EffectiveSettings, input: &Path) -> Result<Self, DecoderError> {
         let engine = build_ocr_engine(settings);
         let output_path = settings
             .output
@@ -84,9 +84,9 @@ impl PipelineConfig {
 }
 
 pub async fn run_pipeline(
-    provider: DynFrameProvider,
+    provider: DynDecoderProvider,
     pipeline: &PipelineConfig,
-) -> Result<(), (FrameError, u64)> {
+) -> Result<(), (DecoderError, u64)> {
     let initial_total_frames = provider.metadata().total_frames;
     let (_, initial_stream) = provider.open();
     let paused_stream = if let Some(pause_rx) = pipeline.pause.as_ref() {
@@ -204,11 +204,11 @@ where
     }
 }
 
-fn detection_error_to_frame(err: SubtitleDetectionError) -> FrameError {
-    FrameError::configuration(format!("subtitle detection error: {err}"))
+fn detection_error_to_frame(err: SubtitleDetectionError) -> DecoderError {
+    DecoderError::configuration(format!("subtitle detection error: {err}"))
 }
 
-fn writer_error_to_frame(err: SubtitleWriterError) -> FrameError {
+fn writer_error_to_frame(err: SubtitleWriterError) -> DecoderError {
     match err {
         SubtitleWriterError::Ocr(ocr_err) => match ocr_err {
             OcrStageError::Lifecycle(lifecycle_err) => match lifecycle_err {
@@ -222,10 +222,10 @@ fn writer_error_to_frame(err: SubtitleWriterError) -> FrameError {
                 },
             },
             OcrStageError::Engine(ocr_err) => {
-                FrameError::configuration(format!("ocr error: {ocr_err}"))
+                DecoderError::configuration(format!("ocr error: {ocr_err}"))
             }
         },
-        SubtitleWriterError::Io { path, source } => FrameError::configuration(format!(
+        SubtitleWriterError::Io { path, source } => DecoderError::configuration(format!(
             "failed to write subtitle file {}: {source}",
             path.display()
         )),
