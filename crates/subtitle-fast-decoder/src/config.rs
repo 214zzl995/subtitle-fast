@@ -215,9 +215,13 @@ impl Configuration {
                 }
             }
             #[cfg(feature = "backend-ffmpeg")]
-            Backend::FFmpeg => Ok(Box::new(crate::backends::ffmpeg::FFmpegProvider::new(self)?)),
+            Backend::FFmpeg => Ok(Box::new(crate::backends::ffmpeg::FFmpegProvider::new(
+                self,
+            )?)),
             #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
-            Backend::VideoToolbox => Ok(Box::new(crate::backends::videotoolbox::VideoToolboxProvider::new(self)?)),
+            Backend::VideoToolbox => Ok(Box::new(
+                crate::backends::videotoolbox::VideoToolboxProvider::new(self)?,
+            )),
             #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
             Backend::Dxva => Ok(Box::new(crate::backends::dxva::DxvaProvider::new(self)?)),
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]

@@ -1,13 +1,15 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use ffmpeg::util::error::{EAGAIN, EWOULDBLOCK};
 use ffmpeg::util::mathematics::rescale::{Rescale, TIME_BASE};
 use ffmpeg_next as ffmpeg;
+use futures_util::stream::unfold;
+use parking_lot::Mutex;
 
 use crate::core::{
-    DecoderController, DecoderError, DecoderProvider, DecoderResult, FrameStream, SeekInfo,
-    SeekReceiver, VideoFrame, spawn_stream_from_channel,
+    DecoderController, DecoderError, DecoderProvider, DecoderResult, FrameStream, VideoFrame,
 };
 use tokio::sync::mpsc::Sender;
 
@@ -74,7 +76,10 @@ impl VideoFilterPipeline {
         graph
             .add(
                 &ffmpeg::filter::find("buffersink").ok_or_else(|| {
-                    DecoderError::backend_failure(BACKEND_NAME, "ffmpeg buffersink filter not found")
+                    DecoderError::backend_failure(
+                        BACKEND_NAME,
+                        "ffmpeg buffersink filter not found",
+                    )
                 })?,
                 "out",
                 "",
@@ -93,7 +98,10 @@ impl VideoFilterPipeline {
 
         let source_ctx = {
             let mut context = graph.get("in").ok_or_else(|| {
-                DecoderError::backend_failure(BACKEND_NAME, "failed to access buffer source context")
+                DecoderError::backend_failure(
+                    BACKEND_NAME,
+                    "failed to access buffer source context",
+                )
             })?;
             unsafe { context.as_mut_ptr() }
         };
@@ -187,20 +195,29 @@ impl VideoFilterPipeline {
     }
 }
 
+struct FFmpegHandles {
+    ictx: Arc<Mutex<ffmpeg::format::context::Input>>,
+    decoder: Arc<Mutex<ffmpeg::decoder::Video>>,
+    stream_index: usize,
+    time_base: ffmpeg::Rational,
+    frame_rate: Option<(i32, i32)>,
+    tx: Sender<DecoderResult<VideoFrame>>,
+}
+
 pub struct FFmpegProvider {
     input: PathBuf,
     channel_capacity: usize,
     metadata: crate::core::VideoMetadata,
     start_frame: Option<u64>,
+    handles: Option<FFmpegHandles>,
 }
 
 impl FFmpegProvider {
+    fn init_handles(&mut self, tx: Sender<DecoderResult<VideoFrame>>) -> DecoderResult<()> {
+        if self.handles.is_some() {
+            return Ok(());
+        }
 
-    fn decode_loop(
-        &self,
-        tx: Sender<DecoderResult<VideoFrame>>,
-        mut seek_rx: SeekReceiver,
-    ) -> DecoderResult<()> {
         let mut ictx = ffmpeg::format::input(&self.input)
             .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
         let frame_rate = {
@@ -222,7 +239,7 @@ impl FFmpegProvider {
             seek_to_start_frame(&mut ictx, start_frame, frame_rate)?;
         }
 
-        let (stream_index, time_base, filter_frame_rate, parameters) = {
+        let (stream_index, time_base, frame_rate, parameters) = {
             let input_stream =
                 ictx.streams()
                     .best(ffmpeg::media::Type::Video)
@@ -242,16 +259,38 @@ impl FFmpegProvider {
         let mut threading = ffmpeg::codec::threading::Config::default();
         threading.kind = ffmpeg::codec::threading::Type::Frame;
         context.set_threading(threading);
-        let mut decoder = context
+        let decoder = context
             .decoder()
             .video()
             .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
+
+        self.handles = Some(FFmpegHandles {
+            ictx: Arc::new(Mutex::new(ictx)),
+            decoder: Arc::new(Mutex::new(decoder)),
+            stream_index,
+            time_base,
+            frame_rate,
+            tx,
+        });
+
+        Ok(())
+    }
+
+    fn decode_loop(&mut self) -> DecoderResult<()> {
+        let handles = self.handles.as_mut().ok_or_else(|| {
+            DecoderError::backend_failure(BACKEND_NAME, "ffmpeg backend was not initialized")
+        })?;
+        let stream_index = handles.stream_index;
+        let time_base = handles.time_base;
+        let frame_rate = handles.frame_rate;
+        let tx = handles.tx.clone();
+        let mut ictx = handles.ictx.lock();
+        let mut decoder = handles.decoder.lock();
 
         let mut filter: Option<VideoFilterPipeline> = None;
         let mut decoded = ffmpeg::util::frame::Video::empty();
 
         for (stream, packet) in ictx.packets() {
-            drain_seek_requests(&mut seek_rx);
             if stream.index() != stream_index {
                 continue;
             }
@@ -263,11 +302,11 @@ impl FFmpegProvider {
                 }
             }
             drain_decoder(
-                &mut decoder,
+                &mut *decoder,
                 &mut decoded,
                 &mut filter,
                 time_base,
-                filter_frame_rate,
+                frame_rate,
                 self.start_frame,
                 &tx,
             )?;
@@ -277,11 +316,11 @@ impl FFmpegProvider {
             .send_eof()
             .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
         drain_decoder(
-            &mut decoder,
+            &mut *decoder,
             &mut decoded,
             &mut filter,
             time_base,
-            filter_frame_rate,
+            frame_rate,
             self.start_frame,
             &tx,
         )?;
@@ -295,23 +334,30 @@ impl FFmpegProvider {
 
 impl DecoderProvider for FFmpegProvider {
     fn new(config: &crate::config::Configuration) -> DecoderResult<Self> {
-        let path = config.input.as_ref().ok_or_else(|| {
-            DecoderError::configuration("FFmpeg backend requires SUBFAST_INPUT")
-        })?;
+        let path = config
+            .input
+            .as_ref()
+            .ok_or_else(|| DecoderError::configuration("FFmpeg backend requires SUBFAST_INPUT"))?;
         if !path.exists() {
             return Err(DecoderError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("input file {} does not exist", path.display()),
             )));
         }
-        ffmpeg::init().map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
+        ffmpeg::init()
+            .map_err(|err| DecoderError::backend_failure(BACKEND_NAME, err.to_string()))?;
         let metadata = probe_video_metadata(path)?;
-        let capacity = config.channel_capacity.map(|n| n.get()).unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
+        let capacity = config
+            .channel_capacity
+            .map(|n| n.get())
+            .unwrap_or(DEFAULT_CHANNEL_CAPACITY)
+            .max(1);
         Ok(Self {
             input: path.to_path_buf(),
             channel_capacity: capacity,
             metadata,
             start_frame: config.start_frame,
+            handles: None,
         })
     }
 
@@ -320,30 +366,31 @@ impl DecoderProvider for FFmpegProvider {
     }
 
     fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
-        let provider = *self;
+        let mut provider = *self;
         let capacity = provider.channel_capacity;
-        let (controller, seek_rx) = DecoderController::new();
-        let stream = spawn_stream_from_channel(capacity, move |tx| {
-            let result = provider.decode_loop(tx.clone(), seek_rx);
+        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        let init_result = provider.init_handles(tx.clone());
+        let controller = DecoderController::new();
+
+        let stream = {
+            let stream = unfold(rx, |mut receiver| async {
+                receiver.recv().await.map(|item| (item, receiver))
+            });
+            Box::pin(stream)
+        };
+
+        tokio::task::spawn_blocking(move || {
+            if let Err(err) = init_result {
+                let _ = tx.blocking_send(Err(err));
+                return;
+            }
+            let result = provider.decode_loop();
             if let Err(err) = result {
                 let _ = tx.blocking_send(Err(err));
             }
         });
         (controller, stream)
     }
-}
-
-fn drain_seek_requests(seek_rx: &mut SeekReceiver) {
-    if !seek_rx.has_changed().unwrap_or(false) {
-        return;
-    }
-    if let Some(info) = *seek_rx.borrow_and_update() {
-        handle_seek_request(info);
-    }
-}
-
-fn handle_seek_request(_info: SeekInfo) {
-    todo!("ffmpeg seek handling is not implemented yet");
 }
 
 fn drain_decoder(

@@ -205,7 +205,8 @@ mod platform {
             let capacity = self.channel_capacity;
             let output_format = self.output_format;
             let start_frame = self.start_frame;
-            let (controller, seek_rx) = DecoderController::new();
+            let controller = DecoderController::new();
+            let seek_rx = controller.seek_receiver();
             let stream = spawn_stream_from_channel(capacity, move |tx| {
                 let result = match output_format {
                     OutputFormat::Nv12 => {

@@ -61,7 +61,10 @@ impl MockProvider {
 
 impl DecoderProvider for MockProvider {
     fn new(config: &crate::config::Configuration) -> DecoderResult<Self> {
-        let capacity = config.channel_capacity.map(|n| n.get()).unwrap_or(Self::DEFAULT_CHANNEL_CAPACITY);
+        let capacity = config
+            .channel_capacity
+            .map(|n| n.get())
+            .unwrap_or(Self::DEFAULT_CHANNEL_CAPACITY);
         Ok(Self {
             _input: config.input.clone(),
             width: 640,
@@ -89,7 +92,8 @@ impl DecoderProvider for MockProvider {
     fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
         let provider = *self;
         let capacity = provider.channel_capacity;
-        let (controller, seek_rx) = DecoderController::new();
+        let controller = DecoderController::new();
+        let seek_rx = controller.seek_receiver();
         let stream = spawn_stream_from_channel(capacity, move |tx| {
             provider.emit_frames(tx, seek_rx);
         });

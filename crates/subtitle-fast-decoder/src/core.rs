@@ -33,21 +33,19 @@ pub struct DecoderController {
 }
 
 impl DecoderController {
-    pub fn new() -> (Self, SeekReceiver) {
-        let (seek_tx, seek_rx) = watch::channel(None);
-        (Self { seek_tx }, seek_rx)
+    pub fn new() -> Self {
+        let (seek_tx, _seek_rx) = watch::channel(None);
+        Self { seek_tx }
+    }
+
+    pub(crate) fn seek_receiver(&self) -> SeekReceiver {
+        self.seek_tx.subscribe()
     }
 
     pub fn seek(&self, info: SeekInfo) -> DecoderResult<()> {
-        // Overwrite any pending seek so the latest request wins.
-        self.seek_tx.send_replace(Some(info));
-        if self.seek_tx.is_closed() {
-            return Err(DecoderError::backend_failure(
-                "decoder",
-                "seek channel closed",
-            ));
-        }
-        Ok(())
+        self.seek_tx
+            .send(Some(info))
+            .map_err(|err| DecoderError::backend_failure("decoder", err.to_string()))
     }
 }
 

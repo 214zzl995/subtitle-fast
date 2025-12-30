@@ -1,7 +1,7 @@
 #[cfg(all(target_os = "windows", feature = "backend-dxva"))]
 use crate::core::{
-    DecoderController, DecoderProvider, DecoderError, DecoderResult, FrameStream,
-    SeekInfo, SeekReceiver,
+    DecoderController, DecoderError, DecoderProvider, DecoderResult, FrameStream, SeekInfo,
+    SeekReceiver,
 };
 
 #[cfg(all(target_os = "windows", feature = "backend-dxva"))]
@@ -69,8 +69,7 @@ mod platform {
         start_frame: Option<u64>,
     }
 
-    impl DxvaProvider {
-    }
+    impl DxvaProvider {}
 
     impl DecoderProvider for DxvaProvider {
         fn new(config: &crate::config::Configuration) -> DecoderResult<Self> {
@@ -84,7 +83,11 @@ mod platform {
                 )));
             }
             let metadata = probe_video_metadata(path)?;
-            let capacity = config.channel_capacity.map(|n| n.get()).unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
+            let capacity = config
+                .channel_capacity
+                .map(|n| n.get())
+                .unwrap_or(DEFAULT_CHANNEL_CAPACITY)
+                .max(1);
             Ok(Self {
                 input: path.to_path_buf(),
                 metadata,
@@ -101,7 +104,8 @@ mod platform {
             let provider = *self;
             let capacity = provider.channel_capacity;
             let start_frame = provider.start_frame;
-            let (controller, seek_rx) = DecoderController::new();
+            let controller = DecoderController::new();
+            let seek_rx = controller.seek_receiver();
             let stream = spawn_stream_from_channel(capacity, move |tx| {
                 if let Err(err) =
                     decode_dxva(provider.input.clone(), tx.clone(), start_frame, seek_rx)
@@ -286,8 +290,8 @@ mod platform {
 #[cfg(not(target_os = "windows"))]
 mod platform {
     use crate::{
-        DecoderController, DynDecoderProvider, DecoderError, DecoderResult, FrameStream,
-        DecoderProvider,
+        DecoderController, DecoderError, DecoderProvider, DecoderResult, DynDecoderProvider,
+        FrameStream,
     };
     use std::path::Path;
 
