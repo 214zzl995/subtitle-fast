@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use gpui::prelude::*;
-use gpui::{Context, Render, Window, div, hsla, px, relative, rgb};
+use gpui::{
+    Bounds, Context, IsZero, MouseButton, MouseDownEvent, Pixels, Point, Render, Window, div, hsla,
+    px, relative, rgb,
+};
 
 use crate::gui::components::{VideoPlayerControlHandle, VideoPlayerInfoHandle};
 use crate::gui::icons::{Icon, icon_md};
@@ -10,6 +13,7 @@ pub struct VideoControls {
     controls: Option<VideoPlayerControlHandle>,
     info: Option<VideoPlayerInfoHandle>,
     paused: bool,
+    progress_bounds: Option<Bounds<Pixels>>,
 }
 
 impl VideoControls {
@@ -18,6 +22,7 @@ impl VideoControls {
             controls: None,
             info: None,
             paused: false,
+            progress_bounds: None,
         }
     }
 
@@ -29,6 +34,7 @@ impl VideoControls {
         self.controls = controls;
         self.info = info;
         self.paused = false;
+        self.progress_bounds = None;
     }
 
     fn toggle_playback(&mut self, cx: &mut Context<Self>) {
@@ -38,6 +44,51 @@ impl VideoControls {
         controls.toggle_pause();
         self.paused = !self.paused;
         cx.notify();
+    }
+
+    fn update_progress_bounds(&mut self, bounds: Option<Bounds<Pixels>>) {
+        self.progress_bounds = bounds;
+    }
+
+    fn seek_from_position(&mut self, position: Point<Pixels>) {
+        let Some(controls) = self.controls.as_ref() else {
+            return;
+        };
+        let Some(info) = self.info.as_ref() else {
+            return;
+        };
+        let Some(bounds) = self.progress_bounds else {
+            return;
+        };
+        if bounds.size.width.is_zero() {
+            return;
+        }
+        let mut ratio = (position.x - bounds.origin.x) / bounds.size.width;
+        if !ratio.is_finite() {
+            return;
+        }
+        ratio = ratio.clamp(0.0, 1.0);
+
+        let snapshot = info.snapshot();
+        if snapshot.metadata.duration.is_some() {
+            if let Some(duration) = snapshot.metadata.duration {
+                if duration > Duration::ZERO {
+                    let target = duration.as_secs_f64() * ratio as f64;
+                    if target.is_finite() && target >= 0.0 {
+                        controls.seek_to(Duration::from_secs_f64(target));
+                        return;
+                    }
+                }
+            }
+        }
+
+        let total_frames = snapshot.metadata.calculate_total_frames().unwrap_or(0);
+        if total_frames > 0 {
+            let max_index = total_frames.saturating_sub(1);
+            let target = (ratio as f64 * max_index as f64).round();
+            let frame = target.clamp(0.0, max_index as f64) as u64;
+            controls.seek_to_frame(frame);
+        }
     }
 }
 
@@ -117,6 +168,26 @@ impl Render for VideoControls {
             .bg(rgb(0x2a2a2a))
             .overflow_hidden()
             .child(div().h_full().w(relative(progress)).bg(rgb(0x4d9bf5)));
+        let progress_bar = {
+            let handle = cx.entity();
+            div()
+                .flex()
+                .flex_1()
+                .cursor_pointer()
+                .on_children_prepainted(move |bounds, _window, cx| {
+                    let bounds = bounds.first().copied();
+                    let _ = handle.update(cx, |this, _| {
+                        this.update_progress_bounds(bounds);
+                    });
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _window, _cx| {
+                        this.seek_from_position(event.position);
+                    }),
+                )
+                .child(progress_bar)
+        };
 
         let info_row = div()
             .flex()
