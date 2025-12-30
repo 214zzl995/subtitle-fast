@@ -107,6 +107,10 @@ impl VideoMetadata {
 }
 
 pub trait FrameStreamProvider: Send + 'static {
+    fn new(config: &crate::config::Configuration) -> crate::core::FrameResult<Self>
+    where
+        Self: Sized;
+
     fn metadata(&self) -> VideoMetadata {
         VideoMetadata::default()
     }

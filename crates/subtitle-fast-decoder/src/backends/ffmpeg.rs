@@ -6,7 +6,7 @@ use ffmpeg::util::mathematics::rescale::{Rescale, TIME_BASE};
 use ffmpeg_next as ffmpeg;
 
 use crate::core::{
-    DecoderController, DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider,
+    DecoderController, FrameError, FrameResult, FrameStream, FrameStreamProvider,
     SeekInfo, SeekReceiver, VideoFrame, spawn_stream_from_channel,
 };
 use tokio::sync::mpsc::Sender;
@@ -195,28 +195,6 @@ pub struct FFmpegProvider {
 }
 
 impl FFmpegProvider {
-    pub fn open<P: AsRef<Path>>(
-        path: P,
-        channel_capacity: Option<usize>,
-        start_frame: Option<u64>,
-    ) -> FrameResult<Self> {
-        let path = path.as_ref();
-        if !path.exists() {
-            return Err(FrameError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("input file {} does not exist", path.display()),
-            )));
-        }
-        ffmpeg::init().map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
-        let metadata = probe_video_metadata(path)?;
-        let capacity = channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
-        Ok(Self {
-            input: path.to_path_buf(),
-            channel_capacity: capacity,
-            metadata,
-            start_frame,
-        })
-    }
 
     fn decode_loop(
         &self,
@@ -316,6 +294,27 @@ impl FFmpegProvider {
 }
 
 impl FrameStreamProvider for FFmpegProvider {
+    fn new(config: &crate::config::Configuration) -> FrameResult<Self> {
+        let path = config.input.as_ref().ok_or_else(|| {
+            FrameError::configuration("FFmpeg backend requires SUBFAST_INPUT")
+        })?;
+        if !path.exists() {
+            return Err(FrameError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("input file {} does not exist", path.display()),
+            )));
+        }
+        ffmpeg::init().map_err(|err| FrameError::backend_failure(BACKEND_NAME, err.to_string()))?;
+        let metadata = probe_video_metadata(path)?;
+        let capacity = config.channel_capacity.map(|n| n.get()).unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
+        Ok(Self {
+            input: path.to_path_buf(),
+            channel_capacity: capacity,
+            metadata,
+            start_frame: config.start_frame,
+        })
+    }
+
     fn metadata(&self) -> crate::core::VideoMetadata {
         self.metadata
     }
@@ -587,27 +586,4 @@ fn is_invalid_time_base(value: ffmpeg::Rational) -> bool {
     let num = value.numerator();
     let den = value.denominator();
     num <= 0 || den <= 0
-}
-
-pub fn boxed_ffmpeg<P: AsRef<Path>>(
-    path: P,
-    channel_capacity: Option<usize>,
-    start_frame: Option<u64>,
-) -> FrameResult<DynFrameProvider> {
-    Ok(Box::new(FFmpegProvider::open(
-        path,
-        channel_capacity,
-        start_frame,
-    )?))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_file_returns_error() {
-        let result = FFmpegProvider::open("/tmp/nonexistent-file.mp4", None, None);
-        assert!(result.is_err());
-    }
 }

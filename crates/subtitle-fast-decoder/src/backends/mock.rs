@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
 use crate::core::{
-    DecoderController, DynFrameProvider, FrameResult, FrameStream, FrameStreamProvider, SeekInfo,
+    DecoderController, FrameResult, FrameStream, FrameStreamProvider, SeekInfo,
     SeekReceiver, VideoFrame, spawn_stream_from_channel,
 };
 
@@ -22,24 +22,6 @@ pub struct MockProvider {
 
 impl MockProvider {
     const DEFAULT_CHANNEL_CAPACITY: usize = 8;
-
-    pub fn open(
-        input: Option<PathBuf>,
-        channel_capacity: Option<usize>,
-        start_frame: Option<u64>,
-    ) -> Self {
-        let capacity = channel_capacity.unwrap_or(Self::DEFAULT_CHANNEL_CAPACITY);
-        Self {
-            _input: input,
-            width: 640,
-            height: 360,
-            stride: 640,
-            frame_count: 120,
-            frame_interval: Duration::from_millis(4),
-            channel_capacity: capacity.max(1),
-            start_frame: start_frame.unwrap_or(0),
-        }
-    }
 
     fn emit_frames(&self, tx: Sender<FrameResult<VideoFrame>>, mut seek_rx: SeekReceiver) {
         let start_index = self.start_frame.min(self.frame_count as u64) as usize;
@@ -78,6 +60,20 @@ impl MockProvider {
 }
 
 impl FrameStreamProvider for MockProvider {
+    fn new(config: &crate::config::Configuration) -> FrameResult<Self> {
+        let capacity = config.channel_capacity.map(|n| n.get()).unwrap_or(Self::DEFAULT_CHANNEL_CAPACITY);
+        Ok(Self {
+            _input: config.input.clone(),
+            width: 640,
+            height: 360,
+            stride: 640,
+            frame_count: 120,
+            frame_interval: Duration::from_millis(4),
+            channel_capacity: capacity.max(1),
+            start_frame: config.start_frame.unwrap_or(0),
+        })
+    }
+
     fn metadata(&self) -> crate::core::VideoMetadata {
         use crate::core::VideoMetadata;
 
@@ -114,18 +110,6 @@ fn handle_seek_request(_info: SeekInfo) {
     todo!("mock seek handling is not implemented yet");
 }
 
-pub fn boxed_mock(
-    path: Option<PathBuf>,
-    channel_capacity: Option<usize>,
-    start_frame: Option<u64>,
-) -> FrameResult<DynFrameProvider> {
-    Ok(Box::new(MockProvider::open(
-        path,
-        channel_capacity,
-        start_frame,
-    )))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,7 +117,14 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn mock_backend_emits_frames() {
-        let provider = boxed_mock(None, None, None).unwrap();
+        let config = crate::config::Configuration {
+            backend: crate::config::Backend::Mock,
+            input: None,
+            channel_capacity: None,
+            output_format: crate::config::OutputFormat::Nv12,
+            start_frame: None,
+        };
+        let provider = Box::new(MockProvider::new(&config).unwrap()) as DynFrameProvider;
         let metadata = provider.metadata();
         let (_controller, mut stream) = provider.open();
         assert_eq!(metadata.total_frames, Some(120));
@@ -146,7 +137,14 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn mock_backend_honors_start_frame() {
-        let provider = boxed_mock(None, None, Some(10)).unwrap();
+        let config = crate::config::Configuration {
+            backend: crate::config::Backend::Mock,
+            input: None,
+            channel_capacity: None,
+            output_format: crate::config::OutputFormat::Nv12,
+            start_frame: Some(10),
+        };
+        let provider = Box::new(MockProvider::new(&config).unwrap()) as DynFrameProvider;
         let (_controller, mut stream) = provider.open();
         let frame = stream.next().await.unwrap().unwrap();
         assert_eq!(frame.frame_index(), Some(10));

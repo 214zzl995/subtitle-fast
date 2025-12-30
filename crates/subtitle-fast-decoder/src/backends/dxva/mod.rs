@@ -1,6 +1,6 @@
 #[cfg(all(target_os = "windows", feature = "backend-dxva"))]
 use crate::core::{
-    DecoderController, DynFrameProvider, FrameError, FrameResult, FrameStream, FrameStreamProvider,
+    DecoderController, FrameError, FrameResult, FrameStream, FrameStreamProvider,
     SeekInfo, SeekReceiver,
 };
 
@@ -70,12 +70,13 @@ mod platform {
     }
 
     impl DxvaProvider {
-        pub fn open<P: AsRef<Path>>(
-            path: P,
-            channel_capacity: Option<usize>,
-            start_frame: Option<u64>,
-        ) -> FrameResult<Self> {
-            let path = path.as_ref();
+    }
+
+    impl FrameStreamProvider for DxvaProvider {
+        fn new(config: &crate::config::Configuration) -> FrameResult<Self> {
+            let path = config.input.as_ref().ok_or_else(|| {
+                FrameError::configuration("DXVA backend requires SUBFAST_INPUT to be set")
+            })?;
             if !path.exists() {
                 return Err(FrameError::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -83,17 +84,15 @@ mod platform {
                 )));
             }
             let metadata = probe_video_metadata(path)?;
-            let capacity = channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
+            let capacity = config.channel_capacity.map(|n| n.get()).unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
             Ok(Self {
                 input: path.to_path_buf(),
                 metadata,
                 channel_capacity: capacity,
-                start_frame,
+                start_frame: config.start_frame,
             })
         }
-    }
 
-    impl FrameStreamProvider for DxvaProvider {
         fn metadata(&self) -> crate::core::VideoMetadata {
             self.metadata
         }
@@ -282,18 +281,6 @@ mod platform {
     fn handle_seek_request(_info: SeekInfo) {
         todo!("dxva seek handling is not implemented yet");
     }
-
-    pub fn boxed_dxva<P: AsRef<Path>>(
-        path: P,
-        channel_capacity: Option<usize>,
-        start_frame: Option<u64>,
-    ) -> FrameResult<DynFrameProvider> {
-        Ok(Box::new(DxvaProvider::open(
-            path,
-            channel_capacity,
-            start_frame,
-        )?))
-    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -321,14 +308,6 @@ mod platform {
             panic!("DXVA backend is only available on Windows builds");
         }
     }
-
-    pub fn boxed_dxva<P: AsRef<Path>>(
-        _path: P,
-        _channel_capacity: Option<usize>,
-        _start_frame: Option<u64>,
-    ) -> FrameResult<DynFrameProvider> {
-        Err(FrameError::unsupported("dxva"))
-    }
 }
 
-pub use platform::{DxvaProvider, boxed_dxva};
+pub use platform::DxvaProvider;

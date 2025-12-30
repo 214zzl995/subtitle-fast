@@ -95,29 +95,6 @@ mod platform {
     }
 
     impl VideoToolboxProvider {
-        pub fn open<P: AsRef<Path>>(
-            path: P,
-            channel_capacity: Option<usize>,
-            output_format: OutputFormat,
-            start_frame: Option<u64>,
-        ) -> FrameResult<Self> {
-            let path = path.as_ref();
-            if !path.exists() {
-                return Err(FrameError::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("input file {} does not exist", path.display()),
-                )));
-            }
-            let metadata = probe_video_metadata(path)?;
-            let capacity = channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
-            Ok(Self {
-                input: path.to_path_buf(),
-                metadata,
-                channel_capacity: capacity,
-                output_format,
-                start_frame,
-            })
-        }
     }
 
     fn probe_video_metadata(path: &Path) -> FrameResult<crate::core::VideoMetadata> {
@@ -195,6 +172,29 @@ mod platform {
     }
 
     impl FrameStreamProvider for VideoToolboxProvider {
+        fn new(config: &crate::config::Configuration) -> FrameResult<Self> {
+            let path = config.input.as_ref().ok_or_else(|| {
+                FrameError::configuration(
+                    "VideoToolbox backend requires SUBFAST_INPUT to be set",
+                )
+            })?;
+            if !path.exists() {
+                return Err(FrameError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("input file {} does not exist", path.display()),
+                )));
+            }
+            let metadata = probe_video_metadata(path)?;
+            let capacity = config.channel_capacity.map(|n| n.get()).unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
+            Ok(Self {
+                input: path.to_path_buf(),
+                metadata,
+                channel_capacity: capacity,
+                output_format: config.output_format,
+                start_frame: config.start_frame,
+            })
+        }
+
         fn metadata(&self) -> crate::core::VideoMetadata {
             self.metadata
         }
@@ -427,16 +427,6 @@ mod platform {
     fn handle_seek_request(_info: SeekInfo) {
         todo!("videotoolbox seek handling is not implemented yet");
     }
-
-    pub fn boxed_videotoolbox<P: AsRef<Path>>(
-        path: P,
-        channel_capacity: Option<usize>,
-        output_format: OutputFormat,
-        start_frame: Option<u64>,
-    ) -> FrameResult<DynFrameProvider> {
-        VideoToolboxProvider::open(path, channel_capacity, output_format, start_frame)
-            .map(|provider| Box::new(provider) as DynFrameProvider)
-    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -462,15 +452,6 @@ mod platform {
             panic!("VideoToolbox backend is only available on macOS builds");
         }
     }
-
-    pub fn boxed_videotoolbox<P: AsRef<Path>>(
-        _path: P,
-        _channel_capacity: Option<usize>,
-        _output_format: OutputFormat,
-        _start_frame: Option<u64>,
-    ) -> FrameResult<DynFrameProvider> {
-        Err(FrameError::unsupported("videotoolbox"))
-    }
 }
 
-pub use platform::{VideoToolboxProvider, boxed_videotoolbox};
+pub use platform::VideoToolboxProvider;

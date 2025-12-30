@@ -7,7 +7,7 @@ use std::str::FromStr;
 #[cfg(feature = "backend-ffmpeg")]
 use std::sync::OnceLock;
 
-use crate::core::{DynFrameProvider, FrameError, FrameResult};
+use crate::core::{DynFrameProvider, FrameError, FrameResult, FrameStreamProvider};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -205,55 +205,23 @@ impl Configuration {
 
     pub fn create_provider(&self) -> FrameResult<DynFrameProvider> {
         self.validate_output_format()?;
-        let channel_capacity = self.channel_capacity.map(NonZeroUsize::get);
 
         match self.backend {
             Backend::Mock => {
                 if !github_ci_active() {
                     Err(FrameError::unsupported("mock"))
                 } else {
-                    crate::backends::mock::boxed_mock(
-                        self.input.clone(),
-                        channel_capacity,
-                        self.start_frame,
-                    )
+                    Ok(Box::new(crate::backends::mock::MockProvider::new(self)?))
                 }
             }
             #[cfg(feature = "backend-ffmpeg")]
-            Backend::FFmpeg => {
-                let path = self.input.clone().ok_or_else(|| {
-                    FrameError::configuration("FFmpeg backend requires SUBFAST_INPUT")
-                })?;
-                crate::backends::ffmpeg::boxed_ffmpeg(path, channel_capacity, self.start_frame)
-            }
+            Backend::FFmpeg => Ok(Box::new(crate::backends::ffmpeg::FFmpegProvider::new(self)?)),
             #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
-            Backend::VideoToolbox => {
-                let path = self.input.clone().ok_or_else(|| {
-                    FrameError::configuration(
-                        "VideoToolbox backend requires SUBFAST_INPUT to be set",
-                    )
-                })?;
-                crate::backends::videotoolbox::boxed_videotoolbox(
-                    path,
-                    channel_capacity,
-                    self.output_format,
-                    self.start_frame,
-                )
-            }
+            Backend::VideoToolbox => Ok(Box::new(crate::backends::videotoolbox::VideoToolboxProvider::new(self)?)),
             #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
-            Backend::Dxva => {
-                let path = self.input.clone().ok_or_else(|| {
-                    FrameError::configuration("DXVA backend requires SUBFAST_INPUT to be set")
-                })?;
-                crate::backends::dxva::boxed_dxva(path, channel_capacity, self.start_frame)
-            }
+            Backend::Dxva => Ok(Box::new(crate::backends::dxva::DxvaProvider::new(self)?)),
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]
-            Backend::Mft => {
-                let path = self.input.clone().ok_or_else(|| {
-                    FrameError::configuration("MFT backend requires SUBFAST_INPUT to be set")
-                })?;
-                crate::backends::mft::boxed_mft(path, channel_capacity, self.start_frame)
-            }
+            Backend::Mft => Ok(Box::new(crate::backends::mft::MftProvider::new(self)?)),
             #[allow(unreachable_patterns)]
             other => Err(FrameError::unsupported(other.as_str())),
         }
