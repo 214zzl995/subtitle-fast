@@ -187,14 +187,14 @@ impl VideoFilterPipeline {
     }
 }
 
-pub struct FfmpegProvider {
+pub struct FFmpegProvider {
     input: PathBuf,
     channel_capacity: usize,
     metadata: crate::core::VideoMetadata,
     start_frame: Option<u64>,
 }
 
-impl FfmpegProvider {
+impl FFmpegProvider {
     pub fn open<P: AsRef<Path>>(
         path: P,
         channel_capacity: Option<usize>,
@@ -315,7 +315,7 @@ impl FfmpegProvider {
     }
 }
 
-impl FrameStreamProvider for FfmpegProvider {
+impl FrameStreamProvider for FFmpegProvider {
     fn metadata(&self) -> crate::core::VideoMetadata {
         self.metadata
     }
@@ -594,7 +594,7 @@ pub fn boxed_ffmpeg<P: AsRef<Path>>(
     channel_capacity: Option<usize>,
     start_frame: Option<u64>,
 ) -> FrameResult<DynFrameProvider> {
-    Ok(Box::new(FfmpegProvider::open(
+    Ok(Box::new(FFmpegProvider::open(
         path,
         channel_capacity,
         start_frame,
@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn missing_file_returns_error() {
-        let result = FfmpegProvider::open("/tmp/nonexistent-file.mp4", None, None);
+        let result = FFmpegProvider::open("/tmp/nonexistent-file.mp4", None, None);
         assert!(result.is_err());
     }
 }
