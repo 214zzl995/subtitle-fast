@@ -88,7 +88,7 @@ pub async fn run_pipeline(
     pipeline: &PipelineConfig,
 ) -> Result<(), (DecoderError, u64)> {
     let initial_total_frames = provider.metadata().total_frames;
-    let (_, initial_stream) = provider.open();
+    let (_, initial_stream) = provider.open().map_err(|err| (err, 0))?;
     let paused_stream = if let Some(pause_rx) = pipeline.pause.as_ref() {
         StreamBundle::new(
             Box::pin(PauseStream::new(initial_stream, pause_rx.clone())),

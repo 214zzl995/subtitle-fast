@@ -61,7 +61,7 @@ let config = Configuration {
     ..Configuration::default()
 };
 
-let (_controller, mut stream) = config.create_provider()?.open();
+let (_controller, mut stream) = config.create_provider()?.open()?;
 while let Some(frame) = stream.next().await {
     let frame = frame?;
     let native = frame.native().expect("native handle output requested");

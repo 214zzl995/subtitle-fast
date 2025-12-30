@@ -113,7 +113,7 @@ pub trait DecoderProvider: Send + 'static {
         VideoMetadata::default()
     }
 
-    fn open(self: Box<Self>) -> (DecoderController, FrameStream);
+    fn open(self: Box<Self>) -> DecoderResult<(DecoderController, FrameStream)>;
 }
 
 pub fn spawn_stream_from_channel(

@@ -117,7 +117,13 @@ mod macos {
                     .fps
                     .and_then(|fps| (fps > 0.0).then(|| Duration::from_secs_f64(1.0 / fps)));
 
-                let (_controller, mut stream) = provider.open();
+                let (_controller, mut stream) = match provider.open() {
+                    Ok(value) => value,
+                    Err(err) => {
+                        eprintln!("failed to open decoder stream: {err}");
+                        return;
+                    }
+                };
                 let mut started = false;
                 let mut start_instant = Instant::now();
                 let mut first_timestamp: Option<Duration> = None;

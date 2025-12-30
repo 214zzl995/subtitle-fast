@@ -200,7 +200,7 @@ mod platform {
             self.metadata
         }
 
-        fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
+        fn open(self: Box<Self>) -> DecoderResult<(DecoderController, FrameStream)> {
             let path = self.input.clone();
             let capacity = self.channel_capacity;
             let output_format = self.output_format;
@@ -220,7 +220,7 @@ mod platform {
                     let _ = tx.blocking_send(Err(err));
                 }
             });
-            (controller, stream)
+            Ok((controller, stream))
         }
     }
 
@@ -450,8 +450,8 @@ mod platform {
     }
 
     impl DecoderProvider for VideoToolboxProvider {
-        fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
-            panic!("VideoToolbox backend is only available on macOS builds");
+        fn open(self: Box<Self>) -> DecoderResult<(DecoderController, FrameStream)> {
+            Err(DecoderError::unsupported("videotoolbox"))
         }
     }
 }

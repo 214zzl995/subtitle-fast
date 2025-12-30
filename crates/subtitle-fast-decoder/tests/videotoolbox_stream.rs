@@ -31,7 +31,7 @@ async fn videotoolbox_backend_streams_frames() {
 
     let metadata = provider.metadata();
     let total_frames = metadata.total_frames;
-    let (_controller, mut stream) = provider.open();
+    let (_controller, mut stream) = provider.open().expect("failed to open videotoolbox stream");
     let frame = stream
         .next()
         .await

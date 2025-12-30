@@ -250,7 +250,14 @@ fn spawn_decoder(
                 .fps
                 .and_then(|fps| (fps > 0.0).then(|| Duration::from_secs_f64(1.0 / fps)));
 
-            let (controller, mut stream) = provider.open();
+            let (controller, mut stream) = match provider.open() {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("failed to open decoder stream: {err}");
+                    info.update(|state| state.ended = true);
+                    return;
+                }
+            };
             control.set_decoder(controller);
             let mut started = false;
             let mut start_instant = Instant::now();

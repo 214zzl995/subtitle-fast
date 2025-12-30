@@ -365,11 +365,12 @@ impl DecoderProvider for FFmpegProvider {
         self.metadata
     }
 
-    fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
+    fn open(self: Box<Self>) -> DecoderResult<(DecoderController, FrameStream)> {
         let mut provider = *self;
         let capacity = provider.channel_capacity;
         let (tx, rx) = tokio::sync::mpsc::channel(capacity);
-        let init_result = provider.init_handles(tx.clone());
+        provider.init_handles(tx.clone())?;
+
         let controller = DecoderController::new();
 
         let stream = {
@@ -379,17 +380,13 @@ impl DecoderProvider for FFmpegProvider {
             Box::pin(stream)
         };
 
-        if let Err(err) = init_result {
-            let _ = tx.blocking_send(Err(err));
-        }
-
         tokio::task::spawn_blocking(move || {
             let result = provider.decode_loop();
             if let Err(err) = result {
                 let _ = tx.blocking_send(Err(err));
             }
         });
-        (controller, stream)
+        Ok((controller, stream))
     }
 }
 

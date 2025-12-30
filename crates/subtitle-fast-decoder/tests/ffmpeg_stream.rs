@@ -30,7 +30,7 @@ async fn ffmpeg_backend_requires_asset() {
 
     let metadata = provider.metadata();
     let total_frames = metadata.total_frames;
-    let (_controller, mut stream) = provider.open();
+    let (_controller, mut stream) = provider.open().expect("failed to open ffmpeg stream");
     let frame = stream
         .next()
         .await

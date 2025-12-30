@@ -100,7 +100,7 @@ mod platform {
             self.metadata
         }
 
-        fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
+        fn open(self: Box<Self>) -> DecoderResult<(DecoderController, FrameStream)> {
             let provider = *self;
             let capacity = provider.channel_capacity;
             let start_frame = provider.start_frame;
@@ -113,7 +113,7 @@ mod platform {
                     let _ = tx.blocking_send(Err(err));
                 }
             });
-            (controller, stream)
+            Ok((controller, stream))
         }
     }
 
@@ -308,8 +308,8 @@ mod platform {
     }
 
     impl DecoderProvider for MftProvider {
-        fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
-            panic!("MFT backend is only available on Windows builds");
+        fn open(self: Box<Self>) -> DecoderResult<(DecoderController, FrameStream)> {
+            Err(DecoderError::unsupported("mft"))
         }
     }
 }

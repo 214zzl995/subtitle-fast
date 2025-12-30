@@ -89,7 +89,7 @@ impl DecoderProvider for MockProvider {
         }
     }
 
-    fn open(self: Box<Self>) -> (DecoderController, FrameStream) {
+    fn open(self: Box<Self>) -> DecoderResult<(DecoderController, FrameStream)> {
         let provider = *self;
         let capacity = provider.channel_capacity;
         let controller = DecoderController::new();
@@ -97,7 +97,7 @@ impl DecoderProvider for MockProvider {
         let stream = spawn_stream_from_channel(capacity, move |tx| {
             provider.emit_frames(tx, seek_rx);
         });
-        (controller, stream)
+        Ok((controller, stream))
     }
 }
 
@@ -131,7 +131,7 @@ mod tests {
         };
         let decoder = Box::new(MockProvider::new(&config).unwrap()) as DynDecoderProvider;
         let metadata = decoder.metadata();
-        let (_controller, mut stream) = decoder.open();
+        let (_controller, mut stream) = decoder.open().unwrap();
         assert_eq!(metadata.total_frames, Some(120));
         let frame = stream.next().await.unwrap().unwrap();
         assert_eq!(frame.width(), 640);
@@ -150,7 +150,7 @@ mod tests {
             start_frame: Some(10),
         };
         let decoder = Box::new(MockProvider::new(&config).unwrap()) as DynDecoderProvider;
-        let (_controller, mut stream) = decoder.open();
+        let (_controller, mut stream) = decoder.open().unwrap();
         let frame = stream.next().await.unwrap().unwrap();
         assert_eq!(frame.frame_index(), Some(10));
     }
