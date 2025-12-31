@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -9,207 +8,70 @@ use gpui::{
     Context, Frame, ObjectFit, Render, VideoHandle, Window, div, hsla, prelude::*, px, rgb, video,
 };
 use subtitle_fast_decoder::{
-    Configuration, DecoderController, OutputFormat, SeekInfo, SeekMode, VideoFrame, VideoMetadata,
+    Backend, Configuration, DecoderController, FrameStream, OutputFormat, SeekInfo, SeekMode,
+    VideoFrame, VideoMetadata,
 };
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::StreamExt;
 
 #[derive(Clone)]
 pub struct VideoPlayerControlHandle {
-    inner: Arc<Mutex<ControlState>>,
-}
-
-struct ControlState {
-    paused: bool,
-    scrubbing: bool,
-    decoder: Option<DecoderController>,
-    seek_timing: Option<SeekTiming>,
-    pending_seek: Option<SeekInfo>,
-    restart_pending: bool,
-    restart_request: Option<RestartRequest>,
-}
-
-impl ControlState {
-    fn new() -> Self {
-        Self {
-            paused: false,
-            scrubbing: false,
-            decoder: None,
-            seek_timing: None,
-            pending_seek: None,
-            restart_pending: false,
-            restart_request: None,
-        }
-    }
+    sender: UnboundedSender<PlayerCommand>,
 }
 
 impl VideoPlayerControlHandle {
-    fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(ControlState::new())),
-        }
-    }
-
-    fn set_decoder(&self, controller: DecoderController) {
-        let pending = {
-            let mut state = self.inner.lock().expect("control state mutex poisoned");
-            state.decoder = Some(controller);
-            state.restart_pending = false;
-            state.restart_request = None;
-            state.pending_seek.take()
-        };
-        if let Some(info) = pending {
-            self.send_seek(info);
-        }
-    }
-
-    fn clear_decoder(&self) {
-        let mut state = self.inner.lock().expect("control state mutex poisoned");
-        state.decoder = None;
-    }
-
-    fn clear_pending_seek(&self) {
-        let mut state = self.inner.lock().expect("control state mutex poisoned");
-        state.pending_seek = None;
-    }
-
-    fn request_restart(&self, request: RestartRequest) {
-        let mut state = self.inner.lock().expect("control state mutex poisoned");
-        if state.restart_pending {
-            return;
-        }
-        state.restart_pending = true;
-        state.restart_request = Some(request);
-    }
-
-    fn take_restart_request(&self) -> Option<RestartRequest> {
-        let mut state = self.inner.lock().expect("control state mutex poisoned");
-        state.restart_request.take()
-    }
-
-    fn is_restart_pending(&self) -> bool {
-        let state = self.inner.lock().expect("control state mutex poisoned");
-        state.restart_pending
-    }
-
-    fn reset_seek_timing(&self) {
-        let mut state = self.inner.lock().expect("control state mutex poisoned");
-        state.seek_timing = None;
+    fn new(sender: UnboundedSender<PlayerCommand>) -> Self {
+        Self { sender }
     }
 
     pub fn pause(&self) {
-        let mut state = self.inner.lock().expect("control state mutex poisoned");
-        state.paused = true;
+        let _ = self.sender.send(PlayerCommand::Pause);
     }
 
     pub fn play(&self) {
-        let mut state = self.inner.lock().expect("control state mutex poisoned");
-        state.paused = false;
+        let _ = self.sender.send(PlayerCommand::Play);
     }
 
     pub fn toggle_pause(&self) {
-        let mut state = self.inner.lock().expect("control state mutex poisoned");
-        state.paused = !state.paused;
+        let _ = self.sender.send(PlayerCommand::TogglePause);
     }
 
     pub fn begin_scrub(&self) {
-        let mut state = self.inner.lock().expect("control state mutex poisoned");
-        state.scrubbing = true;
+        let _ = self.sender.send(PlayerCommand::BeginScrub);
     }
 
     pub fn end_scrub(&self) {
-        let pending = {
-            let mut state = self.inner.lock().expect("control state mutex poisoned");
-            state.scrubbing = false;
-            if state.decoder.is_none() {
-                state.pending_seek
-            } else {
-                None
-            }
-        };
-        if let Some(info) = pending {
-            self.request_restart(RestartRequest::Seek(info));
-        }
+        let _ = self.sender.send(PlayerCommand::EndScrub);
     }
 
     pub fn seek_to(&self, position: Duration) {
-        self.send_seek(SeekInfo::Time {
+        let _ = self.sender.send(PlayerCommand::Seek(SeekInfo::Time {
             position,
             mode: SeekMode::Accurate,
-        });
+        }));
     }
 
     pub fn seek_to_frame(&self, frame: u64) {
-        self.send_seek(SeekInfo::Frame {
+        let _ = self.sender.send(PlayerCommand::Seek(SeekInfo::Frame {
             frame,
             mode: SeekMode::Accurate,
-        });
+        }));
     }
 
-    fn is_paused(&self) -> bool {
-        let state = self.inner.lock().expect("control state mutex poisoned");
-        state.paused
+    pub fn replay(&self) {
+        let _ = self.sender.send(PlayerCommand::Replay);
     }
-
-    fn is_scrubbing(&self) -> bool {
-        let state = self.inner.lock().expect("control state mutex poisoned");
-        state.scrubbing
-    }
-
-    fn send_seek(&self, info: SeekInfo) {
-        let mut restart = None;
-        {
-            let mut state = self.inner.lock().expect("control state mutex poisoned");
-            if let Some(controller) = state.decoder.as_ref() {
-                match controller.seek(info) {
-                    Ok(serial) => {
-                        state.seek_timing = Some(SeekTiming {
-                            serial,
-                            sent_at: Instant::now(),
-                        });
-                    }
-                    Err(_) => {
-                        state.pending_seek = Some(info);
-                        state.decoder = None;
-                        restart = Some(RestartRequest::Seek(info));
-                    }
-                }
-            } else {
-                state.pending_seek = Some(info);
-                restart = Some(RestartRequest::Seek(info));
-            }
-        }
-        if let Some(request) = restart {
-            self.request_restart(request);
-        }
-    }
-
-    fn pending_seek_serial(&self) -> Option<u64> {
-        let state = self.inner.lock().expect("control state mutex poisoned");
-        state.seek_timing.as_ref().map(|entry| entry.serial)
-    }
-
-    fn take_seek_latency(&self, serial: u64) -> Option<Duration> {
-        let mut state = self.inner.lock().expect("control state mutex poisoned");
-        let entry = state.seek_timing.as_ref()?;
-        if entry.serial == serial {
-            let elapsed = entry.sent_at.elapsed();
-            state.seek_timing = None;
-            Some(elapsed)
-        } else {
-            None
-        }
-    }
-}
-
-struct SeekTiming {
-    serial: u64,
-    sent_at: Instant,
 }
 
 #[derive(Clone, Copy, Debug)]
-enum RestartRequest {
-    Replay,
+enum PlayerCommand {
+    Play,
+    Pause,
+    TogglePause,
+    BeginScrub,
+    EndScrub,
     Seek(SeekInfo),
+    Replay,
 }
 
 #[derive(Clone)]
@@ -231,6 +93,7 @@ impl VideoPlayerInfoHandle {
             last_timestamp: state.last_timestamp,
             last_frame_index: state.last_frame_index,
             ended: state.ended,
+            scrubbing: state.scrubbing,
         }
     }
 
@@ -244,6 +107,7 @@ impl VideoPlayerInfoHandle {
             state.last_timestamp = None;
             state.last_frame_index = None;
             state.ended = false;
+            state.scrubbing = false;
         });
     }
 
@@ -286,6 +150,7 @@ pub struct VideoPlayerInfoSnapshot {
     pub last_timestamp: Option<Duration>,
     pub last_frame_index: Option<u64>,
     pub ended: bool,
+    pub scrubbing: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -294,6 +159,7 @@ struct VideoPlayerInfoState {
     last_timestamp: Option<Duration>,
     last_frame_index: Option<u64>,
     ended: bool,
+    scrubbing: bool,
 }
 
 impl Default for VideoPlayerInfoState {
@@ -303,6 +169,7 @@ impl Default for VideoPlayerInfoState {
             last_timestamp: None,
             last_frame_index: None,
             ended: false,
+            scrubbing: false,
         }
     }
 }
@@ -310,11 +177,8 @@ impl Default for VideoPlayerInfoState {
 pub struct VideoPlayer {
     handle: VideoHandle,
     receiver: Receiver<Frame>,
-    sender: SyncSender<Frame>,
-    input_path: PathBuf,
     control: VideoPlayerControlHandle,
     info: VideoPlayerInfoHandle,
-    generation: Arc<AtomicU64>,
 }
 
 impl VideoPlayer {
@@ -324,70 +188,28 @@ impl VideoPlayer {
         let path = path.into();
         let handle = VideoHandle::new();
         let (sender, receiver) = sync_channel(1);
-        let generation = Arc::new(AtomicU64::new(0));
-        let control = VideoPlayerControlHandle::new();
+        let (command_tx, command_rx) = unbounded_channel();
+        let control = VideoPlayerControlHandle::new(command_tx);
         let info = VideoPlayerInfoHandle::new();
 
-        let generation_token = generation.load(Ordering::SeqCst);
-        spawn_decoder(
-            sender.clone(),
-            path.clone(),
-            control.clone(),
-            info.clone(),
-            Arc::clone(&generation),
-            generation_token,
-        );
+        spawn_decoder(sender.clone(), path.clone(), command_rx, info.clone());
 
         (
             Self {
                 handle,
                 receiver,
-                sender,
-                input_path: path,
                 control: control.clone(),
                 info: info.clone(),
-                generation,
             },
             control,
             info,
         )
-    }
-
-    fn restart_decoder(&mut self, request: RestartRequest) {
-        let generation_token = self
-            .generation
-            .fetch_add(1, Ordering::SeqCst)
-            .wrapping_add(1);
-        self.control.clear_decoder();
-        self.control.reset_seek_timing();
-        match request {
-            RestartRequest::Replay => {
-                self.control.clear_pending_seek();
-                self.control.play();
-                self.control.end_scrub();
-                self.info.reset_for_replay();
-            }
-            RestartRequest::Seek(info) => {
-                self.info.apply_seek_preview(info);
-            }
-        }
-        spawn_decoder(
-            self.sender.clone(),
-            self.input_path.clone(),
-            self.control.clone(),
-            self.info.clone(),
-            Arc::clone(&self.generation),
-            generation_token,
-        );
     }
 }
 
 impl Render for VideoPlayer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.request_animation_frame();
-        if let Some(request) = self.control.take_restart_request() {
-            self.restart_decoder(request);
-        }
         let mut latest = None;
         for frame in self.receiver.try_iter() {
             latest = Some(frame);
@@ -395,9 +217,8 @@ impl Render for VideoPlayer {
         if let Some(frame) = latest {
             self.handle.submit(frame);
         }
-        let ended = self.info.snapshot().ended;
-        let show_replay =
-            ended && !self.control.is_scrubbing() && !self.control.is_restart_pending();
+        let snapshot = self.info.snapshot();
+        let show_replay = snapshot.ended && !snapshot.scrubbing;
         let mut root = div().relative().size_full().bg(rgb(0x111111)).child(
             video(self.handle.clone())
                 .object_fit(ObjectFit::Contain)
@@ -421,7 +242,7 @@ impl Render for VideoPlayer {
                 .child("Replay");
             let control = self.control.clone();
             let replay_button = replay_button.on_click(cx.listener(move |_, _, _, _| {
-                control.request_restart(RestartRequest::Replay);
+                control.replay();
             }));
 
             root = root.child(
@@ -443,13 +264,133 @@ impl Render for VideoPlayer {
     }
 }
 
+struct DecoderSession {
+    controller: DecoderController,
+    stream: FrameStream,
+    frame_duration: Option<Duration>,
+}
+
+struct SeekTiming {
+    serial: u64,
+    sent_at: Instant,
+}
+
+fn open_session(
+    backend: Backend,
+    input_path: &PathBuf,
+    info: &VideoPlayerInfoHandle,
+) -> Option<DecoderSession> {
+    let config = Configuration {
+        backend,
+        input: Some(input_path.clone()),
+        channel_capacity: None,
+        output_format: OutputFormat::Nv12,
+        start_frame: None,
+    };
+
+    let provider = match config.create_provider() {
+        Ok(provider) => provider,
+        Err(err) => {
+            eprintln!("failed to create decoder provider: {err}");
+            info.update(|state| state.ended = true);
+            return None;
+        }
+    };
+
+    let metadata = provider.metadata();
+    info.update(|state| state.metadata = metadata);
+    let frame_duration = metadata
+        .fps
+        .and_then(|fps| (fps > 0.0).then(|| Duration::from_secs_f64(1.0 / fps)));
+
+    let (controller, stream) = match provider.open() {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("failed to open decoder stream: {err}");
+            info.update(|state| state.ended = true);
+            return None;
+        }
+    };
+
+    Some(DecoderSession {
+        controller,
+        stream,
+        frame_duration,
+    })
+}
+
+fn handle_command(
+    command: PlayerCommand,
+    session: Option<&DecoderSession>,
+    paused: &mut bool,
+    scrubbing: &mut bool,
+    pending_seek: &mut Option<SeekInfo>,
+    seek_timing: &mut Option<SeekTiming>,
+    open_requested: &mut bool,
+    info: &VideoPlayerInfoHandle,
+) -> bool {
+    match command {
+        PlayerCommand::Play => {
+            *paused = false;
+        }
+        PlayerCommand::Pause => {
+            *paused = true;
+        }
+        PlayerCommand::TogglePause => {
+            *paused = !*paused;
+        }
+        PlayerCommand::BeginScrub => {
+            *scrubbing = true;
+            info.update(|state| state.scrubbing = true);
+        }
+        PlayerCommand::EndScrub => {
+            *scrubbing = false;
+            info.update(|state| state.scrubbing = false);
+        }
+        PlayerCommand::Seek(seek) => {
+            if let Some(session) = session {
+                match session.controller.seek(seek) {
+                    Ok(serial) => {
+                        *pending_seek = None;
+                        *seek_timing = Some(SeekTiming {
+                            serial,
+                            sent_at: Instant::now(),
+                        });
+                    }
+                    Err(_) => {
+                        *pending_seek = Some(seek);
+                        *seek_timing = None;
+                        *open_requested = true;
+                        info.apply_seek_preview(seek);
+                    }
+                }
+            } else {
+                *pending_seek = Some(seek);
+                *seek_timing = None;
+                *open_requested = true;
+                info.apply_seek_preview(seek);
+            }
+        }
+        PlayerCommand::Replay => {
+            *paused = false;
+            if *scrubbing {
+                *scrubbing = false;
+                info.update(|state| state.scrubbing = false);
+            }
+            *pending_seek = None;
+            *seek_timing = None;
+            *open_requested = true;
+            info.reset_for_replay();
+        }
+    }
+    true
+}
+
 fn spawn_decoder(
     sender: SyncSender<Frame>,
     input_path: PathBuf,
-    control: VideoPlayerControlHandle,
+    mut command_rx: UnboundedReceiver<PlayerCommand>,
     info: VideoPlayerInfoHandle,
-    generation: Arc<AtomicU64>,
-    generation_token: u64,
 ) {
     thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -458,17 +399,9 @@ fn spawn_decoder(
             .expect("failed to create tokio runtime");
 
         runtime.block_on(async move {
-            let is_active = |generation: &Arc<AtomicU64>| {
-                generation.load(Ordering::SeqCst) == generation_token
-            };
-            if !is_active(&generation) {
-                return;
-            }
             if !input_path.exists() {
                 eprintln!("input video not found: {input_path:?}");
-                if is_active(&generation) {
-                    info.update(|state| state.ended = true);
-                }
+                info.update(|state| state.ended = true);
                 return;
             }
 
@@ -477,55 +410,18 @@ fn spawn_decoder(
                 eprintln!(
                     "no decoder backend is compiled; enable a backend feature such as backend-ffmpeg"
                 );
-                if is_active(&generation) {
-                    info.update(|state| state.ended = true);
-                }
+                info.update(|state| state.ended = true);
                 return;
             }
 
             let backend = available[0];
-            let config = Configuration {
-                backend,
-                input: Some(input_path),
-                channel_capacity: None,
-                output_format: OutputFormat::Nv12,
-                start_frame: None,
-            };
+            let mut session: Option<DecoderSession> = None;
+            let mut open_requested = true;
+            let mut paused = false;
+            let mut scrubbing = false;
+            let mut pending_seek: Option<SeekInfo> = None;
+            let mut seek_timing: Option<SeekTiming> = None;
 
-            let provider = match config.create_provider() {
-                Ok(provider) => provider,
-                Err(err) => {
-                    eprintln!("failed to create decoder provider: {err}");
-                    if is_active(&generation) {
-                        info.update(|state| state.ended = true);
-                    }
-                    return;
-                }
-            };
-
-            let metadata = provider.metadata();
-            if !is_active(&generation) {
-                return;
-            }
-            info.update(|state| state.metadata = metadata);
-            let frame_duration = metadata
-                .fps
-                .and_then(|fps| (fps > 0.0).then(|| Duration::from_secs_f64(1.0 / fps)));
-
-            let (controller, mut stream) = match provider.open() {
-                Ok(value) => value,
-                Err(err) => {
-                    eprintln!("failed to open decoder stream: {err}");
-                    if is_active(&generation) {
-                        info.update(|state| state.ended = true);
-                    }
-                    return;
-                }
-            };
-            if !is_active(&generation) {
-                return;
-            }
-            control.set_decoder(controller);
             let mut started = false;
             let mut start_instant = Instant::now();
             let mut first_timestamp: Option<Duration> = None;
@@ -534,112 +430,214 @@ fn spawn_decoder(
             let mut active_serial: Option<u64> = None;
 
             loop {
-                if !is_active(&generation) {
-                    break;
+                if session.is_none() {
+                    if open_requested {
+                        let new_session = match open_session(backend, &input_path, &info) {
+                            Some(session) => session,
+                            None => return,
+                        };
+
+                        if let Some(seek) = pending_seek.take() {
+                            match new_session.controller.seek(seek) {
+                                Ok(serial) => {
+                                    seek_timing = Some(SeekTiming {
+                                        serial,
+                                        sent_at: Instant::now(),
+                                    });
+                                }
+                                Err(_) => {
+                                    pending_seek = Some(seek);
+                                    seek_timing = None;
+                                    open_requested = true;
+                                    continue;
+                                }
+                            }
+                        }
+
+                        info.update(|state| state.ended = false);
+                        open_requested = false;
+                        active_serial = None;
+                        started = false;
+                        first_timestamp = None;
+                        start_instant = Instant::now();
+                        next_deadline = start_instant;
+                        paused_at = None;
+                        session = Some(new_session);
+                    } else {
+                        let Some(command) = command_rx.recv().await else {
+                            break;
+                        };
+                        if !handle_command(
+                            command,
+                            session.as_ref(),
+                            &mut paused,
+                            &mut scrubbing,
+                            &mut pending_seek,
+                            &mut seek_timing,
+                            &mut open_requested,
+                            &info,
+                        ) {
+                            break;
+                        }
+                    }
+                    continue;
                 }
-                let paused = control.is_paused();
-                let scrubbing = control.is_scrubbing();
+
                 let paused_like = paused || scrubbing;
                 if paused_like {
                     if paused_at.is_none() {
                         paused_at = Some(Instant::now());
                     }
-                    if !(scrubbing && control.pending_seek_serial().is_some()) {
-                        tokio::time::sleep(Duration::from_millis(30)).await;
-                        continue;
-                    }
+                } else if let Some(paused_at) = paused_at.take() {
+                    let pause_duration = Instant::now().saturating_duration_since(paused_at);
+                    start_instant += pause_duration;
+                    next_deadline += pause_duration;
                 }
 
-                if !paused_like {
-                    if let Some(paused_at) = paused_at.take() {
-                        let pause_duration = Instant::now().saturating_duration_since(paused_at);
-                        start_instant += pause_duration;
-                        next_deadline += pause_duration;
-                    }
-                }
-
-                let frame = stream.next().await;
-                match frame {
-                    Some(Ok(frame)) => {
-                        if !is_active(&generation) {
+                let allow_seek_frames = scrubbing && seek_timing.is_some();
+                if paused_like && !allow_seek_frames {
+                    let command = tokio::select! {
+                        cmd = command_rx.recv() => cmd,
+                        _ = tokio::time::sleep(Duration::from_millis(30)) => None,
+                    };
+                    if let Some(command) = command {
+                        if !handle_command(
+                            command,
+                            session.as_ref(),
+                            &mut paused,
+                            &mut scrubbing,
+                            &mut pending_seek,
+                            &mut seek_timing,
+                            &mut open_requested,
+                            &info,
+                        ) {
                             break;
                         }
-                        if let Some(pending) = control.pending_seek_serial() {
-                            if frame.serial() != pending {
-                                continue;
-                            }
+                        if open_requested {
+                            session = None;
                         }
-                        if active_serial != Some(frame.serial()) {
-                            active_serial = Some(frame.serial());
-                            started = false;
-                            first_timestamp = None;
-                            start_instant = Instant::now();
-                            next_deadline = start_instant;
-                            paused_at = None;
-                        }
-                        if let Some(latency) = control.take_seek_latency(frame.serial()) {
-                            eprintln!(
-                                "seek latency: serial={} elapsed_ms={:.2}",
-                                frame.serial(),
-                                latency.as_secs_f64() * 1000.0
-                            );
-                        }
-                        if !started {
-                            if !paused_like {
-                                start_instant = Instant::now();
-                                next_deadline = start_instant;
-                                started = true;
-                            }
-                        }
+                    }
+                    continue;
+                }
 
-                        if let Some(timestamp) = frame.timestamp() {
-                            let first = first_timestamp.get_or_insert(timestamp);
-                            if !paused_like {
-                                if let Some(delta) = timestamp.checked_sub(*first) {
-                                    let target = start_instant + delta;
-                                    let now = Instant::now();
-                                    if target > now {
-                                        tokio::time::sleep(target - now).await;
+                let (frame, frame_duration) = {
+                    let session = session.as_mut().expect("session missing");
+                    (session.stream.next(), session.frame_duration)
+                };
+                let mut restart_requested = false;
+                tokio::select! {
+                    cmd = command_rx.recv() => {
+                        let Some(command) = cmd else {
+                            break;
+                        };
+                        if !handle_command(
+                            command,
+                            session.as_ref(),
+                            &mut paused,
+                            &mut scrubbing,
+                            &mut pending_seek,
+                            &mut seek_timing,
+                            &mut open_requested,
+                            &info,
+                        ) {
+                            break;
+                        }
+                        restart_requested = open_requested;
+                    }
+                    frame = frame => {
+                        match frame {
+                            Some(Ok(frame)) => {
+                                if let Some(pending) = seek_timing.as_ref().map(|entry| entry.serial) {
+                                    if frame.serial() != pending {
+                                        continue;
+                                    }
+                                }
+                                if active_serial != Some(frame.serial()) {
+                                    active_serial = Some(frame.serial());
+                                    started = false;
+                                    first_timestamp = None;
+                                    start_instant = Instant::now();
+                                    next_deadline = start_instant;
+                                    paused_at = None;
+                                }
+                                if let Some(timing) = seek_timing.as_ref() {
+                                    if timing.serial == frame.serial() {
+                                        let elapsed = timing.sent_at.elapsed();
+                                        seek_timing = None;
+                                        eprintln!(
+                                            "seek latency: serial={} elapsed_ms={:.2}",
+                                            frame.serial(),
+                                            elapsed.as_secs_f64() * 1000.0
+                                        );
+                                    }
+                                }
+                                if !started {
+                                    if !paused_like {
+                                        start_instant = Instant::now();
+                                        next_deadline = start_instant;
+                                        started = true;
+                                    }
+                                }
+
+                                if let Some(timestamp) = frame.timestamp() {
+                                    let first = first_timestamp.get_or_insert(timestamp);
+                                    if !paused_like {
+                                        if let Some(delta) = timestamp.checked_sub(*first) {
+                                            let target = start_instant + delta;
+                                            let now = Instant::now();
+                                            if target > now {
+                                                tokio::time::sleep(target - now).await;
+                                            }
+                                        }
+                                    }
+                                } else if let Some(duration) = frame_duration {
+                                    if !paused_like {
+                                        let now = Instant::now();
+                                        if next_deadline > now {
+                                            tokio::time::sleep(next_deadline - now).await;
+                                        }
+                                        next_deadline += duration;
+                                    }
+                                }
+
+                                info.update(|state| {
+                                    state.last_timestamp = frame.timestamp();
+                                    state.last_frame_index = frame.frame_index();
+                                });
+
+                                if let Some(gpui_frame) = to_gpui_frame(&frame) {
+                                    if sender.send(gpui_frame).is_err() {
+                                        break;
                                     }
                                 }
                             }
-                        } else if let Some(duration) = frame_duration {
-                            if !paused_like {
-                                let now = Instant::now();
-                                if next_deadline > now {
-                                    tokio::time::sleep(next_deadline - now).await;
-                                }
-                                next_deadline += duration;
+                            Some(Err(err)) => {
+                                eprintln!("decoder error: {err}");
+                                info.update(|state| state.ended = true);
+                                session = None;
+                                open_requested = false;
+                                seek_timing = None;
+                                continue;
+                            }
+                            None => {
+                                info.update(|state| state.ended = true);
+                                session = None;
+                                open_requested = false;
+                                seek_timing = None;
+                                continue;
                             }
                         }
-
-                        info.update(|state| {
-                            state.last_timestamp = frame.timestamp();
-                            state.last_frame_index = frame.frame_index();
-                        });
-
-                        if let Some(gpui_frame) = to_gpui_frame(&frame) {
-                            if !is_active(&generation) {
-                                break;
-                            }
-                            if sender.send(gpui_frame).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    Some(Err(err)) => {
-                        eprintln!("decoder error: {err}");
-                        break;
-                    }
-                    None => {
-                        break;
                     }
                 }
-            }
 
-            if is_active(&generation) {
-                control.clear_decoder();
-                info.update(|state| state.ended = true);
+                if restart_requested {
+                    session = None;
+                    seek_timing = None;
+                    active_serial = None;
+                    started = false;
+                    first_timestamp = None;
+                    paused_at = None;
+                }
             }
         });
     });
