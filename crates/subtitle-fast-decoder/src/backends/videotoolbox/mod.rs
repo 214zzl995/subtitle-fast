@@ -1,7 +1,7 @@
 #[cfg(all(target_os = "macos", feature = "backend-videotoolbox"))]
 use crate::core::{
     DecoderController, DecoderError, DecoderProvider, DecoderResult, FrameStream, SeekInfo,
-    SeekReceiver,
+    SeekMode, SeekReceiver,
 };
 
 use crate::config::OutputFormat;
@@ -207,6 +207,7 @@ mod platform {
             let capacity = self.channel_capacity;
             let output_format = self.output_format;
             let start_frame = self.start_frame;
+            let fps = self.metadata.fps;
             let controller = DecoderController::new();
             let seek_rx = controller.seek_receiver();
             let serial = controller.serial_handle();
@@ -218,6 +219,7 @@ mod platform {
                         start_frame,
                         seek_rx,
                         serial.clone(),
+                        fps,
                     ),
                     OutputFormat::CVPixelBuffer => decode_videotoolbox_handle(
                         path.clone(),
@@ -225,6 +227,7 @@ mod platform {
                         start_frame,
                         seek_rx,
                         serial.clone(),
+                        fps,
                     ),
                 };
                 if let Err(err) = result {
@@ -241,37 +244,56 @@ mod platform {
         start_frame: Option<u64>,
         seek_rx: SeekReceiver,
         serial: Arc<AtomicU64>,
+        fps: Option<f64>,
     ) -> DecoderResult<()> {
         let c_path = cstring_from_path(&path)?;
-        let mut context = Box::new(DecodeContext::new(tx, seek_rx, serial));
-        let mut error_ptr: *mut c_char = ptr::null_mut();
-        let (has_start_frame, start_frame) = match start_frame {
-            Some(value) => (true, value),
-            None => (false, 0),
-        };
-        let ok = unsafe {
-            videotoolbox_decode(
-                c_path.as_ptr(),
-                has_start_frame,
-                start_frame,
-                frame_callback_nv12,
-                (&mut *context) as *mut DecodeContext as *mut c_void,
-                &mut error_ptr,
-            )
-        };
-        drop(context);
+        let mut context = Box::new(DecodeContext::new(tx, seek_rx, serial, fps));
+        let mut next_start_frame = start_frame;
 
-        let error = take_bridge_string(error_ptr);
-        if !ok {
-            let message = error.unwrap_or_else(|| "videotoolbox decode failed".to_string());
-            return Err(DecoderError::backend_failure("videotoolbox", message));
+        loop {
+            if context.is_closed() {
+                return Ok(());
+            }
+            let mut error_ptr: *mut c_char = ptr::null_mut();
+            let (has_start_frame, start_frame) = match next_start_frame {
+                Some(value) => (true, value),
+                None => (false, 0),
+            };
+            let ok = unsafe {
+                videotoolbox_decode(
+                    c_path.as_ptr(),
+                    has_start_frame,
+                    start_frame,
+                    frame_callback_nv12,
+                    (&mut *context) as *mut DecodeContext as *mut c_void,
+                    &mut error_ptr,
+                )
+            };
+
+            let error = take_bridge_string(error_ptr);
+            if let Some(err) = context.take_seek_error() {
+                return Err(err);
+            }
+            if context.is_closed() {
+                return Ok(());
+            }
+            if let Some(plan) = context.take_pending_seek() {
+                context.apply_drop(plan.drop_until);
+                next_start_frame = Some(plan.start_frame);
+                continue;
+            }
+
+            if !ok {
+                let message = error.unwrap_or_else(|| "videotoolbox decode failed".to_string());
+                return Err(DecoderError::backend_failure("videotoolbox", message));
+            }
+            if let Some(message) = error
+                && !message.is_empty()
+            {
+                return Err(DecoderError::backend_failure("videotoolbox", message));
+            }
+            return Ok(());
         }
-        if let Some(message) = error
-            && !message.is_empty()
-        {
-            return Err(DecoderError::backend_failure("videotoolbox", message));
-        }
-        Ok(())
     }
 
     fn decode_videotoolbox_handle(
@@ -280,37 +302,57 @@ mod platform {
         start_frame: Option<u64>,
         seek_rx: SeekReceiver,
         serial: Arc<AtomicU64>,
+        fps: Option<f64>,
     ) -> DecoderResult<()> {
         let c_path = cstring_from_path(&path)?;
-        let mut context = Box::new(DecodeContext::new(tx, seek_rx, serial));
-        let mut error_ptr: *mut c_char = ptr::null_mut();
-        let (has_start_frame, start_frame) = match start_frame {
-            Some(value) => (true, value),
-            None => (false, 0),
-        };
-        let ok = unsafe {
-            videotoolbox_decode_handle(
-                c_path.as_ptr(),
-                has_start_frame,
-                start_frame,
-                frame_callback_handle,
-                (&mut *context) as *mut DecodeContext as *mut c_void,
-                &mut error_ptr,
-            )
-        };
-        drop(context);
+        let mut context = Box::new(DecodeContext::new(tx, seek_rx, serial, fps));
+        let mut next_start_frame = start_frame;
 
-        let error = take_bridge_string(error_ptr);
-        if !ok {
-            let message = error.unwrap_or_else(|| "videotoolbox handle decode failed".to_string());
-            return Err(DecoderError::backend_failure("videotoolbox", message));
+        loop {
+            if context.is_closed() {
+                return Ok(());
+            }
+            let mut error_ptr: *mut c_char = ptr::null_mut();
+            let (has_start_frame, start_frame) = match next_start_frame {
+                Some(value) => (true, value),
+                None => (false, 0),
+            };
+            let ok = unsafe {
+                videotoolbox_decode_handle(
+                    c_path.as_ptr(),
+                    has_start_frame,
+                    start_frame,
+                    frame_callback_handle,
+                    (&mut *context) as *mut DecodeContext as *mut c_void,
+                    &mut error_ptr,
+                )
+            };
+
+            let error = take_bridge_string(error_ptr);
+            if let Some(err) = context.take_seek_error() {
+                return Err(err);
+            }
+            if context.is_closed() {
+                return Ok(());
+            }
+            if let Some(plan) = context.take_pending_seek() {
+                context.apply_drop(plan.drop_until);
+                next_start_frame = Some(plan.start_frame);
+                continue;
+            }
+
+            if !ok {
+                let message =
+                    error.unwrap_or_else(|| "videotoolbox handle decode failed".to_string());
+                return Err(DecoderError::backend_failure("videotoolbox", message));
+            }
+            if let Some(message) = error
+                && !message.is_empty()
+            {
+                return Err(DecoderError::backend_failure("videotoolbox", message));
+            }
+            return Ok(());
         }
-        if let Some(message) = error
-            && !message.is_empty()
-        {
-            return Err(DecoderError::backend_failure("videotoolbox", message));
-        }
-        Ok(())
     }
 
     struct DecodeContext {
@@ -318,6 +360,11 @@ mod platform {
         seek_rx: SeekReceiver,
         serial: Arc<AtomicU64>,
         current_serial: u64,
+        pending_seek: Option<SeekPlan>,
+        pending_drop: Option<DropUntil>,
+        seek_error: Option<DecoderError>,
+        closed: bool,
+        fps: Option<f64>,
     }
 
     impl DecodeContext {
@@ -325,6 +372,7 @@ mod platform {
             sender: mpsc::Sender<DecoderResult<VideoFrame>>,
             seek_rx: SeekReceiver,
             serial: Arc<AtomicU64>,
+            fps: Option<f64>,
         ) -> Self {
             let current_serial = serial.load(Ordering::SeqCst);
             Self {
@@ -332,20 +380,73 @@ mod platform {
                 seek_rx,
                 serial,
                 current_serial,
+                pending_seek: None,
+                pending_drop: None,
+                seek_error: None,
+                closed: false,
+                fps,
             }
         }
 
-        fn send(&self, message: DecoderResult<VideoFrame>) -> bool {
-            self.sender.blocking_send(message).is_ok()
+        fn is_closed(&self) -> bool {
+            self.closed || self.sender.is_closed()
         }
 
-        fn drain_seek_requests(&mut self) {
+        fn apply_drop(&mut self, drop_until: Option<DropUntil>) {
+            self.pending_drop = drop_until;
+        }
+
+        fn take_pending_seek(&mut self) -> Option<SeekPlan> {
+            self.pending_seek.take()
+        }
+
+        fn take_seek_error(&mut self) -> Option<DecoderError> {
+            self.seek_error.take()
+        }
+
+        fn send(&mut self, message: DecoderResult<VideoFrame>) -> bool {
+            if self.sender.blocking_send(message).is_ok() {
+                true
+            } else {
+                self.closed = true;
+                false
+            }
+        }
+
+        fn drain_seek_requests(&mut self) -> bool {
             if !self.seek_rx.has_changed().unwrap_or(false) {
-                return;
+                return false;
             }
             if let Some(info) = *self.seek_rx.borrow_and_update() {
                 self.current_serial = self.serial.load(Ordering::SeqCst);
-                handle_seek_request(info);
+                match compute_seek_plan(info, self.fps) {
+                    Ok(plan) => {
+                        self.pending_seek = Some(plan);
+                    }
+                    Err(err) => {
+                        self.seek_error = Some(err);
+                    }
+                }
+                return true;
+            }
+            false
+        }
+
+        fn should_skip_frame(&mut self, frame_index: u64, timestamp: Option<Duration>) -> bool {
+            let Some(drop_until) = self.pending_drop else {
+                return false;
+            };
+            let keep = match drop_until {
+                DropUntil::Frame(target) => frame_index >= target,
+                DropUntil::Timestamp(target) => {
+                    timestamp.map(|value| value >= target).unwrap_or(true)
+                }
+            };
+            if keep {
+                self.pending_drop = None;
+                false
+            } else {
+                true
             }
         }
     }
@@ -356,7 +457,12 @@ mod platform {
         }
         let frame = unsafe { &*frame };
         let context = unsafe { &mut *(ctx as *mut DecodeContext) };
-        context.drain_seek_requests();
+        if context.is_closed() {
+            return false;
+        }
+        if context.drain_seek_requests() {
+            return false;
+        }
 
         if frame.y_data.is_null() || frame.uv_data.is_null() {
             let _ = context.send(Err(DecoderError::backend_failure(
@@ -374,6 +480,9 @@ mod platform {
         } else {
             None
         };
+        if context.should_skip_frame(frame.frame_index, timestamp) {
+            return true;
+        }
 
         let y_frame = match VideoFrame::from_nv12_owned(
             frame.width,
@@ -414,7 +523,14 @@ mod platform {
             return false;
         }
         let context = unsafe { &mut *(ctx as *mut DecodeContext) };
-        context.drain_seek_requests();
+        if context.is_closed() {
+            unsafe { release_native_handle(frame.pixel_buffer) };
+            return false;
+        }
+        if context.drain_seek_requests() {
+            unsafe { release_native_handle(frame.pixel_buffer) };
+            return false;
+        }
 
         if frame.pixel_buffer.is_null() {
             let _ = context.send(Err(DecoderError::backend_failure(
@@ -429,6 +545,10 @@ mod platform {
         } else {
             None
         };
+        if context.should_skip_frame(frame.frame_index, timestamp) {
+            unsafe { release_native_handle(frame.pixel_buffer) };
+            return true;
+        }
 
         let native_frame = match VideoFrame::from_native_handle(
             frame.width,
@@ -454,8 +574,62 @@ mod platform {
         true
     }
 
-    fn handle_seek_request(_info: SeekInfo) {
-        todo!("videotoolbox seek handling is not implemented yet");
+    #[derive(Clone, Copy)]
+    enum DropUntil {
+        Frame(u64),
+        Timestamp(Duration),
+    }
+
+    #[derive(Clone, Copy)]
+    struct SeekPlan {
+        start_frame: u64,
+        drop_until: Option<DropUntil>,
+    }
+
+    fn compute_seek_plan(info: SeekInfo, fps: Option<f64>) -> DecoderResult<SeekPlan> {
+        match info {
+            SeekInfo::Frame { frame, mode } => Ok(SeekPlan {
+                start_frame: frame,
+                drop_until: match mode {
+                    SeekMode::Fast => None,
+                    SeekMode::Accurate => Some(DropUntil::Frame(frame)),
+                },
+            }),
+            SeekInfo::Time { position, mode } => {
+                let fps = fps.ok_or_else(|| {
+                    DecoderError::configuration(
+                        "videotoolbox backend requires frame rate metadata to seek by time",
+                    )
+                })?;
+                if !(fps.is_finite() && fps > 0.0) {
+                    return Err(DecoderError::configuration(
+                        "videotoolbox backend requires frame rate metadata to seek by time",
+                    ));
+                }
+                let seconds = position.as_secs_f64();
+                if !seconds.is_finite() || seconds.is_sign_negative() {
+                    return Err(DecoderError::configuration("invalid seek timestamp"));
+                }
+                let raw_frame = seconds * fps;
+                if !raw_frame.is_finite() || raw_frame.is_sign_negative() {
+                    return Err(DecoderError::configuration("invalid seek timestamp"));
+                }
+                let frame = match mode {
+                    SeekMode::Fast => raw_frame.round(),
+                    SeekMode::Accurate => raw_frame.floor(),
+                };
+                if frame < 0.0 || frame > u64::MAX as f64 {
+                    return Err(DecoderError::configuration("seek frame is out of range"));
+                }
+                Ok(SeekPlan {
+                    start_frame: frame as u64,
+                    drop_until: match mode {
+                        SeekMode::Fast => None,
+                        SeekMode::Accurate => Some(DropUntil::Timestamp(position)),
+                    },
+                })
+            }
+        }
     }
 }
 

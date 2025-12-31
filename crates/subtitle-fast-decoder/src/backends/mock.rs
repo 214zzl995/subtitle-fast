@@ -7,8 +7,8 @@ use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
 use crate::core::{
-    DecoderController, DecoderProvider, DecoderResult, FrameStream, SeekInfo, SeekReceiver,
-    VideoFrame, spawn_stream_from_channel,
+    DecoderController, DecoderProvider, DecoderResult, FrameStream, SeekInfo, SeekMode,
+    SeekReceiver, VideoFrame, spawn_stream_from_channel,
 };
 
 pub struct MockProvider {
@@ -24,6 +24,7 @@ pub struct MockProvider {
 
 impl MockProvider {
     const DEFAULT_CHANNEL_CAPACITY: usize = 8;
+    const FPS: f64 = 60.0;
 
     fn emit_frames(
         &self,
@@ -31,10 +32,18 @@ impl MockProvider {
         mut seek_rx: SeekReceiver,
         serial: Arc<AtomicU64>,
     ) {
-        let start_index = self.start_frame.min(self.frame_count as u64) as usize;
+        let mut index = self.start_frame.min(self.frame_count as u64) as usize;
         let mut current_serial = serial.load(Ordering::SeqCst);
-        for index in start_index..self.frame_count {
-            drain_seek_requests(&mut seek_rx, &serial, &mut current_serial);
+        let mut pending_drop: Option<DropUntil> = None;
+        while index < self.frame_count {
+            if let Some(plan) = drain_seek_requests(&mut seek_rx, &serial, &mut current_serial) {
+                index = plan
+                    .start_frame
+                    .min(self.frame_count as u64)
+                    .try_into()
+                    .unwrap_or(self.frame_count);
+                pending_drop = plan.drop_until;
+            }
             if tx.is_closed() {
                 break;
             }
@@ -47,6 +56,10 @@ impl MockProvider {
             let uv_stride = self.stride;
             let uv_plane = vec![128u8; uv_stride * uv_rows];
             let timestamp = Some(Duration::from_millis((index * 16) as u64));
+            if should_skip_frame(&mut pending_drop, index as u64, timestamp) {
+                index += 1;
+                continue;
+            }
             let frame = VideoFrame::from_nv12_owned(
                 self.width,
                 self.height,
@@ -67,6 +80,7 @@ impl MockProvider {
             if !self.frame_interval.is_zero() {
                 thread::sleep(self.frame_interval);
             }
+            index += 1;
         }
     }
 }
@@ -114,18 +128,87 @@ impl DecoderProvider for MockProvider {
     }
 }
 
-fn drain_seek_requests(seek_rx: &mut SeekReceiver, serial: &AtomicU64, current_serial: &mut u64) {
+fn drain_seek_requests(
+    seek_rx: &mut SeekReceiver,
+    serial: &AtomicU64,
+    current_serial: &mut u64,
+) -> Option<SeekPlan> {
     if !seek_rx.has_changed().unwrap_or(false) {
-        return;
+        return None;
     }
     if let Some(info) = *seek_rx.borrow_and_update() {
         *current_serial = serial.load(Ordering::SeqCst);
-        handle_seek_request(info);
+        return compute_seek_plan(info);
+    }
+    None
+}
+
+fn should_skip_frame(
+    pending_drop: &mut Option<DropUntil>,
+    frame_index: u64,
+    timestamp: Option<Duration>,
+) -> bool {
+    let Some(drop_until) = *pending_drop else {
+        return false;
+    };
+    let keep = match drop_until {
+        DropUntil::Frame(target) => frame_index >= target,
+        DropUntil::Timestamp(target) => timestamp.map(|value| value >= target).unwrap_or(true),
+    };
+    if keep {
+        *pending_drop = None;
+        false
+    } else {
+        true
     }
 }
 
-fn handle_seek_request(_info: SeekInfo) {
-    todo!("mock seek handling is not implemented yet");
+#[derive(Clone, Copy)]
+enum DropUntil {
+    Frame(u64),
+    Timestamp(Duration),
+}
+
+#[derive(Clone, Copy)]
+struct SeekPlan {
+    start_frame: u64,
+    drop_until: Option<DropUntil>,
+}
+
+fn compute_seek_plan(info: SeekInfo) -> Option<SeekPlan> {
+    match info {
+        SeekInfo::Frame { frame, mode } => Some(SeekPlan {
+            start_frame: frame,
+            drop_until: match mode {
+                SeekMode::Fast => None,
+                SeekMode::Accurate => Some(DropUntil::Frame(frame)),
+            },
+        }),
+        SeekInfo::Time { position, mode } => {
+            let seconds = position.as_secs_f64();
+            if !seconds.is_finite() || seconds.is_sign_negative() {
+                return None;
+            }
+            let raw_frame = seconds * MockProvider::FPS;
+            if !raw_frame.is_finite() || raw_frame.is_sign_negative() {
+                return None;
+            }
+            let frame = match mode {
+                SeekMode::Fast => raw_frame.round(),
+                SeekMode::Accurate => raw_frame.floor(),
+            };
+            if frame < 0.0 || frame > u64::MAX as f64 {
+                return None;
+            }
+            Some(SeekPlan {
+                start_frame: frame as u64,
+                drop_until: match mode {
+                    SeekMode::Fast => None,
+                    SeekMode::Accurate => Some(DropUntil::Timestamp(position)),
+                },
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -167,5 +250,66 @@ mod tests {
         let (_controller, mut stream) = decoder.open().unwrap();
         let frame = stream.next().await.unwrap().unwrap();
         assert_eq!(frame.frame_index(), Some(10));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mock_backend_seek_by_frame_updates_serial() {
+        let config = crate::config::Configuration {
+            backend: crate::config::Backend::Mock,
+            input: None,
+            channel_capacity: None,
+            output_format: crate::config::OutputFormat::Nv12,
+            start_frame: None,
+        };
+        let decoder = Box::new(MockProvider::new(&config).unwrap()) as DynDecoderProvider;
+        let (controller, mut stream) = decoder.open().unwrap();
+        let _ = stream.next().await.unwrap().unwrap();
+        let serial = controller
+            .seek(SeekInfo::Frame {
+                frame: 10,
+                mode: SeekMode::Accurate,
+            })
+            .unwrap();
+        let mut sought = None;
+        for _ in 0..200 {
+            let frame = stream.next().await.unwrap().unwrap();
+            if frame.serial() == serial {
+                sought = Some(frame);
+                break;
+            }
+        }
+        let frame = sought.expect("expected frame after seek");
+        assert_eq!(frame.frame_index(), Some(10));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mock_backend_seek_by_time_updates_serial() {
+        let config = crate::config::Configuration {
+            backend: crate::config::Backend::Mock,
+            input: None,
+            channel_capacity: None,
+            output_format: crate::config::OutputFormat::Nv12,
+            start_frame: None,
+        };
+        let decoder = Box::new(MockProvider::new(&config).unwrap()) as DynDecoderProvider;
+        let (controller, mut stream) = decoder.open().unwrap();
+        let _ = stream.next().await.unwrap().unwrap();
+        let serial = controller
+            .seek(SeekInfo::Time {
+                position: Duration::from_secs(1),
+                mode: SeekMode::Accurate,
+            })
+            .unwrap();
+        let mut sought = None;
+        for _ in 0..200 {
+            let frame = stream.next().await.unwrap().unwrap();
+            if frame.serial() == serial {
+                sought = Some(frame);
+                break;
+            }
+        }
+        let frame = sought.expect("expected frame after seek");
+        assert!(frame.frame_index().unwrap_or(0) >= 60);
+        assert!(frame.timestamp().unwrap_or_default() >= Duration::from_secs(1));
     }
 }

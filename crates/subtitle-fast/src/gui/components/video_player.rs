@@ -251,7 +251,7 @@ fn spawn_decoder(
                 return;
             }
 
-            let backend = subtitle_fast_decoder::Backend::FFmpeg;
+            let backend = available[0];
             let config = Configuration {
                 backend,
                 input: Some(input_path),

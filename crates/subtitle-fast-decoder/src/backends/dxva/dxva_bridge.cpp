@@ -73,6 +73,35 @@ namespace
         return true;
     }
 
+    bool compute_seek_seconds(
+        double seconds,
+        LONGLONG &out_value,
+        std::string &error)
+    {
+        if (!std::isfinite(seconds) || seconds < 0.0)
+        {
+            error = "seek timestamp is invalid";
+            return false;
+        }
+
+        long double ticks = static_cast<long double>(seconds) * 10000000.0L;
+        if (!std::isfinite(ticks) || ticks < 0.0L)
+        {
+            error = "seek timestamp overflow";
+            return false;
+        }
+
+        long double max_value = static_cast<long double>((std::numeric_limits<LONGLONG>::max)());
+        if (ticks > max_value)
+        {
+            error = "seek timestamp overflow";
+            return false;
+        }
+
+        out_value = static_cast<LONGLONG>(std::llround(ticks));
+        return true;
+    }
+
     std::string wide_to_utf8(const wchar_t *wide)
     {
         if (!wide) { return {}; }
@@ -480,6 +509,13 @@ extern "C"
     };
 
     typedef bool(__cdecl *CDxvaFrameCallback)(const CDxvaFrame *, void *);
+    struct CDxvaSeekRequest
+    {
+        double position_seconds;
+        uint64_t start_frame;
+    };
+
+    typedef int(__cdecl *CDxvaSeekCallback)(void *, CDxvaSeekRequest *);
 
     bool dxva_probe_total_frames(const char *path, CDxvaProbeResult *result)
     {
@@ -611,12 +647,18 @@ extern "C"
         uint64_t start_frame,
         CDxvaFrameCallback callback,
         void *context,
+        CDxvaSeekCallback seek_callback,
         char **out_error)
     {
         if (out_error) { *out_error = nullptr; }
         if (!callback)
         {
             set_error(out_error, "callback is null");
+            return false;
+        }
+        if (!seek_callback)
+        {
+            set_error(out_error, "seek callback is null");
             return false;
         }
 
@@ -704,9 +746,48 @@ extern "C"
         size_t stride = 0;
         UINT uv_rows = (height + 1) / 2;
 
-        uint64_t start_index = has_start_frame ? start_frame : 0;
-        for (uint64_t frame_index = start_index;; frame_index++)
+        uint64_t frame_index = has_start_frame ? start_frame : 0;
+        for (;;)
         {
+            CDxvaSeekRequest seek_request{};
+            int seek_action = seek_callback(context, &seek_request);
+            if (seek_action == 1)
+            {
+                break;
+            }
+            if (seek_action == 2)
+            {
+                HRESULT flush_hr = reader->Flush(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM));
+                if (FAILED(flush_hr))
+                {
+                    set_error(out_error, hresult("Flush", flush_hr));
+                    return false;
+                }
+
+                LONGLONG position_value = 0;
+                std::string position_error;
+                if (!compute_seek_seconds(seek_request.position_seconds, position_value, position_error))
+                {
+                    set_error(out_error, position_error);
+                    return false;
+                }
+
+                PROPVARIANT position;
+                PropVariantInit(&position);
+                position.vt = VT_I8;
+                position.hVal.QuadPart = position_value;
+                HRESULT seek_hr = reader->SetCurrentPosition(GUID_NULL, position);
+                PropVariantClear(&position);
+                if (FAILED(seek_hr))
+                {
+                    set_error(out_error, hresult("SetCurrentPosition", seek_hr));
+                    return false;
+                }
+
+                frame_index = seek_request.start_frame;
+                continue;
+            }
+
             DWORD stream_index = 0;
             DWORD flags = 0;
             LONGLONG timestamp = 0;
@@ -771,6 +852,7 @@ extern "C"
             frame.frame_index = frame_index;
 
             if (!callback(&frame, context)) { break; }
+            frame_index += 1;
         }
 
         return true;

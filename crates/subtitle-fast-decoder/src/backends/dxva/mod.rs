@@ -1,7 +1,7 @@
 #[cfg(all(target_os = "windows", feature = "backend-dxva"))]
 use crate::core::{
     DecoderController, DecoderError, DecoderProvider, DecoderResult, FrameStream, SeekInfo,
-    SeekReceiver,
+    SeekMode, SeekReceiver,
 };
 
 #[cfg(all(target_os = "windows", feature = "backend-dxva"))]
@@ -49,6 +49,17 @@ mod platform {
     }
 
     type CDxvaFrameCallback = unsafe extern "C" fn(*const CDxvaFrame, *mut c_void) -> bool;
+    #[repr(C)]
+    struct CDxvaSeekRequest {
+        position_seconds: f64,
+        start_frame: u64,
+    }
+
+    type CDxvaSeekCallback = unsafe extern "C" fn(*mut c_void, *mut CDxvaSeekRequest) -> i32;
+
+    const SEEK_ACTION_CONTINUE: i32 = 0;
+    const SEEK_ACTION_STOP: i32 = 1;
+    const SEEK_ACTION_SEEK: i32 = 2;
 
     #[allow(improper_ctypes)]
     unsafe extern "C" {
@@ -59,6 +70,7 @@ mod platform {
             start_frame: u64,
             callback: CDxvaFrameCallback,
             context: *mut c_void,
+            seek_callback: CDxvaSeekCallback,
             out_error: *mut *mut c_char,
         ) -> bool;
         fn dxva_string_free(ptr: *mut c_char);
@@ -106,6 +118,7 @@ mod platform {
             let provider = *self;
             let capacity = provider.channel_capacity;
             let start_frame = provider.start_frame;
+            let fps = provider.metadata.fps;
             let controller = DecoderController::new();
             let seek_rx = controller.seek_receiver();
             let serial = controller.serial_handle();
@@ -116,6 +129,7 @@ mod platform {
                     start_frame,
                     seek_rx,
                     serial,
+                    fps,
                 ) {
                     let _ = tx.blocking_send(Err(err));
                 }
@@ -130,9 +144,10 @@ mod platform {
         start_frame: Option<u64>,
         seek_rx: SeekReceiver,
         serial: Arc<AtomicU64>,
+        fps: Option<f64>,
     ) -> DecoderResult<()> {
         let c_path = cstring_from_path(&path)?;
-        let mut context = DecodeContext::new(tx, seek_rx, serial);
+        let mut context = DecodeContext::new(tx, seek_rx, serial, fps);
         let mut error_ptr: *mut c_char = ptr::null_mut();
         let (has_start_frame, start_frame) = match start_frame {
             Some(value) => (true, value),
@@ -145,10 +160,17 @@ mod platform {
                 start_frame,
                 handle_frame,
                 &mut context as *mut _ as *mut c_void,
+                poll_seek_requests,
                 &mut error_ptr,
             )
         };
         let bridge_error = take_bridge_string(error_ptr);
+        if let Some(err) = context.take_seek_error() {
+            return Err(err);
+        }
+        if context.is_closed() {
+            return Ok(());
+        }
         if !ok {
             let message = bridge_error.unwrap_or_else(|| "decode failed".to_string());
             return Err(DecoderError::backend_failure(BACKEND_NAME, message));
@@ -226,6 +248,10 @@ mod platform {
         seek_rx: SeekReceiver,
         serial: Arc<AtomicU64>,
         current_serial: u64,
+        pending_drop: Option<DropUntil>,
+        seek_error: Option<DecoderError>,
+        closed: bool,
+        fps: Option<f64>,
     }
 
     impl DecodeContext {
@@ -233,6 +259,7 @@ mod platform {
             tx: Sender<DecoderResult<VideoFrame>>,
             seek_rx: SeekReceiver,
             serial: Arc<AtomicU64>,
+            fps: Option<f64>,
         ) -> Self {
             let current_serial = serial.load(Ordering::SeqCst);
             Self {
@@ -240,24 +267,54 @@ mod platform {
                 seek_rx,
                 serial,
                 current_serial,
+                pending_drop: None,
+                seek_error: None,
+                closed: false,
+                fps,
             }
         }
 
-        fn send_frame(&self, frame: VideoFrame) -> bool {
-            self.tx.blocking_send(Ok(frame)).is_ok()
+        fn is_closed(&self) -> bool {
+            self.closed || self.tx.is_closed()
         }
 
-        fn send_error(&self, error: DecoderError) {
+        fn apply_drop(&mut self, drop_until: Option<DropUntil>) {
+            self.pending_drop = drop_until;
+        }
+
+        fn take_seek_error(&mut self) -> Option<DecoderError> {
+            self.seek_error.take()
+        }
+
+        fn send_frame(&mut self, frame: VideoFrame) -> bool {
+            if self.tx.blocking_send(Ok(frame)).is_ok() {
+                true
+            } else {
+                self.closed = true;
+                false
+            }
+        }
+
+        fn send_error(&mut self, error: DecoderError) {
             let _ = self.tx.blocking_send(Err(error));
+            self.closed = true;
         }
 
-        fn drain_seek_requests(&mut self) {
-            if !self.seek_rx.has_changed().unwrap_or(false) {
-                return;
-            }
-            if let Some(info) = *self.seek_rx.borrow_and_update() {
-                self.current_serial = self.serial.load(Ordering::SeqCst);
-                handle_seek_request(info);
+        fn should_skip_frame(&mut self, frame_index: u64, timestamp: Option<Duration>) -> bool {
+            let Some(drop_until) = self.pending_drop else {
+                return false;
+            };
+            let keep = match drop_until {
+                DropUntil::Frame(target) => frame_index >= target,
+                DropUntil::Timestamp(target) => {
+                    timestamp.map(|value| value >= target).unwrap_or(true)
+                }
+            };
+            if keep {
+                self.pending_drop = None;
+                false
+            } else {
+                true
             }
         }
     }
@@ -268,7 +325,9 @@ mod platform {
         }
         let frame = unsafe { &*frame };
         let context = unsafe { &mut *(context as *mut DecodeContext) };
-        context.drain_seek_requests();
+        if context.is_closed() {
+            return false;
+        }
         if frame.y_data.is_null() || frame.uv_data.is_null() {
             context.send_error(DecoderError::backend_failure(
                 BACKEND_NAME,
@@ -283,6 +342,9 @@ mod platform {
         } else {
             Some(Duration::from_secs_f64(frame.timestamp_seconds))
         };
+        if context.should_skip_frame(frame.frame_index, timestamp) {
+            return true;
+        }
         match VideoFrame::from_nv12_owned(
             frame.width,
             frame.height,
@@ -305,8 +367,117 @@ mod platform {
         }
     }
 
-    fn handle_seek_request(_info: SeekInfo) {
-        todo!("dxva seek handling is not implemented yet");
+    unsafe extern "C" fn poll_seek_requests(
+        context: *mut c_void,
+        out_request: *mut CDxvaSeekRequest,
+    ) -> i32 {
+        if context.is_null() {
+            return SEEK_ACTION_STOP;
+        }
+        let context = unsafe { &mut *(context as *mut DecodeContext) };
+        if context.is_closed() {
+            return SEEK_ACTION_STOP;
+        }
+        if !context.seek_rx.has_changed().unwrap_or(false) {
+            return SEEK_ACTION_CONTINUE;
+        }
+        let Some(info) = *context.seek_rx.borrow_and_update() else {
+            return SEEK_ACTION_CONTINUE;
+        };
+        context.current_serial = context.serial.load(Ordering::SeqCst);
+        match compute_seek_plan(info, context.fps) {
+            Ok(plan) => {
+                context.apply_drop(plan.drop_until);
+                if !out_request.is_null() {
+                    unsafe { *out_request = plan.request };
+                }
+                SEEK_ACTION_SEEK
+            }
+            Err(err) => {
+                context.seek_error = Some(err);
+                SEEK_ACTION_STOP
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum DropUntil {
+        Frame(u64),
+        Timestamp(Duration),
+    }
+
+    #[derive(Clone, Copy)]
+    struct SeekPlan {
+        request: CDxvaSeekRequest,
+        drop_until: Option<DropUntil>,
+    }
+
+    fn compute_seek_plan(info: SeekInfo, fps: Option<f64>) -> DecoderResult<SeekPlan> {
+        match info {
+            SeekInfo::Frame { frame, mode } => {
+                let fps = fps.ok_or_else(|| {
+                    DecoderError::configuration(
+                        "dxva backend requires frame rate metadata to seek by frame",
+                    )
+                })?;
+                if !(fps.is_finite() && fps > 0.0) {
+                    return Err(DecoderError::configuration(
+                        "dxva backend requires frame rate metadata to seek by frame",
+                    ));
+                }
+                let seconds = frame as f64 / fps;
+                if !seconds.is_finite() || seconds.is_sign_negative() {
+                    return Err(DecoderError::configuration("invalid seek timestamp"));
+                }
+                Ok(SeekPlan {
+                    request: CDxvaSeekRequest {
+                        position_seconds: seconds,
+                        start_frame: frame,
+                    },
+                    drop_until: match mode {
+                        SeekMode::Fast => None,
+                        SeekMode::Accurate => Some(DropUntil::Frame(frame)),
+                    },
+                })
+            }
+            SeekInfo::Time { position, mode } => {
+                let fps = fps.ok_or_else(|| {
+                    DecoderError::configuration(
+                        "dxva backend requires frame rate metadata to seek by time",
+                    )
+                })?;
+                if !(fps.is_finite() && fps > 0.0) {
+                    return Err(DecoderError::configuration(
+                        "dxva backend requires frame rate metadata to seek by time",
+                    ));
+                }
+                let seconds = position.as_secs_f64();
+                if !seconds.is_finite() || seconds.is_sign_negative() {
+                    return Err(DecoderError::configuration("invalid seek timestamp"));
+                }
+                let raw_frame = seconds * fps;
+                if !raw_frame.is_finite() || raw_frame.is_sign_negative() {
+                    return Err(DecoderError::configuration("invalid seek timestamp"));
+                }
+                let frame = match mode {
+                    SeekMode::Fast => raw_frame.round(),
+                    SeekMode::Accurate => raw_frame.floor(),
+                };
+                if frame < 0.0 || frame > u64::MAX as f64 {
+                    return Err(DecoderError::configuration("seek frame is out of range"));
+                }
+                Ok(SeekPlan {
+                    request: CDxvaSeekRequest {
+                        position_seconds: seconds,
+                        start_frame: frame as u64,
+                    },
+                    drop_until: match mode {
+                        SeekMode::Fast => None,
+                        SeekMode::Accurate => Some(DropUntil::Timestamp(position)),
+                    },
+                })
+            }
+        }
     }
 }
 
