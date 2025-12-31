@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, SyncSender, sync_channel};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,133 +15,119 @@ use tokio_stream::StreamExt;
 
 #[derive(Clone)]
 pub struct VideoPlayerControlHandle {
-    paused: Arc<AtomicBool>,
-    scrubbing: Arc<AtomicBool>,
-    decoder: Arc<Mutex<Option<DecoderController>>>,
-    seek_timing: Arc<Mutex<Option<SeekTiming>>>,
-    pending_seek: Arc<Mutex<Option<SeekInfo>>>,
-    restart_tx: Arc<Mutex<Option<Sender<RestartRequest>>>>,
-    restart_pending: Arc<AtomicBool>,
+    inner: Arc<Mutex<ControlState>>,
+}
+
+struct ControlState {
+    paused: bool,
+    scrubbing: bool,
+    decoder: Option<DecoderController>,
+    seek_timing: Option<SeekTiming>,
+    pending_seek: Option<SeekInfo>,
+    restart_pending: bool,
+    restart_request: Option<RestartRequest>,
+}
+
+impl ControlState {
+    fn new() -> Self {
+        Self {
+            paused: false,
+            scrubbing: false,
+            decoder: None,
+            seek_timing: None,
+            pending_seek: None,
+            restart_pending: false,
+            restart_request: None,
+        }
+    }
 }
 
 impl VideoPlayerControlHandle {
     fn new() -> Self {
         Self {
-            paused: Arc::new(AtomicBool::new(false)),
-            scrubbing: Arc::new(AtomicBool::new(false)),
-            decoder: Arc::new(Mutex::new(None)),
-            seek_timing: Arc::new(Mutex::new(None)),
-            pending_seek: Arc::new(Mutex::new(None)),
-            restart_tx: Arc::new(Mutex::new(None)),
-            restart_pending: Arc::new(AtomicBool::new(false)),
+            inner: Arc::new(Mutex::new(ControlState::new())),
         }
     }
 
     fn set_decoder(&self, controller: DecoderController) {
-        {
-            let mut slot = self
-                .decoder
-                .lock()
-                .expect("decoder controller mutex poisoned");
-            *slot = Some(controller);
-        }
-        self.restart_pending.store(false, Ordering::SeqCst);
-
-        let pending = self
-            .pending_seek
-            .lock()
-            .expect("pending seek mutex poisoned")
-            .take();
+        let pending = {
+            let mut state = self.inner.lock().expect("control state mutex poisoned");
+            state.decoder = Some(controller);
+            state.restart_pending = false;
+            state.restart_request = None;
+            state.pending_seek.take()
+        };
         if let Some(info) = pending {
             self.send_seek(info);
         }
     }
 
     fn clear_decoder(&self) {
-        let mut slot = self
-            .decoder
-            .lock()
-            .expect("decoder controller mutex poisoned");
-        *slot = None;
-    }
-
-    fn set_restart_sender(&self, sender: Sender<RestartRequest>) {
-        let mut slot = self
-            .restart_tx
-            .lock()
-            .expect("restart sender mutex poisoned");
-        *slot = Some(sender);
+        let mut state = self.inner.lock().expect("control state mutex poisoned");
+        state.decoder = None;
     }
 
     fn clear_pending_seek(&self) {
-        let mut pending = self
-            .pending_seek
-            .lock()
-            .expect("pending seek mutex poisoned");
-        *pending = None;
-    }
-
-    fn pending_seek(&self) -> Option<SeekInfo> {
-        *self
-            .pending_seek
-            .lock()
-            .expect("pending seek mutex poisoned")
+        let mut state = self.inner.lock().expect("control state mutex poisoned");
+        state.pending_seek = None;
     }
 
     fn request_restart(&self, request: RestartRequest) {
-        if self.restart_pending.swap(true, Ordering::SeqCst) {
+        let mut state = self.inner.lock().expect("control state mutex poisoned");
+        if state.restart_pending {
             return;
         }
-        let sender = self
-            .restart_tx
-            .lock()
-            .expect("restart sender mutex poisoned")
-            .as_ref()
-            .cloned();
-        if let Some(sender) = sender {
-            let _ = sender.send(request);
-        }
+        state.restart_pending = true;
+        state.restart_request = Some(request);
+    }
+
+    fn take_restart_request(&self) -> Option<RestartRequest> {
+        let mut state = self.inner.lock().expect("control state mutex poisoned");
+        state.restart_request.take()
     }
 
     fn is_restart_pending(&self) -> bool {
-        self.restart_pending.load(Ordering::SeqCst)
+        let state = self.inner.lock().expect("control state mutex poisoned");
+        state.restart_pending
     }
 
     fn reset_seek_timing(&self) {
-        let mut timing = self.seek_timing.lock().expect("seek timing mutex poisoned");
-        *timing = None;
+        let mut state = self.inner.lock().expect("control state mutex poisoned");
+        state.seek_timing = None;
     }
 
     pub fn pause(&self) {
-        self.paused.store(true, Ordering::SeqCst);
+        let mut state = self.inner.lock().expect("control state mutex poisoned");
+        state.paused = true;
     }
 
     pub fn play(&self) {
-        self.paused.store(false, Ordering::SeqCst);
+        let mut state = self.inner.lock().expect("control state mutex poisoned");
+        state.paused = false;
     }
 
     pub fn toggle_pause(&self) {
-        let paused = self.paused.load(Ordering::SeqCst);
-        self.paused.store(!paused, Ordering::SeqCst);
+        let mut state = self.inner.lock().expect("control state mutex poisoned");
+        state.paused = !state.paused;
     }
 
     pub fn begin_scrub(&self) {
-        self.scrubbing.store(true, Ordering::SeqCst);
+        let mut state = self.inner.lock().expect("control state mutex poisoned");
+        state.scrubbing = true;
     }
 
     pub fn end_scrub(&self) {
-        self.scrubbing.store(false, Ordering::SeqCst);
-        let needs_restart = {
-            let decoder = self
-                .decoder
-                .lock()
-                .expect("decoder controller mutex poisoned");
-            decoder.is_none()
-        };
-        if needs_restart {
-            if let Some(info) = self.pending_seek() {
-                self.request_restart(RestartRequest::Seek(info));
+        let pending = {
+            let mut state = self.inner.lock().expect("control state mutex poisoned");
+            state.scrubbing = false;
+            if state.decoder.is_none() {
+                state.pending_seek
+            } else {
+                None
             }
+        };
+        if let Some(info) = pending {
+            self.request_restart(RestartRequest::Seek(info));
         }
     }
 
@@ -160,66 +146,54 @@ impl VideoPlayerControlHandle {
     }
 
     fn is_paused(&self) -> bool {
-        self.paused.load(Ordering::SeqCst)
+        let state = self.inner.lock().expect("control state mutex poisoned");
+        state.paused
     }
 
     fn is_scrubbing(&self) -> bool {
-        self.scrubbing.load(Ordering::SeqCst)
+        let state = self.inner.lock().expect("control state mutex poisoned");
+        state.scrubbing
     }
 
     fn send_seek(&self, info: SeekInfo) {
-        let result = {
-            let slot = self
-                .decoder
-                .lock()
-                .expect("decoder controller mutex poisoned");
-            let Some(controller) = slot.as_ref() else {
-                *self
-                    .pending_seek
-                    .lock()
-                    .expect("pending seek mutex poisoned") = Some(info);
-                if self.is_scrubbing() {
-                    return;
+        let mut restart = None;
+        {
+            let mut state = self.inner.lock().expect("control state mutex poisoned");
+            if let Some(controller) = state.decoder.as_ref() {
+                match controller.seek(info) {
+                    Ok(serial) => {
+                        state.seek_timing = Some(SeekTiming {
+                            serial,
+                            sent_at: Instant::now(),
+                        });
+                    }
+                    Err(_) => {
+                        state.pending_seek = Some(info);
+                        state.decoder = None;
+                        restart = Some(RestartRequest::Seek(info));
+                    }
                 }
-                self.request_restart(RestartRequest::Seek(info));
-                return;
-            };
-            controller.seek(info)
-        };
-
-        match result {
-            Ok(serial) => {
-                let mut timing = self.seek_timing.lock().expect("seek timing mutex poisoned");
-                *timing = Some(SeekTiming {
-                    serial,
-                    sent_at: Instant::now(),
-                });
+            } else {
+                state.pending_seek = Some(info);
+                restart = Some(RestartRequest::Seek(info));
             }
-            Err(_) => {
-                *self
-                    .pending_seek
-                    .lock()
-                    .expect("pending seek mutex poisoned") = Some(info);
-                self.clear_decoder();
-                if self.is_scrubbing() {
-                    return;
-                }
-                self.request_restart(RestartRequest::Seek(info));
-            }
+        }
+        if let Some(request) = restart {
+            self.request_restart(request);
         }
     }
 
     fn pending_seek_serial(&self) -> Option<u64> {
-        let timing = self.seek_timing.lock().expect("seek timing mutex poisoned");
-        timing.as_ref().map(|entry| entry.serial)
+        let state = self.inner.lock().expect("control state mutex poisoned");
+        state.seek_timing.as_ref().map(|entry| entry.serial)
     }
 
     fn take_seek_latency(&self, serial: u64) -> Option<Duration> {
-        let mut timing = self.seek_timing.lock().expect("seek timing mutex poisoned");
-        let entry = timing.as_ref()?;
+        let mut state = self.inner.lock().expect("control state mutex poisoned");
+        let entry = state.seek_timing.as_ref()?;
         if entry.serial == serial {
             let elapsed = entry.sent_at.elapsed();
-            *timing = None;
+            state.seek_timing = None;
             Some(elapsed)
         } else {
             None
@@ -340,7 +314,6 @@ pub struct VideoPlayer {
     input_path: PathBuf,
     control: VideoPlayerControlHandle,
     info: VideoPlayerInfoHandle,
-    restart_rx: Receiver<RestartRequest>,
     generation: Arc<AtomicU64>,
 }
 
@@ -351,12 +324,10 @@ impl VideoPlayer {
         let path = path.into();
         let handle = VideoHandle::new();
         let (sender, receiver) = sync_channel(1);
-        let (restart_tx, restart_rx) = std::sync::mpsc::channel::<RestartRequest>();
         let generation = Arc::new(AtomicU64::new(0));
         let control = VideoPlayerControlHandle::new();
         let info = VideoPlayerInfoHandle::new();
 
-        control.set_restart_sender(restart_tx);
         let generation_token = generation.load(Ordering::SeqCst);
         spawn_decoder(
             sender.clone(),
@@ -375,7 +346,6 @@ impl VideoPlayer {
                 input_path: path,
                 control: control.clone(),
                 info: info.clone(),
-                restart_rx,
                 generation,
             },
             control,
@@ -415,11 +385,7 @@ impl VideoPlayer {
 impl Render for VideoPlayer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.request_animation_frame();
-        let mut restart = None;
-        for request in self.restart_rx.try_iter() {
-            restart = Some(request);
-        }
-        if let Some(request) = restart {
+        if let Some(request) = self.control.take_restart_request() {
             self.restart_decoder(request);
         }
         let mut latest = None;

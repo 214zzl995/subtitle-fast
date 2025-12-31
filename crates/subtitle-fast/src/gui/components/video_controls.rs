@@ -13,11 +13,38 @@ pub struct VideoControls {
     controls: Option<VideoPlayerControlHandle>,
     info: Option<VideoPlayerInfoHandle>,
     paused: bool,
+    seek: SeekDragState,
+}
+
+struct SeekDragState {
     progress_bounds: Option<Bounds<Pixels>>,
     dragging: bool,
     last_seek_at: Option<Instant>,
     drag_ratio: Option<f32>,
     last_seek_ratio: Option<f32>,
+}
+
+impl SeekDragState {
+    fn new() -> Self {
+        Self {
+            progress_bounds: None,
+            dragging: false,
+            last_seek_at: None,
+            drag_ratio: None,
+            last_seek_ratio: None,
+        }
+    }
+
+    fn reset_all(&mut self) {
+        *self = Self::new();
+    }
+
+    fn reset_dragging(&mut self) {
+        self.dragging = false;
+        self.last_seek_at = None;
+        self.drag_ratio = None;
+        self.last_seek_ratio = None;
+    }
 }
 
 impl VideoControls {
@@ -29,11 +56,7 @@ impl VideoControls {
             controls: None,
             info: None,
             paused: false,
-            progress_bounds: None,
-            dragging: false,
-            last_seek_at: None,
-            drag_ratio: None,
-            last_seek_ratio: None,
+            seek: SeekDragState::new(),
         }
     }
 
@@ -48,11 +71,7 @@ impl VideoControls {
         self.controls = controls;
         self.info = info;
         self.paused = false;
-        self.progress_bounds = None;
-        self.dragging = false;
-        self.last_seek_at = None;
-        self.drag_ratio = None;
-        self.last_seek_ratio = None;
+        self.seek.reset_all();
     }
 
     fn toggle_playback(&mut self, cx: &mut Context<Self>) {
@@ -65,11 +84,11 @@ impl VideoControls {
     }
 
     fn update_progress_bounds(&mut self, bounds: Option<Bounds<Pixels>>) {
-        self.progress_bounds = bounds;
+        self.seek.progress_bounds = bounds;
     }
 
     fn progress_ratio_from_position(&self, position: Point<Pixels>) -> Option<f32> {
-        let Some(bounds) = self.progress_bounds else {
+        let Some(bounds) = self.seek.progress_bounds else {
             return None;
         };
         if bounds.size.width.is_zero() {
@@ -114,25 +133,26 @@ impl VideoControls {
     }
 
     fn update_drag_ratio(&mut self, position: Point<Pixels>) {
-        self.drag_ratio = self.progress_ratio_from_position(position);
+        self.seek.drag_ratio = self.progress_ratio_from_position(position);
     }
 
     fn seek_from_position_throttled(&mut self, position: Point<Pixels>, now: Instant, force: bool) {
         let ratio = self
+            .seek
             .drag_ratio
             .or_else(|| self.progress_ratio_from_position(position));
         let Some(ratio) = ratio else {
             return;
         };
         if !force {
-            if let Some(last) = self.last_seek_at {
+            if let Some(last) = self.seek.last_seek_at {
                 if now.duration_since(last) < Self::SEEK_THROTTLE {
                     return;
                 }
             }
         }
-        self.last_seek_at = Some(now);
-        self.last_seek_ratio = Some(ratio);
+        self.seek.last_seek_at = Some(now);
+        self.seek.last_seek_ratio = Some(ratio);
         self.seek_from_ratio(ratio);
     }
 
@@ -140,16 +160,16 @@ impl VideoControls {
         if let Some(controls) = self.controls.as_ref() {
             controls.begin_scrub();
         }
-        self.dragging = true;
-        self.last_seek_at = None;
-        self.last_seek_ratio = None;
+        self.seek.dragging = true;
+        self.seek.last_seek_at = None;
+        self.seek.last_seek_ratio = None;
         self.update_drag_ratio(position);
         self.seek_from_position_throttled(position, Instant::now(), true);
         cx.notify();
     }
 
     fn update_seek_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        if !self.dragging {
+        if !self.seek.dragging {
             return;
         }
         self.update_drag_ratio(position);
@@ -158,14 +178,14 @@ impl VideoControls {
     }
 
     fn end_seek_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        if !self.dragging {
+        if !self.seek.dragging {
             return;
         }
         self.update_drag_ratio(position);
         let should_seek = if self.paused {
             true
         } else {
-            match (self.drag_ratio, self.last_seek_ratio) {
+            match (self.seek.drag_ratio, self.seek.last_seek_ratio) {
                 (Some(current), Some(last)) => (current - last).abs() > Self::RELEASE_EPSILON,
                 (Some(_), None) => true,
                 _ => false,
@@ -174,10 +194,7 @@ impl VideoControls {
         if should_seek {
             self.seek_from_position_throttled(position, Instant::now(), true);
         }
-        self.dragging = false;
-        self.last_seek_at = None;
-        self.drag_ratio = None;
-        self.last_seek_ratio = None;
+        self.seek.reset_dragging();
         if let Some(controls) = self.controls.as_ref() {
             controls.end_scrub();
         }
@@ -187,7 +204,7 @@ impl VideoControls {
 
 impl Render for VideoControls {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.dragging {
+        if self.seek.dragging {
             let handle = cx.entity();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Capture {
@@ -250,7 +267,7 @@ impl Render for VideoControls {
             total_frames = snapshot.metadata.calculate_total_frames().unwrap_or(0);
         }
 
-        let progress = if let Some(ratio) = self.drag_ratio {
+        let progress = if let Some(ratio) = self.seek.drag_ratio {
             ratio
         } else if total_time.as_secs_f64() > 0.0 {
             (current_time.as_secs_f64() / total_time.as_secs_f64()).clamp(0.0, 1.0) as f32
