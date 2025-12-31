@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use ffmpeg::util::error::{EAGAIN, EWOULDBLOCK};
@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use crate::core::{
     DecoderController, DecoderError, DecoderProvider, DecoderResult, FrameStream, VideoFrame,
 };
-use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::mpsc::Sender;
 
 const BACKEND_NAME: &str = "ffmpeg";
 const FILTER_SPEC: &str = "format=nv12";
@@ -26,6 +26,7 @@ struct VideoFilterPipeline {
     frame_rate: Option<(i32, i32)>,
     next_fallback_index: u64,
     start_frame: Option<u64>,
+    serial: Arc<AtomicU64>,
 }
 
 impl VideoFilterPipeline {
@@ -34,6 +35,7 @@ impl VideoFilterPipeline {
         frame_rate: Option<(i32, i32)>,
         frame: &ffmpeg::util::frame::Video,
         start_frame: Option<u64>,
+        serial: Arc<AtomicU64>,
     ) -> DecoderResult<Self> {
         let mut graph = ffmpeg::filter::Graph::new();
 
@@ -122,6 +124,7 @@ impl VideoFilterPipeline {
             frame_rate,
             next_fallback_index: 0,
             start_frame,
+            serial,
         })
     }
 
@@ -165,11 +168,13 @@ impl VideoFilterPipeline {
             loop {
                 match sink.frame(&mut self.filtered) {
                     Ok(()) => {
+                        let serial = self.serial.load(Ordering::SeqCst);
                         let frame = frame_from_converted(
                             &self.filtered,
                             sink_time_base,
                             self.frame_rate,
                             &mut self.next_fallback_index,
+                            serial,
                         )?;
                         ffmpeg::ffi::av_frame_unref(self.filtered.as_mut_ptr());
                         if let Some(start_frame) = self.start_frame
@@ -215,6 +220,7 @@ pub struct FFmpegProvider {
     metadata: crate::core::VideoMetadata,
     start_frame: Option<u64>,
     handles: Option<FFmpegHandles>,
+    serial: Option<Arc<AtomicU64>>,
 }
 
 impl FFmpegProvider {
@@ -284,6 +290,13 @@ impl FFmpegProvider {
     }
 
     fn decode_loop(&mut self) -> DecoderResult<()> {
+        let serial = self
+            .serial
+            .as_ref()
+            .ok_or_else(|| {
+                DecoderError::backend_failure(BACKEND_NAME, "ffmpeg serial handle not set")
+            })
+            .map(Arc::clone)?;
         let handles = self.handles.as_mut().ok_or_else(|| {
             DecoderError::backend_failure(BACKEND_NAME, "ffmpeg backend was not initialized")
         })?;
@@ -316,6 +329,7 @@ impl FFmpegProvider {
                 frame_rate,
                 self.start_frame,
                 &tx,
+                &serial,
             )?;
         }
 
@@ -330,6 +344,7 @@ impl FFmpegProvider {
             frame_rate,
             self.start_frame,
             &tx,
+            &serial,
         )?;
         if let Some(filter) = filter.as_mut() {
             filter.flush()?;
@@ -343,7 +358,6 @@ impl FFmpegProvider {
         &self,
         target_ts: i64,
         flags: i32,
-        frame_rx: Option<&mut mpsc::Receiver<DecoderResult<VideoFrame>>>,
         filter: Option<&mut Option<VideoFilterPipeline>>,
     ) -> DecoderResult<()> {
         let handles = self.handles.as_ref().ok_or_else(|| {
@@ -354,16 +368,6 @@ impl FFmpegProvider {
 
         let mut ictx = handles.ictx.lock();
         let mut decoder = handles.decoder.lock();
-
-        if let Some(frame_rx) = frame_rx {
-            loop {
-                match frame_rx.try_recv() {
-                    Ok(_) => {}
-                    Err(mpsc::error::TryRecvError::Empty) => break,
-                    Err(mpsc::error::TryRecvError::Disconnected) => break,
-                }
-            }
-        }
 
         unsafe {
             let fmt_ctx = ictx.as_mut_ptr();
@@ -432,6 +436,7 @@ impl DecoderProvider for FFmpegProvider {
             metadata,
             start_frame: config.start_frame,
             handles: None,
+            serial: None,
         })
     }
 
@@ -443,9 +448,10 @@ impl DecoderProvider for FFmpegProvider {
         let mut provider = *self;
         let capacity = provider.channel_capacity;
         let (tx, rx) = tokio::sync::mpsc::channel(capacity);
-        provider.init_handles(tx.clone())?;
 
         let controller = DecoderController::new();
+        provider.serial = Some(controller.serial_handle());
+        provider.init_handles(tx.clone())?;
 
         let stream = {
             let stream = unfold(rx, |mut receiver| async {
@@ -472,6 +478,7 @@ fn drain_decoder(
     frame_rate: Option<(i32, i32)>,
     start_frame: Option<u64>,
     tx: &Sender<DecoderResult<VideoFrame>>,
+    serial: &Arc<AtomicU64>,
 ) -> DecoderResult<()> {
     loop {
         match decoder.receive_frame(decoded) {
@@ -482,6 +489,7 @@ fn drain_decoder(
                         frame_rate,
                         decoded,
                         start_frame,
+                        Arc::clone(serial),
                     )
                     .map_err(|err| {
                         unsafe {
@@ -515,6 +523,7 @@ fn frame_from_converted(
     time_base: ffmpeg::Rational,
     frame_rate: Option<(i32, i32)>,
     next_fallback_index: &mut u64,
+    serial: u64,
 ) -> DecoderResult<VideoFrame> {
     let width = frame.width();
     let height = frame.height();
@@ -531,7 +540,7 @@ fn frame_from_converted(
     let frame = VideoFrame::from_nv12_owned(
         width, height, y_stride, uv_stride, timestamp, y_plane, uv_plane,
     )?;
-    Ok(frame.with_serial(0).with_frame_index(frame_index))
+    Ok(frame.with_serial(serial).with_frame_index(frame_index))
 }
 
 fn copy_plane(plane: &[u8], stride: usize, rows: usize, label: &str) -> DecoderResult<Vec<u8>> {
