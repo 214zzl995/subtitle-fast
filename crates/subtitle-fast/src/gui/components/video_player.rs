@@ -14,6 +14,7 @@ use tokio_stream::StreamExt;
 #[derive(Clone)]
 pub struct VideoPlayerControlHandle {
     paused: Arc<AtomicBool>,
+    scrubbing: Arc<AtomicBool>,
     decoder: Arc<Mutex<Option<DecoderController>>>,
     seek_timing: Arc<Mutex<Option<SeekTiming>>>,
 }
@@ -22,6 +23,7 @@ impl VideoPlayerControlHandle {
     fn new() -> Self {
         Self {
             paused: Arc::new(AtomicBool::new(false)),
+            scrubbing: Arc::new(AtomicBool::new(false)),
             decoder: Arc::new(Mutex::new(None)),
             seek_timing: Arc::new(Mutex::new(None)),
         }
@@ -48,6 +50,14 @@ impl VideoPlayerControlHandle {
         self.paused.store(!paused, Ordering::SeqCst);
     }
 
+    pub fn begin_scrub(&self) {
+        self.scrubbing.store(true, Ordering::SeqCst);
+    }
+
+    pub fn end_scrub(&self) {
+        self.scrubbing.store(false, Ordering::SeqCst);
+    }
+
     pub fn seek_to(&self, position: Duration) {
         self.send_seek(SeekInfo::Time {
             position,
@@ -64,6 +74,10 @@ impl VideoPlayerControlHandle {
 
     fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
+    }
+
+    fn is_scrubbing(&self) -> bool {
+        self.scrubbing.load(Ordering::SeqCst)
     }
 
     fn send_seek(&self, info: SeekInfo) {
@@ -293,17 +307,19 @@ fn spawn_decoder(
 
             loop {
                 let paused = control.is_paused();
-                if paused {
+                let scrubbing = control.is_scrubbing();
+                let paused_like = paused || scrubbing;
+                if paused_like {
                     if paused_at.is_none() {
                         paused_at = Some(Instant::now());
                     }
-                    if control.pending_seek_serial().is_none() {
+                    if !(scrubbing && control.pending_seek_serial().is_some()) {
                         tokio::time::sleep(Duration::from_millis(30)).await;
                         continue;
                     }
                 }
 
-                if !paused {
+                if !paused_like {
                     if let Some(paused_at) = paused_at.take() {
                         let pause_duration = Instant::now().saturating_duration_since(paused_at);
                         start_instant += pause_duration;
@@ -335,7 +351,7 @@ fn spawn_decoder(
                             );
                         }
                         if !started {
-                            if !paused {
+                            if !paused_like {
                                 start_instant = Instant::now();
                                 next_deadline = start_instant;
                                 started = true;
@@ -344,7 +360,7 @@ fn spawn_decoder(
 
                         if let Some(timestamp) = frame.timestamp() {
                             let first = first_timestamp.get_or_insert(timestamp);
-                            if !paused {
+                            if !paused_like {
                                 if let Some(delta) = timestamp.checked_sub(*first) {
                                     let target = start_instant + delta;
                                     let now = Instant::now();
@@ -354,7 +370,7 @@ fn spawn_decoder(
                                 }
                             }
                         } else if let Some(duration) = frame_duration {
-                            if !paused {
+                            if !paused_like {
                                 let now = Instant::now();
                                 if next_deadline > now {
                                     tokio::time::sleep(next_deadline - now).await;

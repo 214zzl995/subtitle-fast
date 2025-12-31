@@ -42,6 +42,9 @@ impl VideoControls {
         controls: Option<VideoPlayerControlHandle>,
         info: Option<VideoPlayerInfoHandle>,
     ) {
+        if let Some(previous) = self.controls.as_ref() {
+            previous.end_scrub();
+        }
         self.controls = controls;
         self.info = info;
         self.paused = false;
@@ -134,6 +137,9 @@ impl VideoControls {
     }
 
     fn begin_seek_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        if let Some(controls) = self.controls.as_ref() {
+            controls.begin_scrub();
+        }
         self.dragging = true;
         self.last_seek_at = None;
         self.last_seek_ratio = None;
@@ -172,6 +178,9 @@ impl VideoControls {
         self.last_seek_at = None;
         self.drag_ratio = None;
         self.last_seek_ratio = None;
+        if let Some(controls) = self.controls.as_ref() {
+            controls.end_scrub();
+        }
         cx.notify();
     }
 }
