@@ -1,9 +1,9 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    Bounds, Context, IsZero, MouseButton, MouseDownEvent, Pixels, Point, Render, Window, div, hsla,
-    px, relative, rgb,
+    Bounds, Context, DispatchPhase, IsZero, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Render, Window, div, hsla, px, relative, rgb,
 };
 
 use crate::gui::components::{VideoPlayerControlHandle, VideoPlayerInfoHandle};
@@ -14,15 +14,21 @@ pub struct VideoControls {
     info: Option<VideoPlayerInfoHandle>,
     paused: bool,
     progress_bounds: Option<Bounds<Pixels>>,
+    dragging: bool,
+    last_seek_at: Option<Instant>,
 }
 
 impl VideoControls {
+    const SEEK_THROTTLE: Duration = Duration::from_millis(100);
+
     pub fn new() -> Self {
         Self {
             controls: None,
             info: None,
             paused: false,
             progress_bounds: None,
+            dragging: false,
+            last_seek_at: None,
         }
     }
 
@@ -35,6 +41,8 @@ impl VideoControls {
         self.info = info;
         self.paused = false;
         self.progress_bounds = None;
+        self.dragging = false;
+        self.last_seek_at = None;
     }
 
     fn toggle_playback(&mut self, cx: &mut Context<Self>) {
@@ -90,10 +98,73 @@ impl VideoControls {
             controls.seek_to_frame(frame);
         }
     }
+
+    fn seek_from_position_throttled(&mut self, position: Point<Pixels>, now: Instant, force: bool) {
+        if !force {
+            if let Some(last) = self.last_seek_at {
+                if now.duration_since(last) < Self::SEEK_THROTTLE {
+                    return;
+                }
+            }
+        }
+        self.last_seek_at = Some(now);
+        self.seek_from_position(position);
+    }
+
+    fn begin_seek_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        self.dragging = true;
+        self.last_seek_at = None;
+        self.seek_from_position_throttled(position, Instant::now(), true);
+        cx.notify();
+    }
+
+    fn update_seek_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        if !self.dragging {
+            return;
+        }
+        self.seek_from_position_throttled(position, Instant::now(), false);
+        cx.notify();
+    }
+
+    fn end_seek_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        if !self.dragging {
+            return;
+        }
+        self.seek_from_position_throttled(position, Instant::now(), true);
+        self.dragging = false;
+        self.last_seek_at = None;
+        cx.notify();
+    }
 }
 
 impl Render for VideoControls {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.dragging {
+            let handle = cx.entity();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                if phase != DispatchPhase::Capture {
+                    return;
+                }
+                let _ = handle.update(cx, |this, cx| {
+                    this.update_seek_drag(event.position, cx);
+                });
+                window.refresh();
+            });
+
+            let handle = cx.entity();
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                if phase != DispatchPhase::Capture {
+                    return;
+                }
+                if event.button == MouseButton::Left {
+                    let _ = handle.update(cx, |this, cx| {
+                        this.end_seek_drag(event.position, cx);
+                    });
+                    window.refresh();
+                }
+            });
+        }
+
         let playback_icon = if self.paused { Icon::Play } else { Icon::Pause };
         let mut current_time = Duration::ZERO;
         let mut total_time = Duration::ZERO;
@@ -182,8 +253,8 @@ impl Render for VideoControls {
                 })
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, event: &MouseDownEvent, _window, _cx| {
-                        this.seek_from_position(event.position);
+                    cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                        this.begin_seek_drag(event.position, cx);
                     }),
                 )
                 .child(progress_bar)
