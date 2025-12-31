@@ -291,6 +291,16 @@ struct DecoderSession {
     frame_duration: Option<Duration>,
 }
 
+#[derive(Clone)]
+struct CachedFrame {
+    width: u32,
+    height: u32,
+    y_stride: usize,
+    uv_stride: usize,
+    y_plane: Arc<[u8]>,
+    uv_plane: Arc<[u8]>,
+}
+
 struct SeekTiming {
     serial: u64,
     sent_at: Instant,
@@ -349,6 +359,7 @@ fn handle_command(
     seek_timing: &mut Option<SeekTiming>,
     open_requested: &mut bool,
     preprocessor: &mut Option<FramePreprocessor>,
+    refresh_cached: &mut bool,
     info: &VideoPlayerInfoHandle,
 ) -> bool {
     match command {
@@ -405,6 +416,7 @@ fn handle_command(
         }
         PlayerCommand::SetPreprocessor(hook) => {
             *preprocessor = hook;
+            *refresh_cached = true;
         }
     }
     true
@@ -446,6 +458,7 @@ fn spawn_decoder(
             let mut pending_seek: Option<SeekInfo> = None;
             let mut seek_timing: Option<SeekTiming> = None;
             let mut preprocessor: Option<FramePreprocessor> = None;
+            let mut last_frame: Option<CachedFrame> = None;
 
             let mut started = false;
             let mut start_instant = Instant::now();
@@ -492,6 +505,7 @@ fn spawn_decoder(
                         let Some(command) = command_rx.recv().await else {
                             break;
                         };
+                        let mut refresh_cached = false;
                         if !handle_command(
                             command,
                             session.as_ref(),
@@ -501,9 +515,19 @@ fn spawn_decoder(
                             &mut seek_timing,
                             &mut open_requested,
                             &mut preprocessor,
+                            &mut refresh_cached,
                             &info,
                         ) {
                             break;
+                        }
+                        if refresh_cached {
+                            if let Some(cache) = last_frame.as_ref() {
+                                if let Some(gpui_frame) =
+                                    frame_from_cache(cache, preprocessor.as_ref())
+                                {
+                                    let _ = sender.send(gpui_frame);
+                                }
+                            }
                         }
                     }
                     continue;
@@ -527,6 +551,7 @@ fn spawn_decoder(
                         _ = tokio::time::sleep(Duration::from_millis(30)) => None,
                     };
                     if let Some(command) = command {
+                        let mut refresh_cached = false;
                         if !handle_command(
                             command,
                             session.as_ref(),
@@ -536,9 +561,19 @@ fn spawn_decoder(
                             &mut seek_timing,
                             &mut open_requested,
                             &mut preprocessor,
+                            &mut refresh_cached,
                             &info,
                         ) {
                             break;
+                        }
+                        if refresh_cached {
+                            if let Some(cache) = last_frame.as_ref() {
+                                if let Some(gpui_frame) =
+                                    frame_from_cache(cache, preprocessor.as_ref())
+                                {
+                                    let _ = sender.send(gpui_frame);
+                                }
+                            }
                         }
                         if open_requested {
                             session = None;
@@ -557,6 +592,7 @@ fn spawn_decoder(
                         let Some(command) = cmd else {
                             break;
                         };
+                        let mut refresh_cached = false;
                         if !handle_command(
                             command,
                             session.as_ref(),
@@ -566,9 +602,19 @@ fn spawn_decoder(
                             &mut seek_timing,
                             &mut open_requested,
                             &mut preprocessor,
+                            &mut refresh_cached,
                             &info,
                         ) {
                             break;
+                        }
+                        if refresh_cached {
+                            if let Some(cache) = last_frame.as_ref() {
+                                if let Some(gpui_frame) =
+                                    frame_from_cache(cache, preprocessor.as_ref())
+                                {
+                                    let _ = sender.send(gpui_frame);
+                                }
+                            }
                         }
                         restart_requested = open_requested;
                     }
@@ -633,11 +679,14 @@ fn spawn_decoder(
                                     state.last_frame_index = frame.frame_index();
                                 });
 
-                                if let Some(gpui_frame) =
-                                    to_gpui_frame(&frame, preprocessor.as_ref())
-                                {
+                                if let Some(cache) = cache_from_video_frame(&frame) {
+                                    last_frame = Some(cache.clone());
+                                    if let Some(gpui_frame) =
+                                        frame_from_cache(&cache, preprocessor.as_ref())
+                                    {
                                     if sender.send(gpui_frame).is_err() {
                                         break;
+                                    }
                                     }
                                 }
                             }
@@ -673,37 +722,66 @@ fn spawn_decoder(
     });
 }
 
-fn to_gpui_frame(frame: &VideoFrame, preprocessor: Option<&FramePreprocessor>) -> Option<Frame> {
+fn cache_from_video_frame(frame: &VideoFrame) -> Option<CachedFrame> {
     if frame.native().is_some() {
         eprintln!("native frame output is unsupported in this component; use NV12 output");
         return None;
     }
 
-    let mut y_plane = frame.y_plane().to_vec();
-    let mut uv_plane = frame.uv_plane().to_vec();
+    let y_plane = Arc::from(frame.y_plane().to_vec().into_boxed_slice());
+    let uv_plane = Arc::from(frame.uv_plane().to_vec().into_boxed_slice());
 
+    Some(CachedFrame {
+        width: frame.width(),
+        height: frame.height(),
+        y_stride: frame.y_stride(),
+        uv_stride: frame.uv_stride(),
+        y_plane,
+        uv_plane,
+    })
+}
+
+fn frame_from_cache(
+    cache: &CachedFrame,
+    preprocessor: Option<&FramePreprocessor>,
+) -> Option<Frame> {
     if let Some(preprocessor) = preprocessor {
+        let mut y_plane = cache.y_plane.as_ref().to_vec();
+        let mut uv_plane = cache.uv_plane.as_ref().to_vec();
         let info = Nv12FrameInfo {
-            width: frame.width(),
-            height: frame.height(),
-            y_stride: frame.y_stride(),
-            uv_stride: frame.uv_stride(),
+            width: cache.width,
+            height: cache.height,
+            y_stride: cache.y_stride,
+            uv_stride: cache.uv_stride,
         };
         if !(preprocessor)(&mut y_plane, &mut uv_plane, info) {
             return None;
         }
-    }
 
-    Frame::from_nv12_owned(
-        frame.width(),
-        frame.height(),
-        frame.y_stride(),
-        frame.uv_stride(),
-        y_plane,
-        uv_plane,
-    )
-    .map_err(|err| {
-        eprintln!("failed to build NV12 frame: {err}");
-    })
-    .ok()
+        Frame::from_nv12_owned(
+            cache.width,
+            cache.height,
+            cache.y_stride,
+            cache.uv_stride,
+            y_plane,
+            uv_plane,
+        )
+        .map_err(|err| {
+            eprintln!("failed to build NV12 frame: {err}");
+        })
+        .ok()
+    } else {
+        Frame::from_nv12(
+            cache.width,
+            cache.height,
+            cache.y_stride,
+            cache.uv_stride,
+            Arc::clone(&cache.y_plane),
+            Arc::clone(&cache.uv_plane),
+        )
+        .map_err(|err| {
+            eprintln!("failed to build NV12 frame: {err}");
+        })
+        .ok()
+    }
 }

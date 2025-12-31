@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::gui::components::{
     CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle, Titlebar, VideoControls,
-    VideoPlayer,
+    VideoPlayer, VideoToolbar,
 };
 use crate::gui::icons::{Icon, icon_md};
 
@@ -82,6 +82,7 @@ impl SubtitleFastApp {
                         Duration::from_millis(160),
                         cx,
                     );
+                    let toolbar_view = cx.new(|_| VideoToolbar::new());
                     let controls_view = cx.new(|_| VideoControls::new());
                     cx.new(|_| {
                         MainWindow::new(
@@ -90,6 +91,7 @@ impl SubtitleFastApp {
                             left_panel,
                             left_panel_handle,
                             right_panel,
+                            toolbar_view,
                             controls_view,
                         )
                     })
@@ -107,6 +109,7 @@ pub struct MainWindow {
     left_panel: Entity<Sidebar>,
     _left_panel_handle: SidebarHandle,
     right_panel: Entity<Sidebar>,
+    toolbar_view: Entity<VideoToolbar>,
     controls_view: Entity<VideoControls>,
 }
 
@@ -117,6 +120,7 @@ impl MainWindow {
         left_panel: Entity<Sidebar>,
         left_panel_handle: SidebarHandle,
         right_panel: Entity<Sidebar>,
+        toolbar_view: Entity<VideoToolbar>,
         controls_view: Entity<VideoControls>,
     ) -> Self {
         Self {
@@ -125,6 +129,7 @@ impl MainWindow {
             left_panel,
             _left_panel_handle: left_panel_handle,
             right_panel,
+            toolbar_view,
             controls_view,
         }
     }
@@ -167,7 +172,11 @@ impl MainWindow {
         let (player, controls, info) = VideoPlayer::new(path);
         self.player = Some(cx.new(|_| player));
         let _ = self.controls_view.update(cx, |controls_view, cx| {
-            controls_view.set_handles(Some(controls), Some(info));
+            controls_view.set_handles(Some(controls.clone()), Some(info));
+            cx.notify();
+        });
+        let _ = self.toolbar_view.update(cx, |toolbar_view, cx| {
+            toolbar_view.set_controls(Some(controls));
             cx.notify();
         });
         cx.notify();
@@ -185,11 +194,10 @@ impl Render for MainWindow {
             .h_full()
             .child(self.titlebar.clone())
             .child({
-                let reserved_area = div().w_full().h(px(56.0));
                 let video_wrapper = if let Some(video) = video_content {
                     div()
                         .flex()
-                        .flex_1()
+                        .flex_none()
                         .w_full()
                         .rounded(px(16.0))
                         .overflow_hidden()
@@ -199,7 +207,7 @@ impl Render for MainWindow {
                 } else {
                     div()
                         .flex()
-                        .flex_1()
+                        .flex_none()
                         .w_full()
                         .rounded(px(16.0))
                         .overflow_hidden()
@@ -223,6 +231,10 @@ impl Render for MainWindow {
                             this.prompt_for_video(cx);
                         }))
                 };
+                let video_wrapper = video_wrapper.map(|mut view| {
+                    view.style().aspect_ratio = Some(3.0 / 2.0);
+                    view
+                });
 
                 let video_area = div()
                     .flex()
@@ -233,7 +245,7 @@ impl Render for MainWindow {
                     .bg(rgb(0x1b1b1b))
                     .p(px(16.0))
                     .gap(px(12.0))
-                    .child(reserved_area)
+                    .child(self.toolbar_view.clone())
                     .child(video_wrapper)
                     .child(self.controls_view.clone());
 
