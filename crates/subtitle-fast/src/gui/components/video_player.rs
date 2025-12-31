@@ -348,6 +348,7 @@ fn handle_command(
             info.update(|state| state.scrubbing = false);
         }
         PlayerCommand::Seek(seek) => {
+            info.apply_seek_preview(seek);
             if let Some(session) = session {
                 match session.controller.seek(seek) {
                     Ok(serial) => {
@@ -361,14 +362,12 @@ fn handle_command(
                         *pending_seek = Some(seek);
                         *seek_timing = None;
                         *open_requested = true;
-                        info.apply_seek_preview(seek);
                     }
                 }
             } else {
                 *pending_seek = Some(seek);
                 *seek_timing = None;
                 *open_requested = true;
-                info.apply_seek_preview(seek);
             }
         }
         PlayerCommand::Replay => {
