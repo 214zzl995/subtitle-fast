@@ -10,7 +10,8 @@ use futures_util::stream::unfold;
 use parking_lot::Mutex;
 
 use crate::core::{
-    DecoderController, DecoderError, DecoderProvider, DecoderResult, FrameStream, VideoFrame,
+    DecoderController, DecoderError, DecoderProvider, DecoderResult, FrameStream, SeekInfo,
+    SeekMode, SeekReceiver, VideoFrame,
 };
 use tokio::sync::mpsc::Sender;
 
@@ -28,6 +29,9 @@ struct VideoFilterPipeline {
     start_frame: Option<u64>,
     serial: Arc<AtomicU64>,
 }
+
+// Safe because the pipeline is only used on the decode thread and never shared.
+unsafe impl Send for VideoFilterPipeline {}
 
 impl VideoFilterPipeline {
     fn new(
@@ -207,6 +211,7 @@ struct FFmpegHandles {
     stream_index: usize,
     time_base: ffmpeg::Rational,
     frame_rate: Option<(i32, i32)>,
+    filter: Mutex<Option<VideoFilterPipeline>>,
     tx: Sender<DecoderResult<VideoFrame>>,
     #[allow(dead_code)]
     abort_decode: AtomicBool,
@@ -281,6 +286,7 @@ impl FFmpegProvider {
             stream_index,
             time_base,
             frame_rate,
+            filter: Mutex::new(None),
             tx,
             abort_decode: AtomicBool::new(false),
             seeking: AtomicBool::new(false),
@@ -304,11 +310,13 @@ impl FFmpegProvider {
         let time_base = handles.time_base;
         let frame_rate = handles.frame_rate;
         let tx = handles.tx.clone();
-        let mut ictx = handles.ictx.lock();
-        let mut decoder = handles.decoder.lock();
-
-        let mut filter: Option<VideoFilterPipeline> = None;
+        let ictx = Arc::clone(&handles.ictx);
+        let decoder = Arc::clone(&handles.decoder);
+        let mut ictx = ictx.lock();
+        let mut decoder = decoder.lock();
         let mut decoded = ffmpeg::util::frame::Video::empty();
+
+        let mut filter = handles.filter.lock();
 
         for (stream, packet) in ictx.packets() {
             if stream.index() != stream_index {
@@ -354,15 +362,18 @@ impl FFmpegProvider {
     }
 
     #[allow(dead_code)]
-    fn interrupt_and_seek(
-        &self,
-        target_ts: i64,
-        flags: i32,
-        filter: Option<&mut Option<VideoFilterPipeline>>,
-    ) -> DecoderResult<()> {
+    fn interrupt_and_seek(&self, seek_rx: &mut SeekReceiver) -> DecoderResult<()> {
+        if !seek_rx.has_changed().unwrap_or(false) {
+            return Ok(());
+        }
+        let Some(info) = *seek_rx.borrow_and_update() else {
+            return Ok(());
+        };
         let handles = self.handles.as_ref().ok_or_else(|| {
             DecoderError::backend_failure(BACKEND_NAME, "ffmpeg backend was not initialized")
         })?;
+        let (target_ts, flags) =
+            seek_target_from_info(info, handles.time_base, handles.frame_rate)?;
         handles.abort_decode.store(true, Ordering::SeqCst);
         handles.seeking.store(true, Ordering::SeqCst);
 
@@ -402,8 +413,8 @@ impl FFmpegProvider {
             }
         }
 
-        if let Some(filter) = filter {
-            *filter = None;
+        if let Some(filter) = handles.filter.lock().as_mut() {
+            filter.flush()?;
         }
 
         Ok(())
@@ -595,6 +606,57 @@ fn compute_frame_index(
     let value = *next_fallback_index;
     *next_fallback_index = next_fallback_index.saturating_add(1);
     Some(value)
+}
+
+fn seek_target_from_info(
+    info: SeekInfo,
+    time_base: ffmpeg::Rational,
+    frame_rate: Option<(i32, i32)>,
+) -> DecoderResult<(i64, i32)> {
+    let (seconds, mode) = match info {
+        SeekInfo::Time { position, mode } => (position.as_secs_f64(), mode),
+        SeekInfo::Frame { frame, mode } => {
+            let (num, den) = frame_rate.ok_or_else(|| {
+                DecoderError::configuration(
+                    "ffmpeg backend requires frame rate metadata to seek by frame",
+                )
+            })?;
+            if num <= 0 || den <= 0 {
+                return Err(DecoderError::configuration(
+                    "ffmpeg backend requires a valid frame rate to seek by frame",
+                ));
+            }
+            let fps = num as f64 / den as f64;
+            (frame as f64 / fps, mode)
+        }
+    };
+
+    if !seconds.is_finite() || seconds.is_sign_negative() {
+        return Err(DecoderError::configuration("invalid seek timestamp"));
+    }
+
+    let time_base_seconds = f64::from(time_base);
+    if !time_base_seconds.is_finite() || time_base_seconds <= 0.0 {
+        return Err(DecoderError::backend_failure(
+            BACKEND_NAME,
+            "ffmpeg time base is invalid".to_string(),
+        ));
+    }
+
+    let target = seconds / time_base_seconds;
+    if !target.is_finite() || target < i64::MIN as f64 || target > i64::MAX as f64 {
+        return Err(DecoderError::configuration(
+            "seek timestamp is out of range",
+        ));
+    }
+
+    let target_ts = target.round() as i64;
+    let flags = match mode {
+        SeekMode::Fast => ffmpeg::ffi::AVSEEK_FLAG_ANY,
+        SeekMode::Accurate => 0,
+    };
+
+    Ok((target_ts, flags))
 }
 
 fn stream_frame_rate(stream: &ffmpeg::format::stream::Stream) -> Option<(i32, i32)> {
