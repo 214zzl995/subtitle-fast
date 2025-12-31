@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::gui::components::{
     CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle, Titlebar, VideoControls,
-    VideoPlayer, VideoToolbar,
+    VideoPlayer, VideoRoiHandle, VideoRoiOverlay, VideoToolbar,
 };
 use crate::gui::icons::{Icon, icon_md};
 
@@ -84,6 +84,8 @@ impl SubtitleFastApp {
                     );
                     let toolbar_view = cx.new(|_| VideoToolbar::new());
                     let controls_view = cx.new(|_| VideoControls::new());
+                    let (roi_overlay, roi_handle) = VideoRoiOverlay::new();
+                    let roi_overlay_view = cx.new(|_| roi_overlay);
                     cx.new(|_| {
                         MainWindow::new(
                             None,
@@ -93,6 +95,8 @@ impl SubtitleFastApp {
                             right_panel,
                             toolbar_view,
                             controls_view,
+                            roi_overlay_view,
+                            roi_handle,
                         )
                     })
                 },
@@ -111,6 +115,8 @@ pub struct MainWindow {
     right_panel: Entity<Sidebar>,
     toolbar_view: Entity<VideoToolbar>,
     controls_view: Entity<VideoControls>,
+    roi_overlay: Entity<VideoRoiOverlay>,
+    _roi_handle: VideoRoiHandle,
 }
 
 impl MainWindow {
@@ -122,6 +128,8 @@ impl MainWindow {
         right_panel: Entity<Sidebar>,
         toolbar_view: Entity<VideoToolbar>,
         controls_view: Entity<VideoControls>,
+        roi_overlay: Entity<VideoRoiOverlay>,
+        roi_handle: VideoRoiHandle,
     ) -> Self {
         Self {
             player,
@@ -131,6 +139,8 @@ impl MainWindow {
             right_panel,
             toolbar_view,
             controls_view,
+            roi_overlay,
+            _roi_handle: roi_handle,
         }
     }
 
@@ -172,12 +182,15 @@ impl MainWindow {
         let (player, controls, info) = VideoPlayer::new(path);
         self.player = Some(cx.new(|_| player));
         let _ = self.controls_view.update(cx, |controls_view, cx| {
-            controls_view.set_handles(Some(controls.clone()), Some(info));
+            controls_view.set_handles(Some(controls.clone()), Some(info.clone()));
             cx.notify();
         });
         let _ = self.toolbar_view.update(cx, |toolbar_view, cx| {
             toolbar_view.set_controls(Some(controls));
             cx.notify();
+        });
+        let _ = self.roi_overlay.update(cx, |overlay, cx| {
+            overlay.set_info_handle(Some(info), cx);
         });
         cx.notify();
     }
@@ -195,6 +208,7 @@ impl Render for MainWindow {
             .child(self.titlebar.clone())
             .child({
                 let video_wrapper = if let Some(video) = video_content {
+                    let roi_overlay = self.roi_overlay.clone();
                     div()
                         .flex()
                         .flex_none()
@@ -202,7 +216,7 @@ impl Render for MainWindow {
                         .rounded(px(16.0))
                         .overflow_hidden()
                         .bg(rgb(0x111111))
-                        .child(video)
+                        .child(div().relative().size_full().child(video).child(roi_overlay))
                         .id(("video-wrapper", cx.entity_id()))
                 } else {
                     div()
