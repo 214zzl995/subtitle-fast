@@ -20,7 +20,7 @@ pub struct VideoPlayerControlHandle {
     decoder: Arc<Mutex<Option<DecoderController>>>,
     seek_timing: Arc<Mutex<Option<SeekTiming>>>,
     pending_seek: Arc<Mutex<Option<SeekInfo>>>,
-    restart_tx: Arc<Mutex<Option<Sender<()>>>>,
+    restart_tx: Arc<Mutex<Option<Sender<RestartRequest>>>>,
 }
 
 impl VideoPlayerControlHandle {
@@ -62,12 +62,32 @@ impl VideoPlayerControlHandle {
         *slot = None;
     }
 
-    fn set_restart_sender(&self, sender: Sender<()>) {
+    fn set_restart_sender(&self, sender: Sender<RestartRequest>) {
         let mut slot = self
             .restart_tx
             .lock()
             .expect("restart sender mutex poisoned");
         *slot = Some(sender);
+    }
+
+    fn clear_pending_seek(&self) {
+        let mut pending = self
+            .pending_seek
+            .lock()
+            .expect("pending seek mutex poisoned");
+        *pending = None;
+    }
+
+    fn request_restart(&self, request: RestartRequest) {
+        let sender = self
+            .restart_tx
+            .lock()
+            .expect("restart sender mutex poisoned")
+            .as_ref()
+            .cloned();
+        if let Some(sender) = sender {
+            let _ = sender.send(request);
+        }
     }
 
     fn reset_seek_timing(&self) {
@@ -128,14 +148,7 @@ impl VideoPlayerControlHandle {
                 .pending_seek
                 .lock()
                 .expect("pending seek mutex poisoned") = Some(info);
-            if let Some(sender) = self
-                .restart_tx
-                .lock()
-                .expect("restart sender mutex poisoned")
-                .as_ref()
-            {
-                let _ = sender.send(());
-            }
+            self.request_restart(RestartRequest::Seek(info));
             return;
         };
         match controller.seek(info) {
@@ -175,6 +188,12 @@ struct SeekTiming {
     sent_at: Instant,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum RestartRequest {
+    Replay,
+    Seek(SeekInfo),
+}
+
 #[derive(Clone)]
 pub struct VideoPlayerInfoHandle {
     inner: Arc<Mutex<VideoPlayerInfoState>>,
@@ -207,6 +226,38 @@ impl VideoPlayerInfoHandle {
             state.last_timestamp = None;
             state.last_frame_index = None;
             state.ended = false;
+        });
+    }
+
+    fn apply_seek_preview(&self, info: SeekInfo) {
+        self.update(|state| {
+            state.ended = false;
+            state.last_timestamp = None;
+            state.last_frame_index = None;
+            match info {
+                SeekInfo::Time { position, .. } => {
+                    state.last_timestamp = Some(position);
+                    if let Some(fps) = state.metadata.fps {
+                        if fps.is_finite() && fps > 0.0 {
+                            let frame = position.as_secs_f64() * fps;
+                            if frame.is_finite() && frame >= 0.0 {
+                                state.last_frame_index = Some(frame.round() as u64);
+                            }
+                        }
+                    }
+                }
+                SeekInfo::Frame { frame, .. } => {
+                    state.last_frame_index = Some(frame);
+                    if let Some(fps) = state.metadata.fps {
+                        if fps.is_finite() && fps > 0.0 {
+                            let seconds = frame as f64 / fps;
+                            if seconds.is_finite() && seconds >= 0.0 {
+                                state.last_timestamp = Some(Duration::from_secs_f64(seconds));
+                            }
+                        }
+                    }
+                }
+            }
         });
     }
 }
@@ -245,7 +296,7 @@ pub struct VideoPlayer {
     input_path: PathBuf,
     control: VideoPlayerControlHandle,
     info: VideoPlayerInfoHandle,
-    restart_rx: Receiver<()>,
+    restart_rx: Receiver<RestartRequest>,
 }
 
 impl VideoPlayer {
@@ -255,7 +306,7 @@ impl VideoPlayer {
         let path = path.into();
         let handle = VideoHandle::new();
         let (sender, receiver) = sync_channel(1);
-        let (restart_tx, restart_rx) = std::sync::mpsc::channel();
+        let (restart_tx, restart_rx) = std::sync::mpsc::channel::<RestartRequest>();
         let control = VideoPlayerControlHandle::new();
         let info = VideoPlayerInfoHandle::new();
 
@@ -277,11 +328,20 @@ impl VideoPlayer {
         )
     }
 
-    fn restart_decoder(&mut self) {
+    fn restart_decoder(&mut self, request: RestartRequest) {
         self.control.clear_decoder();
         self.control.reset_seek_timing();
-        self.control.play();
-        self.info.reset_for_replay();
+        match request {
+            RestartRequest::Replay => {
+                self.control.clear_pending_seek();
+                self.control.play();
+                self.control.end_scrub();
+                self.info.reset_for_replay();
+            }
+            RestartRequest::Seek(info) => {
+                self.info.apply_seek_preview(info);
+            }
+        }
         spawn_decoder(
             self.sender.clone(),
             self.input_path.clone(),
@@ -294,12 +354,12 @@ impl VideoPlayer {
 impl Render for VideoPlayer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.request_animation_frame();
-        let mut should_restart = false;
-        for _ in self.restart_rx.try_iter() {
-            should_restart = true;
+        let mut restart = None;
+        for request in self.restart_rx.try_iter() {
+            restart = Some(request);
         }
-        if should_restart {
-            self.restart_decoder();
+        if let Some(request) = restart {
+            self.restart_decoder(request);
         }
         let mut latest = None;
         for frame in self.receiver.try_iter() {
@@ -330,11 +390,9 @@ impl Render for VideoPlayer {
                 .text_color(hsla(0.0, 0.0, 1.0, 0.9))
                 .cursor_pointer()
                 .child("Replay");
-            let handle = cx.entity();
-            let replay_button = replay_button.on_click(cx.listener(move |_, _, _, cx| {
-                let _ = handle.update(cx, |this, _| {
-                    this.restart_decoder();
-                });
+            let control = self.control.clone();
+            let replay_button = replay_button.on_click(cx.listener(move |_, _, _, _| {
+                control.request_restart(RestartRequest::Replay);
             }));
 
             root = root.child(
