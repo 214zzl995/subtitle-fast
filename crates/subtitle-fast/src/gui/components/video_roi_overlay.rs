@@ -13,7 +13,7 @@ const DEFAULT_LEFT_GAP: f32 = 0.20;
 const DEFAULT_RIGHT_GAP: f32 = 0.20;
 const DEFAULT_BOTTOM_GAP: f32 = 0.02;
 const DEFAULT_HEIGHT: f32 = 0.10;
-const BORDER_WIDTH: f32 = 2.0;
+const BORDER_WIDTH: f32 = 1.5;
 const DASH_LENGTH: f32 = 8.0;
 const DASH_GAP: f32 = 3.0;
 const HANDLE_SIZE: f32 = 12.0;
@@ -418,6 +418,12 @@ fn roi_edges(roi: RoiConfig) -> (f32, f32, f32, f32) {
 }
 
 fn cursor_for_corner(corner: DragCorner) -> CursorStyle {
+    #[cfg(target_os = "windows")]
+    match corner {
+        DragCorner::TopLeft | DragCorner::BottomRight => CursorStyle::ResizeLeftRight,
+        DragCorner::TopRight | DragCorner::BottomLeft => CursorStyle::ResizeUpDown,
+    }
+    #[cfg(not(target_os = "windows"))]
     match corner {
         DragCorner::TopLeft | DragCorner::BottomRight => CursorStyle::ResizeUpLeftDownRight,
         DragCorner::TopRight | DragCorner::BottomLeft => CursorStyle::ResizeUpRightDownLeft,
