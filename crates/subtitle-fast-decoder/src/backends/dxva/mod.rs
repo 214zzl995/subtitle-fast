@@ -50,6 +50,7 @@ mod platform {
 
     type CDxvaFrameCallback = unsafe extern "C" fn(*const CDxvaFrame, *mut c_void) -> bool;
     #[repr(C)]
+    #[derive(Clone, Copy)]
     struct CDxvaSeekRequest {
         position_seconds: f64,
         start_frame: u64,

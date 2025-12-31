@@ -50,6 +50,7 @@ mod platform {
 
     type CMftFrameCallback = unsafe extern "C" fn(*const CMftFrame, *mut c_void) -> bool;
     #[repr(C)]
+    #[derive(Clone, Copy)]
     struct CMftSeekRequest {
         position_seconds: f64,
         start_frame: u64,
