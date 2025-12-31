@@ -292,18 +292,23 @@ fn spawn_decoder(
             let mut active_serial: Option<u64> = None;
 
             loop {
-                if control.is_paused() {
+                let paused = control.is_paused();
+                if paused {
                     if paused_at.is_none() {
                         paused_at = Some(Instant::now());
                     }
-                    tokio::time::sleep(Duration::from_millis(30)).await;
-                    continue;
+                    if control.pending_seek_serial().is_none() {
+                        tokio::time::sleep(Duration::from_millis(30)).await;
+                        continue;
+                    }
                 }
 
-                if let Some(paused_at) = paused_at.take() {
-                    let pause_duration = Instant::now().saturating_duration_since(paused_at);
-                    start_instant += pause_duration;
-                    next_deadline += pause_duration;
+                if !paused {
+                    if let Some(paused_at) = paused_at.take() {
+                        let pause_duration = Instant::now().saturating_duration_since(paused_at);
+                        start_instant += pause_duration;
+                        next_deadline += pause_duration;
+                    }
                 }
 
                 let frame = stream.next().await;
@@ -330,26 +335,32 @@ fn spawn_decoder(
                             );
                         }
                         if !started {
-                            start_instant = Instant::now();
-                            next_deadline = start_instant;
-                            started = true;
+                            if !paused {
+                                start_instant = Instant::now();
+                                next_deadline = start_instant;
+                                started = true;
+                            }
                         }
 
                         if let Some(timestamp) = frame.timestamp() {
                             let first = first_timestamp.get_or_insert(timestamp);
-                            if let Some(delta) = timestamp.checked_sub(*first) {
-                                let target = start_instant + delta;
-                                let now = Instant::now();
-                                if target > now {
-                                    tokio::time::sleep(target - now).await;
+                            if !paused {
+                                if let Some(delta) = timestamp.checked_sub(*first) {
+                                    let target = start_instant + delta;
+                                    let now = Instant::now();
+                                    if target > now {
+                                        tokio::time::sleep(target - now).await;
+                                    }
                                 }
                             }
                         } else if let Some(duration) = frame_duration {
-                            let now = Instant::now();
-                            if next_deadline > now {
-                                tokio::time::sleep(next_deadline - now).await;
+                            if !paused {
+                                let now = Instant::now();
+                                if next_deadline > now {
+                                    tokio::time::sleep(next_deadline - now).await;
+                                }
+                                next_deadline += duration;
                             }
-                            next_deadline += duration;
                         }
 
                         info.update(|state| {
