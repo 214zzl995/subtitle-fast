@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -15,7 +15,7 @@ use tokio_stream::StreamExt;
 pub struct VideoPlayerControlHandle {
     paused: Arc<AtomicBool>,
     decoder: Arc<Mutex<Option<DecoderController>>>,
-    seek_epoch: Arc<AtomicU64>,
+    seek_timing: Arc<Mutex<Option<SeekTiming>>>,
 }
 
 impl VideoPlayerControlHandle {
@@ -23,7 +23,7 @@ impl VideoPlayerControlHandle {
         Self {
             paused: Arc::new(AtomicBool::new(false)),
             decoder: Arc::new(Mutex::new(None)),
-            seek_epoch: Arc::new(AtomicU64::new(0)),
+            seek_timing: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -32,7 +32,6 @@ impl VideoPlayerControlHandle {
             .decoder
             .lock()
             .expect("decoder controller mutex poisoned");
-        self.seek_epoch.store(controller.serial(), Ordering::SeqCst);
         *slot = Some(controller);
     }
 
@@ -77,7 +76,11 @@ impl VideoPlayerControlHandle {
         };
         match controller.seek(info) {
             Ok(serial) => {
-                self.seek_epoch.store(serial, Ordering::SeqCst);
+                let mut timing = self.seek_timing.lock().expect("seek timing mutex poisoned");
+                *timing = Some(SeekTiming {
+                    serial,
+                    sent_at: Instant::now(),
+                });
             }
             Err(err) => {
                 eprintln!("decoder seek failed: {err}");
@@ -85,9 +88,27 @@ impl VideoPlayerControlHandle {
         }
     }
 
-    fn current_seek_epoch(&self) -> u64 {
-        self.seek_epoch.load(Ordering::SeqCst)
+    fn pending_seek_serial(&self) -> Option<u64> {
+        let timing = self.seek_timing.lock().expect("seek timing mutex poisoned");
+        timing.as_ref().map(|entry| entry.serial)
     }
+
+    fn take_seek_latency(&self, serial: u64) -> Option<Duration> {
+        let mut timing = self.seek_timing.lock().expect("seek timing mutex poisoned");
+        let entry = timing.as_ref()?;
+        if entry.serial == serial {
+            let elapsed = entry.sent_at.elapsed();
+            *timing = None;
+            Some(elapsed)
+        } else {
+            None
+        }
+    }
+}
+
+struct SeekTiming {
+    serial: u64,
+    sent_at: Instant,
 }
 
 #[derive(Clone)]
@@ -268,7 +289,7 @@ fn spawn_decoder(
             let mut first_timestamp: Option<Duration> = None;
             let mut next_deadline = Instant::now();
             let mut paused_at: Option<Instant> = None;
-            let mut last_seek_epoch = control.current_seek_epoch();
+            let mut active_serial: Option<u64> = None;
 
             loop {
                 if control.is_paused() {
@@ -288,14 +309,25 @@ fn spawn_decoder(
                 let frame = stream.next().await;
                 match frame {
                     Some(Ok(frame)) => {
-                        let current_seek_epoch = control.current_seek_epoch();
-                        if current_seek_epoch != last_seek_epoch {
-                            last_seek_epoch = current_seek_epoch;
+                        if let Some(pending) = control.pending_seek_serial() {
+                            if frame.serial() != pending {
+                                continue;
+                            }
+                        }
+                        if active_serial != Some(frame.serial()) {
+                            active_serial = Some(frame.serial());
                             started = false;
                             first_timestamp = None;
                             start_instant = Instant::now();
                             next_deadline = start_instant;
                             paused_at = None;
+                        }
+                        if let Some(latency) = control.take_seek_latency(frame.serial()) {
+                            eprintln!(
+                                "seek latency: serial={} elapsed_ms={:.2}",
+                                frame.serial(),
+                                latency.as_secs_f64() * 1000.0
+                            );
                         }
                         if !started {
                             start_instant = Instant::now();
