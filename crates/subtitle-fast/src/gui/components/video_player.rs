@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use gpui::{Context, Frame, ObjectFit, Render, VideoHandle, Window, div, prelude::*, rgb, video};
+use gpui::{
+    Context, Frame, ObjectFit, Render, VideoHandle, Window, div, hsla, prelude::*, px, rgb, video,
+};
 use subtitle_fast_decoder::{
     Configuration, DecoderController, OutputFormat, SeekInfo, SeekMode, VideoFrame, VideoMetadata,
 };
@@ -17,6 +19,8 @@ pub struct VideoPlayerControlHandle {
     scrubbing: Arc<AtomicBool>,
     decoder: Arc<Mutex<Option<DecoderController>>>,
     seek_timing: Arc<Mutex<Option<SeekTiming>>>,
+    pending_seek: Arc<Mutex<Option<SeekInfo>>>,
+    restart_tx: Arc<Mutex<Option<Sender<()>>>>,
 }
 
 impl VideoPlayerControlHandle {
@@ -26,15 +30,49 @@ impl VideoPlayerControlHandle {
             scrubbing: Arc::new(AtomicBool::new(false)),
             decoder: Arc::new(Mutex::new(None)),
             seek_timing: Arc::new(Mutex::new(None)),
+            pending_seek: Arc::new(Mutex::new(None)),
+            restart_tx: Arc::new(Mutex::new(None)),
         }
     }
 
     fn set_decoder(&self, controller: DecoderController) {
+        {
+            let mut slot = self
+                .decoder
+                .lock()
+                .expect("decoder controller mutex poisoned");
+            *slot = Some(controller);
+        }
+
+        let pending = self
+            .pending_seek
+            .lock()
+            .expect("pending seek mutex poisoned")
+            .take();
+        if let Some(info) = pending {
+            self.send_seek(info);
+        }
+    }
+
+    fn clear_decoder(&self) {
         let mut slot = self
             .decoder
             .lock()
             .expect("decoder controller mutex poisoned");
-        *slot = Some(controller);
+        *slot = None;
+    }
+
+    fn set_restart_sender(&self, sender: Sender<()>) {
+        let mut slot = self
+            .restart_tx
+            .lock()
+            .expect("restart sender mutex poisoned");
+        *slot = Some(sender);
+    }
+
+    fn reset_seek_timing(&self) {
+        let mut timing = self.seek_timing.lock().expect("seek timing mutex poisoned");
+        *timing = None;
     }
 
     pub fn pause(&self) {
@@ -86,6 +124,18 @@ impl VideoPlayerControlHandle {
             .lock()
             .expect("decoder controller mutex poisoned");
         let Some(controller) = slot.as_ref() else {
+            *self
+                .pending_seek
+                .lock()
+                .expect("pending seek mutex poisoned") = Some(info);
+            if let Some(sender) = self
+                .restart_tx
+                .lock()
+                .expect("restart sender mutex poisoned")
+                .as_ref()
+            {
+                let _ = sender.send(());
+            }
             return;
         };
         match controller.seek(info) {
@@ -151,6 +201,14 @@ impl VideoPlayerInfoHandle {
         let mut state = self.inner.lock().expect("video info mutex poisoned");
         update(&mut state);
     }
+
+    fn reset_for_replay(&self) {
+        self.update(|state| {
+            state.last_timestamp = None;
+            state.last_frame_index = None;
+            state.ended = false;
+        });
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -183,7 +241,11 @@ impl Default for VideoPlayerInfoState {
 pub struct VideoPlayer {
     handle: VideoHandle,
     receiver: Receiver<Frame>,
-    _info: VideoPlayerInfoHandle,
+    sender: SyncSender<Frame>,
+    input_path: PathBuf,
+    control: VideoPlayerControlHandle,
+    info: VideoPlayerInfoHandle,
+    restart_rx: Receiver<()>,
 }
 
 impl VideoPlayer {
@@ -193,26 +255,52 @@ impl VideoPlayer {
         let path = path.into();
         let handle = VideoHandle::new();
         let (sender, receiver) = sync_channel(1);
+        let (restart_tx, restart_rx) = std::sync::mpsc::channel();
         let control = VideoPlayerControlHandle::new();
         let info = VideoPlayerInfoHandle::new();
 
-        spawn_decoder(sender, path, control.clone(), info.clone());
+        control.set_restart_sender(restart_tx);
+        spawn_decoder(sender.clone(), path.clone(), control.clone(), info.clone());
 
         (
             Self {
                 handle,
                 receiver,
-                _info: info.clone(),
+                sender,
+                input_path: path,
+                control: control.clone(),
+                info: info.clone(),
+                restart_rx,
             },
             control,
             info,
         )
     }
+
+    fn restart_decoder(&mut self) {
+        self.control.clear_decoder();
+        self.control.reset_seek_timing();
+        self.control.play();
+        self.info.reset_for_replay();
+        spawn_decoder(
+            self.sender.clone(),
+            self.input_path.clone(),
+            self.control.clone(),
+            self.info.clone(),
+        );
+    }
 }
 
 impl Render for VideoPlayer {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.request_animation_frame();
+        let mut should_restart = false;
+        for _ in self.restart_rx.try_iter() {
+            should_restart = true;
+        }
+        if should_restart {
+            self.restart_decoder();
+        }
         let mut latest = None;
         for frame in self.receiver.try_iter() {
             latest = Some(frame);
@@ -220,20 +308,51 @@ impl Render for VideoPlayer {
         if let Some(frame) = latest {
             self.handle.submit(frame);
         }
+        let ended = self.info.snapshot().ended;
+        let mut root = div().relative().size_full().bg(rgb(0x111111)).child(
+            video(self.handle.clone())
+                .object_fit(ObjectFit::Contain)
+                .w_full()
+                .h_full(),
+        );
+        if ended {
+            let replay_button = div()
+                .id(("replay-button", cx.entity_id()))
+                .flex()
+                .items_center()
+                .justify_center()
+                .px(px(20.0))
+                .py(px(10.0))
+                .rounded(px(999.0))
+                .border_1()
+                .border_color(hsla(0.0, 0.0, 1.0, 0.4))
+                .bg(hsla(0.0, 0.0, 0.1, 0.7))
+                .text_color(hsla(0.0, 0.0, 1.0, 0.9))
+                .cursor_pointer()
+                .child("Replay");
+            let handle = cx.entity();
+            let replay_button = replay_button.on_click(cx.listener(move |_, _, _, cx| {
+                let _ = handle.update(cx, |this, _| {
+                    this.restart_decoder();
+                });
+            }));
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .bg(rgb(0x111111))
-            .child(
-                video(self.handle.clone())
-                    .object_fit(ObjectFit::Contain)
-                    .w_full()
-                    .h_full(),
-            )
+            root = root.child(
+                div()
+                    .id(("replay-overlay", cx.entity_id()))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(hsla(0.0, 0.0, 0.0, 0.5))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(replay_button),
+            );
+        }
+
+        root
     }
 }
 
@@ -400,6 +519,7 @@ fn spawn_decoder(
                 }
             }
 
+            control.clear_decoder();
             info.update(|state| state.ended = true);
         });
     });
