@@ -255,7 +255,8 @@ impl Render for VideoControls {
         } else if total_time.as_secs_f64() > 0.0 {
             (current_time.as_secs_f64() / total_time.as_secs_f64()).clamp(0.0, 1.0) as f32
         } else if total_frames > 0 {
-            (current_frame_index as f64 / total_frames as f64).clamp(0.0, 1.0) as f32
+            let max_index = total_frames.saturating_sub(1).max(1);
+            (current_frame_index as f64 / max_index as f64).clamp(0.0, 1.0) as f32
         } else {
             0.0
         };

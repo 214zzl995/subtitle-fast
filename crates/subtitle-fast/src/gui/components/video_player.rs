@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -21,6 +21,7 @@ pub struct VideoPlayerControlHandle {
     seek_timing: Arc<Mutex<Option<SeekTiming>>>,
     pending_seek: Arc<Mutex<Option<SeekInfo>>>,
     restart_tx: Arc<Mutex<Option<Sender<RestartRequest>>>>,
+    restart_pending: Arc<AtomicBool>,
 }
 
 impl VideoPlayerControlHandle {
@@ -32,6 +33,7 @@ impl VideoPlayerControlHandle {
             seek_timing: Arc::new(Mutex::new(None)),
             pending_seek: Arc::new(Mutex::new(None)),
             restart_tx: Arc::new(Mutex::new(None)),
+            restart_pending: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -43,6 +45,7 @@ impl VideoPlayerControlHandle {
                 .expect("decoder controller mutex poisoned");
             *slot = Some(controller);
         }
+        self.restart_pending.store(false, Ordering::SeqCst);
 
         let pending = self
             .pending_seek
@@ -78,7 +81,17 @@ impl VideoPlayerControlHandle {
         *pending = None;
     }
 
+    fn pending_seek(&self) -> Option<SeekInfo> {
+        *self
+            .pending_seek
+            .lock()
+            .expect("pending seek mutex poisoned")
+    }
+
     fn request_restart(&self, request: RestartRequest) {
+        if self.restart_pending.swap(true, Ordering::SeqCst) {
+            return;
+        }
         let sender = self
             .restart_tx
             .lock()
@@ -88,6 +101,10 @@ impl VideoPlayerControlHandle {
         if let Some(sender) = sender {
             let _ = sender.send(request);
         }
+    }
+
+    fn is_restart_pending(&self) -> bool {
+        self.restart_pending.load(Ordering::SeqCst)
     }
 
     fn reset_seek_timing(&self) {
@@ -114,6 +131,18 @@ impl VideoPlayerControlHandle {
 
     pub fn end_scrub(&self) {
         self.scrubbing.store(false, Ordering::SeqCst);
+        let needs_restart = {
+            let decoder = self
+                .decoder
+                .lock()
+                .expect("decoder controller mutex poisoned");
+            decoder.is_none()
+        };
+        if needs_restart {
+            if let Some(info) = self.pending_seek() {
+                self.request_restart(RestartRequest::Seek(info));
+            }
+        }
     }
 
     pub fn seek_to(&self, position: Duration) {
@@ -139,19 +168,26 @@ impl VideoPlayerControlHandle {
     }
 
     fn send_seek(&self, info: SeekInfo) {
-        let slot = self
-            .decoder
-            .lock()
-            .expect("decoder controller mutex poisoned");
-        let Some(controller) = slot.as_ref() else {
-            *self
-                .pending_seek
+        let result = {
+            let slot = self
+                .decoder
                 .lock()
-                .expect("pending seek mutex poisoned") = Some(info);
-            self.request_restart(RestartRequest::Seek(info));
-            return;
+                .expect("decoder controller mutex poisoned");
+            let Some(controller) = slot.as_ref() else {
+                *self
+                    .pending_seek
+                    .lock()
+                    .expect("pending seek mutex poisoned") = Some(info);
+                if self.is_scrubbing() {
+                    return;
+                }
+                self.request_restart(RestartRequest::Seek(info));
+                return;
+            };
+            controller.seek(info)
         };
-        match controller.seek(info) {
+
+        match result {
             Ok(serial) => {
                 let mut timing = self.seek_timing.lock().expect("seek timing mutex poisoned");
                 *timing = Some(SeekTiming {
@@ -159,8 +195,16 @@ impl VideoPlayerControlHandle {
                     sent_at: Instant::now(),
                 });
             }
-            Err(err) => {
-                eprintln!("decoder seek failed: {err}");
+            Err(_) => {
+                *self
+                    .pending_seek
+                    .lock()
+                    .expect("pending seek mutex poisoned") = Some(info);
+                self.clear_decoder();
+                if self.is_scrubbing() {
+                    return;
+                }
+                self.request_restart(RestartRequest::Seek(info));
             }
         }
     }
@@ -297,6 +341,7 @@ pub struct VideoPlayer {
     control: VideoPlayerControlHandle,
     info: VideoPlayerInfoHandle,
     restart_rx: Receiver<RestartRequest>,
+    generation: Arc<AtomicU64>,
 }
 
 impl VideoPlayer {
@@ -307,11 +352,20 @@ impl VideoPlayer {
         let handle = VideoHandle::new();
         let (sender, receiver) = sync_channel(1);
         let (restart_tx, restart_rx) = std::sync::mpsc::channel::<RestartRequest>();
+        let generation = Arc::new(AtomicU64::new(0));
         let control = VideoPlayerControlHandle::new();
         let info = VideoPlayerInfoHandle::new();
 
         control.set_restart_sender(restart_tx);
-        spawn_decoder(sender.clone(), path.clone(), control.clone(), info.clone());
+        let generation_token = generation.load(Ordering::SeqCst);
+        spawn_decoder(
+            sender.clone(),
+            path.clone(),
+            control.clone(),
+            info.clone(),
+            Arc::clone(&generation),
+            generation_token,
+        );
 
         (
             Self {
@@ -322,6 +376,7 @@ impl VideoPlayer {
                 control: control.clone(),
                 info: info.clone(),
                 restart_rx,
+                generation,
             },
             control,
             info,
@@ -329,6 +384,10 @@ impl VideoPlayer {
     }
 
     fn restart_decoder(&mut self, request: RestartRequest) {
+        let generation_token = self
+            .generation
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
         self.control.clear_decoder();
         self.control.reset_seek_timing();
         match request {
@@ -347,6 +406,8 @@ impl VideoPlayer {
             self.input_path.clone(),
             self.control.clone(),
             self.info.clone(),
+            Arc::clone(&self.generation),
+            generation_token,
         );
     }
 }
@@ -369,13 +430,15 @@ impl Render for VideoPlayer {
             self.handle.submit(frame);
         }
         let ended = self.info.snapshot().ended;
+        let show_replay =
+            ended && !self.control.is_scrubbing() && !self.control.is_restart_pending();
         let mut root = div().relative().size_full().bg(rgb(0x111111)).child(
             video(self.handle.clone())
                 .object_fit(ObjectFit::Contain)
                 .w_full()
                 .h_full(),
         );
-        if ended {
+        if show_replay {
             let replay_button = div()
                 .id(("replay-button", cx.entity_id()))
                 .flex()
@@ -419,6 +482,8 @@ fn spawn_decoder(
     input_path: PathBuf,
     control: VideoPlayerControlHandle,
     info: VideoPlayerInfoHandle,
+    generation: Arc<AtomicU64>,
+    generation_token: u64,
 ) {
     thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -427,9 +492,17 @@ fn spawn_decoder(
             .expect("failed to create tokio runtime");
 
         runtime.block_on(async move {
+            let is_active = |generation: &Arc<AtomicU64>| {
+                generation.load(Ordering::SeqCst) == generation_token
+            };
+            if !is_active(&generation) {
+                return;
+            }
             if !input_path.exists() {
                 eprintln!("input video not found: {input_path:?}");
-                info.update(|state| state.ended = true);
+                if is_active(&generation) {
+                    info.update(|state| state.ended = true);
+                }
                 return;
             }
 
@@ -438,7 +511,9 @@ fn spawn_decoder(
                 eprintln!(
                     "no decoder backend is compiled; enable a backend feature such as backend-ffmpeg"
                 );
-                info.update(|state| state.ended = true);
+                if is_active(&generation) {
+                    info.update(|state| state.ended = true);
+                }
                 return;
             }
 
@@ -455,12 +530,17 @@ fn spawn_decoder(
                 Ok(provider) => provider,
                 Err(err) => {
                     eprintln!("failed to create decoder provider: {err}");
-                    info.update(|state| state.ended = true);
+                    if is_active(&generation) {
+                        info.update(|state| state.ended = true);
+                    }
                     return;
                 }
             };
 
             let metadata = provider.metadata();
+            if !is_active(&generation) {
+                return;
+            }
             info.update(|state| state.metadata = metadata);
             let frame_duration = metadata
                 .fps
@@ -470,10 +550,15 @@ fn spawn_decoder(
                 Ok(value) => value,
                 Err(err) => {
                     eprintln!("failed to open decoder stream: {err}");
-                    info.update(|state| state.ended = true);
+                    if is_active(&generation) {
+                        info.update(|state| state.ended = true);
+                    }
                     return;
                 }
             };
+            if !is_active(&generation) {
+                return;
+            }
             control.set_decoder(controller);
             let mut started = false;
             let mut start_instant = Instant::now();
@@ -483,6 +568,9 @@ fn spawn_decoder(
             let mut active_serial: Option<u64> = None;
 
             loop {
+                if !is_active(&generation) {
+                    break;
+                }
                 let paused = control.is_paused();
                 let scrubbing = control.is_scrubbing();
                 let paused_like = paused || scrubbing;
@@ -507,6 +595,9 @@ fn spawn_decoder(
                 let frame = stream.next().await;
                 match frame {
                     Some(Ok(frame)) => {
+                        if !is_active(&generation) {
+                            break;
+                        }
                         if let Some(pending) = control.pending_seek_serial() {
                             if frame.serial() != pending {
                                 continue;
@@ -562,6 +653,9 @@ fn spawn_decoder(
                         });
 
                         if let Some(gpui_frame) = to_gpui_frame(&frame) {
+                            if !is_active(&generation) {
+                                break;
+                            }
                             if sender.send(gpui_frame).is_err() {
                                 break;
                             }
@@ -577,8 +671,10 @@ fn spawn_decoder(
                 }
             }
 
-            control.clear_decoder();
-            info.update(|state| state.ended = true);
+            if is_active(&generation) {
+                control.clear_decoder();
+                info.update(|state| state.ended = true);
+            }
         });
     });
 }
