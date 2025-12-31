@@ -14,6 +14,16 @@ use subtitle_fast_decoder::{
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::StreamExt;
 
+#[derive(Clone, Copy, Debug)]
+pub struct Nv12FrameInfo {
+    pub width: u32,
+    pub height: u32,
+    pub y_stride: usize,
+    pub uv_stride: usize,
+}
+
+pub type FramePreprocessor = Arc<dyn Fn(&mut [u8], &mut [u8], Nv12FrameInfo) -> bool + Send + Sync>;
+
 #[derive(Clone)]
 pub struct VideoPlayerControlHandle {
     sender: UnboundedSender<PlayerCommand>,
@@ -61,9 +71,19 @@ impl VideoPlayerControlHandle {
     pub fn replay(&self) {
         let _ = self.sender.send(PlayerCommand::Replay);
     }
+
+    pub fn set_preprocessor(&self, preprocessor: FramePreprocessor) {
+        let _ = self
+            .sender
+            .send(PlayerCommand::SetPreprocessor(Some(preprocessor)));
+    }
+
+    pub fn clear_preprocessor(&self) {
+        let _ = self.sender.send(PlayerCommand::SetPreprocessor(None));
+    }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 enum PlayerCommand {
     Play,
     Pause,
@@ -72,6 +92,7 @@ enum PlayerCommand {
     EndScrub,
     Seek(SeekInfo),
     Replay,
+    SetPreprocessor(Option<FramePreprocessor>),
 }
 
 #[derive(Clone)]
@@ -327,6 +348,7 @@ fn handle_command(
     pending_seek: &mut Option<SeekInfo>,
     seek_timing: &mut Option<SeekTiming>,
     open_requested: &mut bool,
+    preprocessor: &mut Option<FramePreprocessor>,
     info: &VideoPlayerInfoHandle,
 ) -> bool {
     match command {
@@ -381,6 +403,9 @@ fn handle_command(
             *open_requested = true;
             info.reset_for_replay();
         }
+        PlayerCommand::SetPreprocessor(hook) => {
+            *preprocessor = hook;
+        }
     }
     true
 }
@@ -420,6 +445,7 @@ fn spawn_decoder(
             let mut scrubbing = false;
             let mut pending_seek: Option<SeekInfo> = None;
             let mut seek_timing: Option<SeekTiming> = None;
+            let mut preprocessor: Option<FramePreprocessor> = None;
 
             let mut started = false;
             let mut start_instant = Instant::now();
@@ -474,6 +500,7 @@ fn spawn_decoder(
                             &mut pending_seek,
                             &mut seek_timing,
                             &mut open_requested,
+                            &mut preprocessor,
                             &info,
                         ) {
                             break;
@@ -508,6 +535,7 @@ fn spawn_decoder(
                             &mut pending_seek,
                             &mut seek_timing,
                             &mut open_requested,
+                            &mut preprocessor,
                             &info,
                         ) {
                             break;
@@ -537,6 +565,7 @@ fn spawn_decoder(
                             &mut pending_seek,
                             &mut seek_timing,
                             &mut open_requested,
+                            &mut preprocessor,
                             &info,
                         ) {
                             break;
@@ -604,7 +633,9 @@ fn spawn_decoder(
                                     state.last_frame_index = frame.frame_index();
                                 });
 
-                                if let Some(gpui_frame) = to_gpui_frame(&frame) {
+                                if let Some(gpui_frame) =
+                                    to_gpui_frame(&frame, preprocessor.as_ref())
+                                {
                                     if sender.send(gpui_frame).is_err() {
                                         break;
                                     }
@@ -642,14 +673,26 @@ fn spawn_decoder(
     });
 }
 
-fn to_gpui_frame(frame: &VideoFrame) -> Option<Frame> {
+fn to_gpui_frame(frame: &VideoFrame, preprocessor: Option<&FramePreprocessor>) -> Option<Frame> {
     if frame.native().is_some() {
         eprintln!("native frame output is unsupported in this component; use NV12 output");
         return None;
     }
 
-    let y_plane = frame.y_plane().to_vec();
-    let uv_plane = frame.uv_plane().to_vec();
+    let mut y_plane = frame.y_plane().to_vec();
+    let mut uv_plane = frame.uv_plane().to_vec();
+
+    if let Some(preprocessor) = preprocessor {
+        let info = Nv12FrameInfo {
+            width: frame.width(),
+            height: frame.height(),
+            y_stride: frame.y_stride(),
+            uv_stride: frame.uv_stride(),
+        };
+        if !(preprocessor)(&mut y_plane, &mut uv_plane, info) {
+            return None;
+        }
+    }
 
     Frame::from_nv12_owned(
         frame.width(),
