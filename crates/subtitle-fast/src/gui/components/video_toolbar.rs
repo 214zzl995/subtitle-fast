@@ -85,13 +85,9 @@ impl Render for VideoToolbar {
         };
 
         let toggle_height = px(24.0);
-        let toggle_padding = px(2.0);
         let segment_width = px(42.0);
         let segment_radius = px(7.0);
-        let inner_radius = segment_radius - toggle_padding;
-        let toggle_width = segment_width * 2.0 + toggle_padding * 2.0;
-        let track_width = segment_width * 2.0;
-        let track_height = toggle_height - toggle_padding * 2.0;
+        let toggle_width = segment_width * 2.0;
 
         let reset_button = {
             let mut view = div()
@@ -181,8 +177,10 @@ impl Render for VideoToolbar {
             .left(slider_start)
             .w(segment_width)
             .h_full()
-            .rounded(inner_radius)
+            .rounded(segment_radius)
             .bg(hsla(0.0, 0.0, 1.0, if enabled { 0.16 } else { 0.08 }))
+            .border_5()
+            .border_color(hsla(0.0, 0.0, 0.0, 0.0))
             .with_animation(
                 ("video-view-slider-anim", self.slide_token),
                 Animation::new(Duration::from_millis(160)).with_easing(ease_out_quint()),
@@ -205,29 +203,24 @@ impl Render for VideoToolbar {
             .rounded(segment_radius)
             .overflow_hidden()
             .bg(hsla(0.0, 0.0, 1.0, 0.04))
+            .child(slider)
             .child(
                 div()
                     .relative()
-                    .h(track_height)
-                    .w(track_width)
-                    .child(slider)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .h_full()
-                            .w_full()
-                            .child(button(
-                                "YUV",
-                                self.view == VideoViewMode::FullColor,
-                                VideoViewMode::FullColor,
-                            ))
-                            .child(button(
-                                "Y",
-                                self.view == VideoViewMode::YPlane,
-                                VideoViewMode::YPlane,
-                            )),
-                    ),
+                    .flex()
+                    .items_center()
+                    .h_full()
+                    .w_full()
+                    .child(button(
+                        "YUV",
+                        self.view == VideoViewMode::FullColor,
+                        VideoViewMode::FullColor,
+                    ))
+                    .child(button(
+                        "Y",
+                        self.view == VideoViewMode::YPlane,
+                        VideoViewMode::YPlane,
+                    )),
             );
 
         div()
