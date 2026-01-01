@@ -37,6 +37,10 @@ impl VideoPlayerControlHandle {
         Self { sender }
     }
 
+    pub fn open(&self, path: impl Into<PathBuf>) {
+        let _ = self.sender.send(PlayerCommand::Open(path.into()));
+    }
+
     pub fn pause(&self) {
         let _ = self.sender.send(PlayerCommand::Pause);
     }
@@ -88,6 +92,7 @@ impl VideoPlayerControlHandle {
 
 #[derive(Clone)]
 enum PlayerCommand {
+    Open(PathBuf),
     Play,
     Pause,
     TogglePause,
@@ -226,17 +231,14 @@ pub struct VideoPlayer {
 }
 
 impl VideoPlayer {
-    pub fn new(
-        path: impl Into<PathBuf>,
-    ) -> (Self, VideoPlayerControlHandle, VideoPlayerInfoHandle) {
-        let path = path.into();
+    pub fn new() -> (Self, VideoPlayerControlHandle, VideoPlayerInfoHandle) {
         let handle = VideoHandle::new();
         let (sender, receiver) = sync_channel(1);
         let (command_tx, command_rx) = unbounded_channel();
         let control = VideoPlayerControlHandle::new(command_tx);
         let info = VideoPlayerInfoHandle::new();
 
-        spawn_decoder(sender.clone(), path.clone(), command_rx, info.clone());
+        spawn_decoder(sender.clone(), command_rx, info.clone());
 
         (
             Self {
@@ -375,6 +377,7 @@ fn open_session(
 fn handle_command(
     command: PlayerCommand,
     session: Option<&DecoderSession>,
+    input_path: &mut Option<PathBuf>,
     paused: &mut bool,
     scrubbing: &mut bool,
     pending_seek: &mut Option<SeekInfo>,
@@ -386,6 +389,17 @@ fn handle_command(
     info: &VideoPlayerInfoHandle,
 ) -> bool {
     match command {
+        PlayerCommand::Open(path) => {
+            *input_path = Some(path);
+            *paused = false;
+            *scrubbing = false;
+            *pending_seek = None;
+            *pending_seek_frame = None;
+            *seek_timing = None;
+            *open_requested = true;
+            info.set_metadata(VideoMetadata::default());
+            info.reset_for_replay();
+        }
         PlayerCommand::Play => {
             *paused = false;
         }
@@ -461,7 +475,6 @@ fn handle_command(
 
 fn spawn_decoder(
     sender: SyncSender<Frame>,
-    input_path: PathBuf,
     mut command_rx: UnboundedReceiver<PlayerCommand>,
     info: VideoPlayerInfoHandle,
 ) {
@@ -472,12 +485,6 @@ fn spawn_decoder(
             .expect("failed to create tokio runtime");
 
         runtime.block_on(async move {
-            if !input_path.exists() {
-                eprintln!("input video not found: {input_path:?}");
-                info.update_playback(|state| state.ended = true);
-                return;
-            }
-
             let available = Configuration::available_backends();
             if available.is_empty() {
                 eprintln!(
@@ -488,8 +495,9 @@ fn spawn_decoder(
             }
 
             let backend = available[0];
+            let mut input_path: Option<PathBuf> = None;
             let mut session: Option<DecoderSession> = None;
-            let mut open_requested = true;
+            let mut open_requested = false;
             let mut paused = false;
             let mut scrubbing = false;
             let mut pending_seek: Option<SeekInfo> = None;
@@ -508,7 +516,17 @@ fn spawn_decoder(
             loop {
                 if session.is_none() {
                     if open_requested {
-                        let new_session = match open_session(backend, &input_path, &info) {
+                        let Some(input_path) = input_path.as_ref() else {
+                            open_requested = false;
+                            continue;
+                        };
+                        if !input_path.exists() {
+                            eprintln!("input video not found: {input_path:?}");
+                            info.update_playback(|state| state.ended = true);
+                            open_requested = false;
+                            continue;
+                        }
+                        let new_session = match open_session(backend, input_path, &info) {
                             Some(session) => session,
                             None => return,
                         };
@@ -546,6 +564,7 @@ fn spawn_decoder(
                         if !handle_command(
                             command,
                             session.as_ref(),
+                            &mut input_path,
                             &mut paused,
                             &mut scrubbing,
                             &mut pending_seek,
@@ -593,6 +612,7 @@ fn spawn_decoder(
                         if !handle_command(
                             command,
                             session.as_ref(),
+                            &mut input_path,
                             &mut paused,
                             &mut scrubbing,
                             &mut pending_seek,
@@ -635,6 +655,7 @@ fn spawn_decoder(
                         if !handle_command(
                             command,
                             session.as_ref(),
+                            &mut input_path,
                             &mut paused,
                             &mut scrubbing,
                             &mut pending_seek,

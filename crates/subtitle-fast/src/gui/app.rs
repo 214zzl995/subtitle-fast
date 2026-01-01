@@ -179,7 +179,8 @@ impl MainWindow {
     }
 
     fn load_video(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let (player, controls, info) = VideoPlayer::new(path);
+        let (player, controls, info) = VideoPlayer::new();
+        controls.open(path);
         self.player = Some(cx.new(|_| player));
         let _ = self.controls_view.update(cx, |controls_view, cx| {
             controls_view.set_handles(Some(controls.clone()), Some(info.clone()));
