@@ -135,7 +135,7 @@ fn spawn_decoder(sender: SyncSender<Frame>, input_path: PathBuf) {
                             started = true;
                         }
 
-                        if let Some(timestamp) = frame.timestamp() {
+                        if let Some(timestamp) = frame.pts() {
                             let first = first_timestamp.get_or_insert(timestamp);
                             if let Some(delta) = timestamp.checked_sub(*first) {
                                 let target = start_instant + delta;
