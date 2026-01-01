@@ -8,6 +8,7 @@ use gpui::{
 
 use crate::gui::components::{VideoPlayerControlHandle, VideoPlayerInfoHandle};
 use crate::gui::icons::{Icon, icon_md};
+use subtitle_fast_decoder::VideoMetadata;
 
 pub struct VideoControls {
     controls: Option<VideoPlayerControlHandle>,
@@ -22,6 +23,7 @@ struct SeekDragState {
     last_seek_at: Option<Instant>,
     drag_ratio: Option<f32>,
     last_seek_ratio: Option<f32>,
+    pending_ratio: Option<f32>,
 }
 
 impl SeekDragState {
@@ -32,6 +34,7 @@ impl SeekDragState {
             last_seek_at: None,
             drag_ratio: None,
             last_seek_ratio: None,
+            pending_ratio: None,
         }
     }
 
@@ -102,12 +105,12 @@ impl VideoControls {
         Some(ratio)
     }
 
-    fn seek_from_ratio(&mut self, ratio: f32) {
+    fn seek_from_ratio(&mut self, ratio: f32) -> bool {
         let Some(controls) = self.controls.as_ref() else {
-            return;
+            return false;
         };
         let Some(info) = self.info.as_ref() else {
-            return;
+            return false;
         };
 
         let snapshot = info.snapshot();
@@ -117,7 +120,7 @@ impl VideoControls {
                     let target = duration.as_secs_f64() * ratio as f64;
                     if target.is_finite() && target >= 0.0 {
                         controls.seek_to(Duration::from_secs_f64(target));
-                        return;
+                        return true;
                     }
                 }
             }
@@ -129,7 +132,9 @@ impl VideoControls {
             let target = (ratio as f64 * max_index as f64).round();
             let frame = target.clamp(0.0, max_index as f64) as u64;
             controls.seek_to_frame(frame);
+            return true;
         }
+        false
     }
 
     fn update_drag_ratio(&mut self, position: Point<Pixels>) {
@@ -151,9 +156,11 @@ impl VideoControls {
                 }
             }
         }
-        self.seek.last_seek_at = Some(now);
-        self.seek.last_seek_ratio = Some(ratio);
-        self.seek_from_ratio(ratio);
+        if self.seek_from_ratio(ratio) {
+            self.seek.last_seek_at = Some(now);
+            self.seek.last_seek_ratio = Some(ratio);
+            self.seek.pending_ratio = Some(ratio);
+        }
     }
 
     fn begin_seek_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
@@ -163,6 +170,7 @@ impl VideoControls {
         self.seek.dragging = true;
         self.seek.last_seek_at = None;
         self.seek.last_seek_ratio = None;
+        self.seek.pending_ratio = None;
         self.update_drag_ratio(position);
         self.seek_from_position_throttled(position, Instant::now(), true);
         cx.notify();
@@ -236,9 +244,9 @@ impl Render for VideoControls {
         let mut current_frame_index = 0u64;
         let mut current_frame_display = 0u64;
         let mut total_frames = 0u64;
+        let snapshot = self.info.as_ref().map(|info| info.snapshot());
 
-        if let Some(info) = self.info.as_ref() {
-            let snapshot = info.snapshot();
+        if let Some(snapshot) = snapshot {
             if let Some(timestamp) = snapshot.last_timestamp {
                 current_time = timestamp;
             } else if let (Some(frame_index), Some(fps)) =
@@ -267,9 +275,7 @@ impl Render for VideoControls {
             total_frames = snapshot.metadata.calculate_total_frames().unwrap_or(0);
         }
 
-        let progress = if let Some(ratio) = self.seek.drag_ratio {
-            ratio
-        } else if total_time.as_secs_f64() > 0.0 {
+        let actual_progress = if total_time.as_secs_f64() > 0.0 {
             (current_time.as_secs_f64() / total_time.as_secs_f64()).clamp(0.0, 1.0) as f32
         } else if total_frames > 0 {
             let max_index = total_frames.saturating_sub(1).max(1);
@@ -277,6 +283,29 @@ impl Render for VideoControls {
         } else {
             0.0
         };
+
+        let mut preview_ratio = self.seek.drag_ratio;
+        if preview_ratio.is_none() {
+            if let Some(pending) = self.seek.pending_ratio {
+                if (actual_progress - pending).abs() <= Self::RELEASE_EPSILON {
+                    self.seek.pending_ratio = None;
+                } else {
+                    preview_ratio = Some(pending);
+                }
+            }
+        }
+
+        if let (Some(ratio), Some(snapshot)) = (preview_ratio, snapshot) {
+            let (preview_time, preview_frame) = preview_from_ratio(ratio, snapshot.metadata);
+            if let Some(preview_time) = preview_time {
+                current_time = preview_time;
+            }
+            if let Some(frame_index) = preview_frame {
+                current_frame_display = frame_index.saturating_add(1);
+            }
+        }
+
+        let progress = preview_ratio.unwrap_or(actual_progress);
 
         let time_text = format!("{}-{}", format_time(current_time), format_time(total_time));
         let frame_text = format!("{current_frame_display}-{total_frames}");
@@ -382,4 +411,64 @@ fn format_time(duration: Duration) -> String {
     let minutes = total_secs / 60;
     let seconds = total_secs % 60;
     format!("{minutes}:{seconds:02}")
+}
+
+fn preview_from_ratio(ratio: f32, metadata: VideoMetadata) -> (Option<Duration>, Option<u64>) {
+    let ratio = ratio.clamp(0.0, 1.0) as f64;
+    let total_frames = metadata.calculate_total_frames();
+
+    if let Some(duration) = metadata.duration {
+        if duration > Duration::ZERO {
+            let seconds = duration.as_secs_f64() * ratio;
+            if seconds.is_finite() && seconds >= 0.0 {
+                let time = Duration::from_secs_f64(seconds);
+                let frame = if let Some(fps) = metadata.fps {
+                    if fps.is_finite() && fps > 0.0 {
+                        let frame = seconds * fps;
+                        if frame.is_finite() && frame >= 0.0 {
+                            Some(frame.round() as u64)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    total_frames.and_then(|total| {
+                        if total > 0 {
+                            let max_index = total.saturating_sub(1);
+                            let target = (ratio * max_index as f64).round();
+                            Some(target.clamp(0.0, max_index as f64) as u64)
+                        } else {
+                            None
+                        }
+                    })
+                };
+                return (Some(time), frame);
+            }
+        }
+    }
+
+    if let Some(total) = total_frames {
+        if total > 0 {
+            let max_index = total.saturating_sub(1);
+            let target = (ratio * max_index as f64).round();
+            let frame = target.clamp(0.0, max_index as f64) as u64;
+            let time = metadata.fps.and_then(|fps| {
+                if fps.is_finite() && fps > 0.0 {
+                    let seconds = frame as f64 / fps;
+                    if seconds.is_finite() && seconds >= 0.0 {
+                        Some(Duration::from_secs_f64(seconds))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+            return (time, Some(frame));
+        }
+    }
+
+    (None, None)
 }
