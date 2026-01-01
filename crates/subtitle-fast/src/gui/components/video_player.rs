@@ -378,6 +378,7 @@ fn handle_command(
     paused: &mut bool,
     scrubbing: &mut bool,
     pending_seek: &mut Option<SeekInfo>,
+    pending_seek_frame: &mut Option<u64>,
     seek_timing: &mut Option<SeekTiming>,
     open_requested: &mut bool,
     preprocessor: &mut Option<FramePreprocessor>,
@@ -403,6 +404,22 @@ fn handle_command(
             info.update_playback(|state| state.scrubbing = false);
         }
         PlayerCommand::Seek(seek) => {
+            let metadata = info.metadata();
+            *pending_seek_frame = match seek {
+                SeekInfo::Frame { frame, .. } => Some(frame),
+                SeekInfo::Time { position, .. } => metadata.fps.and_then(|fps| {
+                    if fps.is_finite() && fps > 0.0 {
+                        let frame = position.as_secs_f64() * fps;
+                        if frame.is_finite() && frame >= 0.0 {
+                            Some(frame.round() as u64)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }),
+            };
             info.apply_seek_preview(seek);
             if let Some(session) = session {
                 match session.controller.seek(seek) {
@@ -429,6 +446,7 @@ fn handle_command(
                 info.update_playback(|state| state.scrubbing = false);
             }
             *pending_seek = None;
+            *pending_seek_frame = None;
             *seek_timing = None;
             *open_requested = true;
             info.reset_for_replay();
@@ -475,6 +493,7 @@ fn spawn_decoder(
             let mut paused = false;
             let mut scrubbing = false;
             let mut pending_seek: Option<SeekInfo> = None;
+            let mut pending_seek_frame: Option<u64> = None;
             let mut seek_timing: Option<SeekTiming> = None;
             let mut preprocessor: Option<FramePreprocessor> = None;
             let mut last_frame: Option<CachedFrame> = None;
@@ -530,6 +549,7 @@ fn spawn_decoder(
                             &mut paused,
                             &mut scrubbing,
                             &mut pending_seek,
+                            &mut pending_seek_frame,
                             &mut seek_timing,
                             &mut open_requested,
                             &mut preprocessor,
@@ -576,6 +596,7 @@ fn spawn_decoder(
                             &mut paused,
                             &mut scrubbing,
                             &mut pending_seek,
+                            &mut pending_seek_frame,
                             &mut seek_timing,
                             &mut open_requested,
                             &mut preprocessor,
@@ -617,6 +638,7 @@ fn spawn_decoder(
                             &mut paused,
                             &mut scrubbing,
                             &mut pending_seek,
+                            &mut pending_seek_frame,
                             &mut seek_timing,
                             &mut open_requested,
                             &mut preprocessor,
@@ -652,10 +674,29 @@ fn spawn_decoder(
                                     next_deadline = start_instant;
                                     paused_at = None;
                                 }
-                                if let Some(timing) = seek_timing.as_ref() {
+                                // Avoid a 1-frame UI flicker when the first frame after seek
+                                // lands within +/-1 of the requested target frame.
+                                let mut suppress_seek_frame = false;
+                                let clear_seek_timing = if let Some(timing) = seek_timing.as_ref() {
                                     if timing.serial == frame.serial() {
-                                        seek_timing = None;
+                                        if let (Some(target), Some(actual)) =
+                                            (pending_seek_frame, frame.index())
+                                        {
+                                            if actual.abs_diff(target) <= 1 {
+                                                suppress_seek_frame = true;
+                                            }
+                                        }
+                                        true
+                                    } else {
+                                        false
                                     }
+                                } else {
+                                    false
+                                };
+
+                                if clear_seek_timing {
+                                    pending_seek_frame = None;
+                                    seek_timing = None;
                                 }
                                 if !started {
                                     if !paused_like {
@@ -688,7 +729,9 @@ fn spawn_decoder(
 
                                 info.update_playback(|state| {
                                     state.last_timestamp = frame.pts();
-                                    state.last_frame_index = frame.index();
+                                    if !suppress_seek_frame {
+                                        state.last_frame_index = frame.index();
+                                    }
                                 });
 
                                 if let Some(cache) = cache_from_video_frame(&frame) {

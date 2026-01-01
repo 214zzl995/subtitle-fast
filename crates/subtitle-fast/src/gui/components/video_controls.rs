@@ -114,6 +114,18 @@ impl VideoControls {
         };
 
         let snapshot = info.snapshot();
+        if snapshot.metadata.duration.is_some() {
+            if let Some(duration) = snapshot.metadata.duration {
+                if duration > Duration::ZERO {
+                    let target = duration.as_secs_f64() * ratio as f64;
+                    if target.is_finite() && target >= 0.0 {
+                        controls.seek_to(Duration::from_secs_f64(target));
+                        return true;
+                    }
+                }
+            }
+        }
+
         let total_frames = snapshot.metadata.calculate_total_frames().unwrap_or(0);
         if total_frames > 0 {
             let max_index = total_frames.saturating_sub(1);
@@ -121,15 +133,6 @@ impl VideoControls {
             let frame = target.clamp(0.0, max_index as f64) as u64;
             controls.seek_to_frame(frame);
             return true;
-        }
-        if let Some(duration) = snapshot.metadata.duration {
-            if duration > Duration::ZERO {
-                let target = duration.as_secs_f64() * ratio as f64;
-                if target.is_finite() && target >= 0.0 {
-                    controls.seek_to(Duration::from_secs_f64(target));
-                    return true;
-                }
-            }
         }
         false
     }
