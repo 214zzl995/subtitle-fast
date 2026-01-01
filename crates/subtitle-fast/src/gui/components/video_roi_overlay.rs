@@ -278,7 +278,7 @@ impl Render for VideoRoiOverlay {
         let width_px = picture.size.width * (right - left);
         let height_px = picture.size.height * (bottom - top);
 
-        let border_color = hsla(0.55, 0.8, 0.7, 0.9);
+        let border_color = hsla(0.12, 0.95, 0.6, 0.95);
 
         let stroke_width = px(BORDER_WIDTH);
         let stroke_inset = stroke_width * 0.5;
