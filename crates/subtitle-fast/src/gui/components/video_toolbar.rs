@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use gpui::prelude::*;
-use gpui::{Context, Render, Window, div, hsla, px, rgb};
+use gpui::{Context, Render, Window, div, hsla, px};
 
 use crate::gui::components::{FramePreprocessor, VideoPlayerControlHandle};
 
@@ -68,12 +68,12 @@ impl Render for VideoToolbar {
                 .flex()
                 .items_center()
                 .justify_center()
-                .px(px(12.0))
-                .py(px(6.0))
+                .px(px(2.0))
+                .py(px(3.0))
                 .rounded(px(999.0))
                 .border_1()
                 .border_color(hsla(0.0, 0.0, 1.0, if active { 0.45 } else { 0.25 }))
-                .text_sm()
+                .text_xs()
                 .text_color(text_color)
                 .child(label);
 
@@ -114,9 +114,7 @@ impl Render for VideoToolbar {
             .items_center()
             .justify_between()
             .w_full()
-            .p(px(12.0))
-            .rounded(px(12.0))
-            .bg(rgb(0x141414))
+            .p(px(0.0))
             .text_sm()
             .text_color(text_color)
             .child(div().child("View"))
