@@ -581,9 +581,31 @@ extern "C"
 
             size_t y_len = stride * y_rows;
             size_t uv_len = stride * uv_rows;
-            size_t total_len = y_len + uv_len;
             size_t available = static_cast<size_t>(lock.contiguous_length);
-            if (available < total_len)
+            if (available < y_len)
+            {
+                set_error(out_error, "MFT buffer missing NV12 UV plane data");
+                return false;
+            }
+            size_t total_rows = available / stride;
+            size_t buffer_height = (total_rows * 2) / 3;
+            if (buffer_height < y_rows)
+            {
+                buffer_height = y_rows;
+            }
+            size_t buffer_uv_rows = (buffer_height + 1) / 2;
+            if (uv_rows > buffer_uv_rows)
+            {
+                set_error(out_error, "MFT buffer missing NV12 UV plane data");
+                return false;
+            }
+            if (buffer_height > (std::numeric_limits<size_t>::max)() / stride)
+            {
+                set_error(out_error, "NV12 plane length overflow");
+                return false;
+            }
+            size_t uv_offset = stride * buffer_height;
+            if (uv_offset > available || uv_offset + uv_len > available)
             {
                 set_error(out_error, "MFT buffer missing NV12 UV plane data");
                 return false;
@@ -593,7 +615,7 @@ extern "C"
             frame.y_data = reinterpret_cast<const uint8_t *>(lock.data);
             frame.y_len = y_len;
             frame.y_stride = stride;
-            frame.uv_data = reinterpret_cast<const uint8_t *>(lock.data) + y_len;
+            frame.uv_data = reinterpret_cast<const uint8_t *>(lock.data) + uv_offset;
             frame.uv_len = uv_len;
             frame.uv_stride = stride;
             frame.width = width;

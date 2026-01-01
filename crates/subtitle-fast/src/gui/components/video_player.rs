@@ -544,7 +544,7 @@ fn spawn_decoder(
                     next_deadline += pause_duration;
                 }
 
-                let allow_seek_frames = scrubbing && seek_timing.is_some();
+                let allow_seek_frames = seek_timing.is_some();
                 if paused_like && !allow_seek_frames {
                     let command = tokio::select! {
                         cmd = command_rx.recv() => cmd,

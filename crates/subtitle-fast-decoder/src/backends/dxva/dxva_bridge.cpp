@@ -457,21 +457,61 @@ namespace
         stride = static_cast<size_t>(mapped.RowPitch);
         const size_t y_rows = static_cast<size_t>(height);
         const size_t uv_plane_rows = static_cast<size_t>(uv_rows);
-        const size_t total_rows = y_rows + uv_plane_rows;
-        if (stride == 0 || y_rows == 0 || stride > (std::numeric_limits<size_t>::max)() / total_rows)
+        const size_t buffer_height = static_cast<size_t>(desc.Height);
+        if (stride == 0 || y_rows == 0)
+        {
+            d3d.context->Unmap(staging.texture.Get(), 0);
+            error = "invalid stride when copying DXVA frame";
+            return false;
+        }
+        if (buffer_height < y_rows)
+        {
+            d3d.context->Unmap(staging.texture.Get(), 0);
+            error = "NV12 buffer height is smaller than frame height";
+            return false;
+        }
+        const size_t buffer_uv_rows = (buffer_height + 1) / 2;
+        if (uv_plane_rows > buffer_uv_rows)
+        {
+            d3d.context->Unmap(staging.texture.Get(), 0);
+            error = "NV12 UV plane rows exceed buffer height";
+            return false;
+        }
+        if (stride > (std::numeric_limits<size_t>::max)() / y_rows
+            || stride > (std::numeric_limits<size_t>::max)() / uv_plane_rows)
         {
             d3d.context->Unmap(staging.texture.Get(), 0);
             error = "invalid stride when copying DXVA frame";
             return false;
         }
 
-        const size_t required = stride * total_rows;
-        out.resize(required);
+        const size_t y_len = stride * y_rows;
+        const size_t uv_len = stride * uv_plane_rows;
+        if (y_len > (std::numeric_limits<size_t>::max)() - uv_len)
+        {
+            d3d.context->Unmap(staging.texture.Get(), 0);
+            error = "invalid stride when copying DXVA frame";
+            return false;
+        }
+        if (buffer_height > (std::numeric_limits<size_t>::max)() / stride)
+        {
+            d3d.context->Unmap(staging.texture.Get(), 0);
+            error = "invalid stride when copying DXVA frame";
+            return false;
+        }
+        const size_t uv_src_offset = stride * buffer_height;
+
+        out.resize(y_len + uv_len);
 
         const uint8_t *src = static_cast<const uint8_t *>(mapped.pData);
-        for (size_t row = 0; row < total_rows; ++row)
+        for (size_t row = 0; row < y_rows; ++row)
         {
             std::memcpy(out.data() + row * stride, src + row * mapped.RowPitch, stride);
+        }
+        const uint8_t *uv_src = src + uv_src_offset;
+        for (size_t row = 0; row < uv_plane_rows; ++row)
+        {
+            std::memcpy(out.data() + y_len + row * stride, uv_src + row * mapped.RowPitch, stride);
         }
 
         d3d.context->Unmap(staging.texture.Get(), 0);
