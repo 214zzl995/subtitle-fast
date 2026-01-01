@@ -34,8 +34,9 @@ typedef struct {
     size_t uv_stride;
     uint32_t width;
     uint32_t height;
-    double timestamp_seconds;
-    uint64_t frame_index;
+    double pts_seconds;
+    double dts_seconds;
+    uint64_t index;
 } VideoToolboxFrame;
 
 typedef bool (*VideoToolboxFrameCallback)(const VideoToolboxFrame *frame, void *context);
@@ -45,8 +46,9 @@ typedef struct {
     uint32_t pixel_format;
     uint32_t width;
     uint32_t height;
-    double timestamp_seconds;
-    uint64_t frame_index;
+    double pts_seconds;
+    double dts_seconds;
+    uint64_t index;
 } VideoToolboxHandleFrame;
 
 typedef bool (*VideoToolboxHandleFrameCallback)(const VideoToolboxHandleFrame *frame, void *context);
@@ -508,9 +510,14 @@ bool videotoolbox_decode(
             size_t y_len = y_stride * height;
             size_t uv_len = uv_stride * uv_height;
             CMTime pts = CMSampleBufferGetPresentationTimeStamp(sample);
-            Float64 timestamp_seconds = NAN;
+            CMTime dts = CMSampleBufferGetDecodeTimeStamp(sample);
+            Float64 pts_seconds = NAN;
+            Float64 dts_seconds = NAN;
             if (pts.timescale != 0) {
-                timestamp_seconds = (Float64)pts.value / (Float64)pts.timescale;
+                pts_seconds = (Float64)pts.value / (Float64)pts.timescale;
+            }
+            if (dts.timescale != 0) {
+                dts_seconds = (Float64)dts.value / (Float64)dts.timescale;
             }
 
             VideoToolboxFrame frame;
@@ -522,8 +529,9 @@ bool videotoolbox_decode(
             frame.uv_stride = uv_stride;
             frame.width = (uint32_t)width;
             frame.height = (uint32_t)height;
-            frame.timestamp_seconds = timestamp_seconds;
-            frame.frame_index = frame_index;
+            frame.pts_seconds = pts_seconds;
+            frame.dts_seconds = dts_seconds;
+            frame.index = frame_index;
 
             bool should_continue = callback(&frame, context);
 
@@ -665,9 +673,14 @@ bool videotoolbox_decode_handle(
             size_t height = CVPixelBufferGetHeight(pixel_buffer);
 
             CMTime pts = CMSampleBufferGetPresentationTimeStamp(sample);
-            Float64 timestamp_seconds = NAN;
+            CMTime dts = CMSampleBufferGetDecodeTimeStamp(sample);
+            Float64 pts_seconds = NAN;
+            Float64 dts_seconds = NAN;
             if (pts.timescale != 0) {
-                timestamp_seconds = (Float64)pts.value / (Float64)pts.timescale;
+                pts_seconds = (Float64)pts.value / (Float64)pts.timescale;
+            }
+            if (dts.timescale != 0) {
+                dts_seconds = (Float64)dts.value / (Float64)dts.timescale;
             }
 
             VideoToolboxHandleFrame frame;
@@ -675,8 +688,9 @@ bool videotoolbox_decode_handle(
             frame.pixel_format = (uint32_t)pixel_format;
             frame.width = (uint32_t)width;
             frame.height = (uint32_t)height;
-            frame.timestamp_seconds = timestamp_seconds;
-            frame.frame_index = frame_index;
+            frame.pts_seconds = pts_seconds;
+            frame.dts_seconds = dts_seconds;
+            frame.index = frame_index;
 
             bool should_continue = callback(&frame, context);
 

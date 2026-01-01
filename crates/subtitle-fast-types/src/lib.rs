@@ -21,8 +21,9 @@ pub struct VideoFrame {
     width: u32,
     height: u32,
     serial: u64,
-    frame_index: Option<u64>,
-    timestamp: Option<Duration>,
+    index: Option<u64>,
+    pts: Option<Duration>,
+    dts: Option<Duration>,
     buffer: FrameBuffer,
 }
 
@@ -106,9 +107,10 @@ impl fmt::Debug for VideoFrame {
                 .field("uv_stride", &buffer.uv_stride)
                 .field("y_bytes", &buffer.y_plane.len())
                 .field("uv_bytes", &buffer.uv_plane.len())
-                .field("timestamp", &self.timestamp)
+                .field("pts", &self.pts)
+                .field("dts", &self.dts)
                 .field("serial", &self.serial)
-                .field("frame_index", &self.frame_index)
+                .field("index", &self.index)
                 .finish(),
             FrameBuffer::Native(buffer) => f
                 .debug_struct("VideoFrame")
@@ -118,9 +120,10 @@ impl fmt::Debug for VideoFrame {
                 .field("backend", &buffer.backend)
                 .field("pixel_format", &buffer.pixel_format)
                 .field("handle", &buffer.handle())
-                .field("timestamp", &self.timestamp)
+                .field("pts", &self.pts)
+                .field("dts", &self.dts)
                 .field("serial", &self.serial)
-                .field("frame_index", &self.frame_index)
+                .field("index", &self.index)
                 .finish(),
         }
     }
@@ -132,7 +135,8 @@ impl VideoFrame {
         height: u32,
         y_stride: usize,
         uv_stride: usize,
-        timestamp: Option<Duration>,
+        pts: Option<Duration>,
+        dts: Option<Duration>,
         mut y_plane: Vec<u8>,
         mut uv_plane: Vec<u8>,
     ) -> DecoderResult<Self> {
@@ -175,9 +179,10 @@ impl VideoFrame {
         Ok(Self {
             width,
             height,
-            timestamp,
+            pts,
+            dts,
             serial: 0,
-            frame_index: None,
+            index: None,
             buffer: FrameBuffer::Nv12(Nv12Buffer {
                 y_stride,
                 uv_stride,
@@ -190,8 +195,9 @@ impl VideoFrame {
     pub fn from_native_handle(
         width: u32,
         height: u32,
-        timestamp: Option<Duration>,
-        frame_index: Option<u64>,
+        pts: Option<Duration>,
+        dts: Option<Duration>,
+        index: Option<u64>,
         backend: &'static str,
         pixel_format: u32,
         handle: *mut c_void,
@@ -204,9 +210,10 @@ impl VideoFrame {
         Ok(Self {
             width,
             height,
-            timestamp,
+            pts,
+            dts,
             serial: 0,
-            frame_index,
+            index,
             buffer: FrameBuffer::Native(NativeBuffer {
                 backend,
                 pixel_format,
@@ -223,16 +230,20 @@ impl VideoFrame {
         self.height
     }
 
-    pub fn timestamp(&self) -> Option<Duration> {
-        self.timestamp
+    pub fn pts(&self) -> Option<Duration> {
+        self.pts
+    }
+
+    pub fn dts(&self) -> Option<Duration> {
+        self.dts
     }
 
     pub fn serial(&self) -> u64 {
         self.serial
     }
 
-    pub fn frame_index(&self) -> Option<u64> {
-        self.frame_index
+    pub fn index(&self) -> Option<u64> {
+        self.index
     }
 
     pub fn buffer(&self) -> &FrameBuffer {
@@ -283,13 +294,31 @@ impl VideoFrame {
         self.serial = serial;
     }
 
-    pub fn with_frame_index(mut self, index: Option<u64>) -> Self {
-        self.frame_index = index;
+    pub fn with_index(mut self, index: Option<u64>) -> Self {
+        self.index = index;
         self
     }
 
-    pub fn set_frame_index(&mut self, index: Option<u64>) {
-        self.frame_index = index;
+    pub fn set_index(&mut self, index: Option<u64>) {
+        self.index = index;
+    }
+
+    pub fn with_pts(mut self, pts: Option<Duration>) -> Self {
+        self.pts = pts;
+        self
+    }
+
+    pub fn set_pts(&mut self, pts: Option<Duration>) {
+        self.pts = pts;
+    }
+
+    pub fn with_dts(mut self, dts: Option<Duration>) -> Self {
+        self.dts = dts;
+        self
+    }
+
+    pub fn set_dts(&mut self, dts: Option<Duration>) {
+        self.dts = dts;
     }
 
     fn expect_nv12(&self) -> &Nv12Buffer {

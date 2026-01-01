@@ -200,8 +200,8 @@ fn inflate_regions(
 
 fn frame_identifier(frame: &VideoFrame) -> u64 {
     frame
-        .frame_index()
-        .or_else(|| frame.timestamp().map(duration_millis))
+        .index()
+        .or_else(|| frame.pts().map(duration_millis))
         .unwrap_or_default()
 }
 

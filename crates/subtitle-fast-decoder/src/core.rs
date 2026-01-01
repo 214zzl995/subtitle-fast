@@ -158,6 +158,7 @@ mod tests {
             4,
             4,
             Some(Duration::from_millis(10)),
+            None,
             vec![0; 8],
             vec![128; 4],
         )
@@ -165,10 +166,11 @@ mod tests {
         assert_eq!(frame.width(), 4);
         assert_eq!(frame.height(), 2);
         assert_eq!(frame.stride(), 4);
-        assert_eq!(frame.timestamp(), Some(Duration::from_millis(10)));
+        assert_eq!(frame.pts(), Some(Duration::from_millis(10)));
+        assert_eq!(frame.dts(), None);
         assert_eq!(frame.serial(), 0);
         assert_eq!(frame.data().len(), 8);
-        assert_eq!(frame.frame_index(), None);
+        assert_eq!(frame.index(), None);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -179,6 +181,7 @@ mod tests {
                 2,
                 2,
                 2,
+                None,
                 None,
                 vec![1, 2, 3, 4],
                 vec![128; 2],

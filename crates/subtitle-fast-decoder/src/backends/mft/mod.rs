@@ -44,8 +44,9 @@ mod platform {
         uv_stride: usize,
         width: u32,
         height: u32,
-        timestamp_seconds: f64,
-        frame_index: u64,
+        pts_seconds: f64,
+        dts_seconds: f64,
+        index: u64,
     }
 
     type CMftFrameCallback = unsafe extern "C" fn(*const CMftFrame, *mut c_void) -> bool;
@@ -301,15 +302,13 @@ mod platform {
             self.closed = true;
         }
 
-        fn should_skip_frame(&mut self, frame_index: u64, timestamp: Option<Duration>) -> bool {
+        fn should_skip_frame(&mut self, index: u64, pts: Option<Duration>) -> bool {
             let Some(drop_until) = self.pending_drop else {
                 return false;
             };
             let keep = match drop_until {
-                DropUntil::Frame(target) => frame_index >= target,
-                DropUntil::Timestamp(target) => {
-                    timestamp.map(|value| value >= target).unwrap_or(true)
-                }
+                DropUntil::Frame(target) => index >= target,
+                DropUntil::Timestamp(target) => pts.map(|value| value >= target).unwrap_or(true),
             };
             if keep {
                 self.pending_drop = None;
@@ -338,12 +337,20 @@ mod platform {
         }
         let y_data = unsafe { slice::from_raw_parts(frame.y_data, frame.y_len) };
         let uv_data = unsafe { slice::from_raw_parts(frame.uv_data, frame.uv_len) };
-        let timestamp = if frame.timestamp_seconds.is_sign_negative() {
-            None
+        let pts = if frame.pts_seconds.is_finite() && frame.pts_seconds >= 0.0 {
+            Some(Duration::from_secs_f64(frame.pts_seconds))
         } else {
-            Some(Duration::from_secs_f64(frame.timestamp_seconds))
+            None
         };
-        if context.should_skip_frame(frame.frame_index, timestamp) {
+        let dts = if frame.dts_seconds.is_finite() && frame.dts_seconds >= 0.0 {
+            Some(Duration::from_secs_f64(frame.dts_seconds))
+        } else {
+            None
+        };
+        let index = pts
+            .and_then(|pts| index_from_pts(pts, context.fps))
+            .or(Some(frame.index));
+        if context.should_skip_frame(index.unwrap_or(frame.index), pts) {
             return true;
         }
         match VideoFrame::from_nv12_owned(
@@ -351,13 +358,14 @@ mod platform {
             frame.height,
             frame.y_stride,
             frame.uv_stride,
-            timestamp,
+            pts,
+            dts,
             y_data.to_vec(),
             uv_data.to_vec(),
         ) {
             Ok(frame_value) => {
                 let frame_value = frame_value
-                    .with_frame_index(Some(frame.frame_index))
+                    .with_index(index)
                     .with_serial(context.current_serial);
                 context.send_frame(frame_value)
             }
@@ -478,6 +486,23 @@ mod platform {
                     },
                 })
             }
+        }
+    }
+
+    fn index_from_pts(pts: Duration, fps: Option<f64>) -> Option<u64> {
+        let fps = fps?;
+        if !(fps.is_finite() && fps > 0.0) {
+            return None;
+        }
+        let seconds = pts.as_secs_f64();
+        if !seconds.is_finite() || seconds.is_sign_negative() {
+            return None;
+        }
+        let index = (seconds * fps).round();
+        if index.is_finite() && index >= 0.0 && index <= u64::MAX as f64 {
+            Some(index as u64)
+        } else {
+            None
         }
     }
 }

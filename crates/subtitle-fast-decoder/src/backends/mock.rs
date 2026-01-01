@@ -55,8 +55,8 @@ impl MockProvider {
             let uv_rows = (self.height as usize + 1) / 2;
             let uv_stride = self.stride;
             let uv_plane = vec![128u8; uv_stride * uv_rows];
-            let timestamp = Some(Duration::from_millis((index * 16) as u64));
-            if should_skip_frame(&mut pending_drop, index as u64, timestamp) {
+            let pts = Some(Duration::from_millis((index * 16) as u64));
+            if should_skip_frame(&mut pending_drop, index as u64, pts) {
                 index += 1;
                 continue;
             }
@@ -65,13 +65,14 @@ impl MockProvider {
                 self.height,
                 self.stride,
                 uv_stride,
-                timestamp,
+                pts,
+                None,
                 buffer,
                 uv_plane,
             )
             .map(|frame| {
                 frame
-                    .with_frame_index(Some(index as u64))
+                    .with_index(Some(index as u64))
                     .with_serial(current_serial)
             });
             if tx.blocking_send(frame).is_err() {
@@ -146,14 +147,14 @@ fn drain_seek_requests(
 fn should_skip_frame(
     pending_drop: &mut Option<DropUntil>,
     frame_index: u64,
-    timestamp: Option<Duration>,
+    pts: Option<Duration>,
 ) -> bool {
     let Some(drop_until) = *pending_drop else {
         return false;
     };
     let keep = match drop_until {
         DropUntil::Frame(target) => frame_index >= target,
-        DropUntil::Timestamp(target) => timestamp.map(|value| value >= target).unwrap_or(true),
+        DropUntil::Timestamp(target) => pts.map(|value| value >= target).unwrap_or(true),
     };
     if keep {
         *pending_drop = None;
@@ -249,7 +250,7 @@ mod tests {
         let decoder = Box::new(MockProvider::new(&config).unwrap()) as DynDecoderProvider;
         let (_controller, mut stream) = decoder.open().unwrap();
         let frame = stream.next().await.unwrap().unwrap();
-        assert_eq!(frame.frame_index(), Some(10));
+        assert_eq!(frame.index(), Some(10));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -279,7 +280,7 @@ mod tests {
             }
         }
         let frame = sought.expect("expected frame after seek");
-        assert_eq!(frame.frame_index(), Some(10));
+        assert_eq!(frame.index(), Some(10));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -309,7 +310,7 @@ mod tests {
             }
         }
         let frame = sought.expect("expected frame after seek");
-        assert!(frame.frame_index().unwrap_or(0) >= 60);
-        assert!(frame.timestamp().unwrap_or_default() >= Duration::from_secs(1));
+        assert!(frame.index().unwrap_or(0) >= 60);
+        assert!(frame.pts().unwrap_or_default() >= Duration::from_secs(1));
     }
 }

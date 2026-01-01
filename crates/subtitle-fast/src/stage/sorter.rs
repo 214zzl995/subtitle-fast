@@ -84,7 +84,7 @@ struct FramePool {
 
 impl FramePool {
     fn insert(&mut self, frame: VideoFrame) {
-        let key = frame.frame_index().unwrap_or_else(|| {
+        let key = frame.index().unwrap_or_else(|| {
             let key = self.fallback_index;
             self.fallback_index = self.fallback_index.saturating_add(1);
             key

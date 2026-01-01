@@ -169,9 +169,9 @@ impl SamplerWorker {
         let processed_index = self.processed;
 
         let frame_index = frame
-            .frame_index()
+            .index()
             .unwrap_or_else(|| processed_index.saturating_sub(1));
-        let timestamp = frame.timestamp();
+        let timestamp = frame.pts();
 
         let frame_type = if self.schedule.should_sample(timestamp, processed_index) {
             FrameType::Sampled
@@ -476,6 +476,7 @@ mod tests {
             2,
             2,
             Some(Duration::from_millis(0)),
+            None,
             vec![0; 4],
             vec![128; 2],
         )
@@ -512,6 +513,7 @@ mod tests {
             2,
             2,
             Some(Duration::from_millis(0)),
+            None,
             vec![1; 4],
             vec![128; 2],
         )
@@ -522,6 +524,7 @@ mod tests {
             2,
             2,
             Some(Duration::from_millis(10)),
+            None,
             vec![2; 4],
             vec![128; 2],
         )

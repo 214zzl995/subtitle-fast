@@ -175,6 +175,12 @@ impl VideoPlayerInfoHandle {
                         if fps.is_finite() && fps > 0.0 {
                             let frame = position.as_secs_f64() * fps;
                             if frame.is_finite() && frame >= 0.0 {
+                                eprintln!(
+                                    "seek preview frame estimate: {:.6} * {:.6} = {:.6}",
+                                    position.as_secs_f64(),
+                                    fps,
+                                    frame
+                                );
                                 state.last_frame_index = Some(frame.round() as u64);
                             }
                         }
@@ -404,6 +410,7 @@ fn handle_command(
             info.update_playback(|state| state.scrubbing = false);
         }
         PlayerCommand::Seek(seek) => {
+            eprintln!("seek command: {seek:?}");
             info.apply_seek_preview(seek);
             if let Some(session) = session {
                 match session.controller.seek(seek) {
@@ -676,7 +683,7 @@ fn spawn_decoder(
                                     }
                                 }
 
-                                if let Some(timestamp) = frame.timestamp() {
+                                if let Some(timestamp) = frame.pts() {
                                     let first = first_timestamp.get_or_insert(timestamp);
                                     if !paused_like {
                                         if let Some(delta) = timestamp.checked_sub(*first) {
@@ -698,8 +705,8 @@ fn spawn_decoder(
                                 }
 
                                 info.update_playback(|state| {
-                                    state.last_timestamp = frame.timestamp();
-                                    state.last_frame_index = frame.frame_index();
+                                    state.last_timestamp = frame.pts();
+                                    state.last_frame_index = frame.index();
                                 });
 
                                 if let Some(cache) = cache_from_video_frame(&frame) {

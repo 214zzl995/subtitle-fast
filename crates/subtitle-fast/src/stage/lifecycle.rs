@@ -406,7 +406,7 @@ fn refine_end(
         if report.same_segment {
             anchor = Some(candidate.clone());
             best_frame = record.frame_index;
-            best_time = record.frame().timestamp().unwrap_or(best_time);
+            best_time = record.frame().pts().unwrap_or(best_time);
             best_frame_handle = record.frame_handle();
         }
     }
@@ -461,7 +461,7 @@ fn timed_compare(
 }
 
 fn sample_time(sample: &SampledFrame) -> Duration {
-    if let Some(ts) = sample.frame().timestamp() {
+    if let Some(ts) = sample.frame().pts() {
         return ts;
     }
     if let Some(fps) = sample.sampler_context().estimated_fps()
@@ -474,7 +474,7 @@ fn sample_time(sample: &SampledFrame) -> Duration {
 }
 
 fn frame_time(frame: &VideoFrame, frame_index: u64, context: &SamplerContext) -> Option<Duration> {
-    if let Some(ts) = frame.timestamp() {
+    if let Some(ts) = frame.pts() {
         return Some(ts);
     }
     let fps = context.estimated_fps()?;

@@ -217,9 +217,17 @@ mod tests {
 
     #[test]
     fn roi_to_region_clamps_to_bounds() {
-        let frame =
-            VideoFrame::from_nv12_owned(100, 50, 100, 100, None, vec![0; 5000], vec![128; 2500])
-                .unwrap();
+        let frame = VideoFrame::from_nv12_owned(
+            100,
+            50,
+            100,
+            100,
+            None,
+            None,
+            vec![0; 5000],
+            vec![128; 2500],
+        )
+        .unwrap();
         let roi = RoiConfig {
             x: -0.2,
             y: 0.5,

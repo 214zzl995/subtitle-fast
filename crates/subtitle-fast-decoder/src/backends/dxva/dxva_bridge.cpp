@@ -544,8 +544,9 @@ extern "C"
         size_t uv_stride;
         uint32_t width;
         uint32_t height;
-        double timestamp_seconds;
-        uint64_t frame_index;
+        double pts_seconds;
+        double dts_seconds;
+        uint64_t index;
     };
 
     typedef bool(__cdecl *CDxvaFrameCallback)(const CDxvaFrame *, void *);
@@ -844,6 +845,14 @@ extern "C"
             }
             if ((flags & MF_SOURCE_READERF_STREAMTICK) || !sample) { continue; }
 
+            UINT64 decode_timestamp = 0;
+            double dts_seconds = NAN;
+            HRESULT dts_hr = sample->GetUINT64(MFSampleExtension_DecodeTimestamp, &decode_timestamp);
+            if (SUCCEEDED(dts_hr))
+            {
+                dts_seconds = static_cast<double>(decode_timestamp) / 10000000.0;
+            }
+
             ComPtr<IMFMediaBuffer> buffer;
             hr = sample->GetBufferByIndex(0, &buffer);
             if (FAILED(hr) || !buffer)
@@ -886,10 +895,11 @@ extern "C"
             frame.uv_stride = stride;
             frame.width = width;
             frame.height = height;
-            frame.timestamp_seconds = timestamp >= 0
-                                          ? static_cast<double>(timestamp) / 10000000.0
-                                          : -1.0;
-            frame.frame_index = frame_index;
+            frame.pts_seconds = timestamp >= 0
+                                    ? static_cast<double>(timestamp) / 10000000.0
+                                    : -1.0;
+            frame.dts_seconds = dts_seconds;
+            frame.index = frame_index;
 
             if (!callback(&frame, context)) { break; }
             frame_index += 1;

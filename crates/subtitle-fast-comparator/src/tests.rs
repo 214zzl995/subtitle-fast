@@ -12,6 +12,7 @@ fn frame_from_pixels(width: usize, height: usize, data: &[u8]) -> VideoFrame {
         width,
         width,
         None,
+        None,
         data.to_vec(),
         uv_plane,
     )

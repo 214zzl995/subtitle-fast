@@ -101,6 +101,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     width,
                     width,
                     None,
+                    None,
                     y_plane,
                     uv_plane,
                 )?;

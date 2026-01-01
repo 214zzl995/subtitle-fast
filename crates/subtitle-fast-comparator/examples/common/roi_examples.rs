@@ -113,6 +113,7 @@ pub fn load_frame(path: &Path, width: usize, height: usize) -> Result<VideoFrame
         width,
         width,
         None,
+        None,
         y_plane,
         uv_plane,
     )?)

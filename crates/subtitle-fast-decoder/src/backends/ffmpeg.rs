@@ -238,10 +238,12 @@ fn drain_decoder(
         }
         match decoder.receive_frame(decoded) {
             Ok(()) => {
-                let pts = frame_pts(decoded);
-                let timestamp = pts.and_then(|value| timestamp_from_pts(value, state.time_base));
+                let pts_value = frame_pts(decoded);
+                let dts_value = frame_dts(decoded);
+                let pts = pts_value.and_then(|value| timestamp_from_pts(value, state.time_base));
+                let dts = dts_value.and_then(|value| timestamp_from_pts(value, state.time_base));
                 let frame_index = frame_index_from_pts(
-                    pts,
+                    pts_value,
                     state.frame_rate,
                     state.time_base,
                     &mut state.next_index,
@@ -250,7 +252,7 @@ fn drain_decoder(
                 if let Some(drop) = state.pending_drop {
                     let keep = match drop {
                         DropUntil::Timestamp(target) => {
-                            pts.map(|value| value >= target).unwrap_or(true)
+                            pts_value.map(|value| value >= target).unwrap_or(true)
                         }
                         DropUntil::Frame(target) => {
                             frame_index.map(|value| value >= target).unwrap_or(true)
@@ -272,7 +274,7 @@ fn drain_decoder(
                 }
 
                 ensure_scaler(state, decoded)?;
-                let frame = build_frame(&state.converted, timestamp, frame_index, current_serial)?;
+                let frame = build_frame(&state.converted, pts, dts, frame_index, current_serial)?;
                 unsafe { ffmpeg::ffi::av_frame_unref(decoded.as_mut_ptr()) };
                 if tx.blocking_send(Ok(frame)).is_err() {
                     return Ok(DrainOutcome::Closed);
@@ -330,7 +332,8 @@ fn ensure_scaler(
 
 fn build_frame(
     converted: &ffmpeg::util::frame::Video,
-    timestamp: Option<Duration>,
+    pts: Option<Duration>,
+    dts: Option<Duration>,
     frame_index: Option<u64>,
     serial: u64,
 ) -> DecoderResult<VideoFrame> {
@@ -342,9 +345,9 @@ fn build_frame(
     let uv_rows = (height as usize + 1) / 2;
     let uv_plane = copy_plane(converted.data(1), uv_stride, uv_rows, "UV")?;
     VideoFrame::from_nv12_owned(
-        width, height, y_stride, uv_stride, timestamp, y_plane, uv_plane,
+        width, height, y_stride, uv_stride, pts, dts, y_plane, uv_plane,
     )
-    .map(|frame| frame.with_serial(serial).with_frame_index(frame_index))
+    .map(|frame| frame.with_serial(serial).with_index(frame_index))
 }
 
 fn perform_seek(
@@ -506,6 +509,15 @@ fn frame_index_from_pts(
 
 fn frame_pts(frame: &ffmpeg::util::frame::Video) -> Option<i64> {
     frame.timestamp().or_else(|| frame.pts())
+}
+
+fn frame_dts(frame: &ffmpeg::util::frame::Video) -> Option<i64> {
+    let dts = frame.packet().dts;
+    if dts == ffmpeg::ffi::AV_NOPTS_VALUE {
+        None
+    } else {
+        Some(dts)
+    }
 }
 
 fn timestamp_from_pts(value: i64, time_base: ffmpeg::Rational) -> Option<Duration> {

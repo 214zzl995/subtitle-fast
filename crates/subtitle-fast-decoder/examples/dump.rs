@@ -83,7 +83,7 @@ async fn main() -> io::Result<()> {
     while let Some(frame) = stream.next().await {
         match frame {
             Ok(frame) => {
-                let ordinal = frame.frame_index().unwrap_or(processed);
+                let ordinal = frame.index().unwrap_or(processed);
                 processed += 1;
                 if let Some(ref bar) = progress {
                     bar.inc(1);
@@ -234,11 +234,11 @@ fn should_emit_frame(
 
 fn frame_second_bucket(frame: &VideoFrame, processed: u64) -> u64 {
     let seconds = frame
-        .timestamp()
+        .pts()
         .map(|ts| ts.as_secs_f64())
         .or_else(|| {
             frame
-                .frame_index()
+                .index()
                 .or(Some(processed))
                 .map(|idx| idx as f64 / SAMPLE_FREQUENCY.max(1) as f64)
         })
