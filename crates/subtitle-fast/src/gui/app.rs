@@ -86,6 +86,10 @@ impl SubtitleFastApp {
                     let controls_view = cx.new(|_| VideoControls::new());
                     let (roi_overlay, roi_handle) = VideoRoiOverlay::new();
                     let roi_overlay_view = cx.new(|_| roi_overlay);
+                    let _ = toolbar_view.update(cx, |toolbar_view, cx| {
+                        toolbar_view.set_roi_overlay(Some(roi_overlay_view.clone()));
+                        cx.notify();
+                    });
                     cx.new(|_| {
                         MainWindow::new(
                             None,

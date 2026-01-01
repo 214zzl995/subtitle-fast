@@ -74,6 +74,13 @@ impl VideoRoiOverlay {
         )
     }
 
+    pub fn reset_roi(&mut self, cx: &mut Context<Self>) {
+        self.dragging = None;
+        self.roi = default_roi();
+        let _ = self.sender.send(self.roi);
+        cx.notify();
+    }
+
     pub fn set_info_handle(&mut self, info: Option<VideoPlayerInfoHandle>, cx: &mut Context<Self>) {
         self.info = info;
         self.container_bounds = None;
