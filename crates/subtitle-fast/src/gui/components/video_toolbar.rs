@@ -1,7 +1,8 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::prelude::*;
-use gpui::{Context, Render, Window, div, hsla, px};
+use gpui::{Animation, AnimationExt as _, Context, Render, Window, div, ease_out_quint, hsla, px};
 
 use crate::gui::components::{FramePreprocessor, VideoPlayerControlHandle};
 
@@ -14,6 +15,8 @@ enum VideoViewMode {
 pub struct VideoToolbar {
     controls: Option<VideoPlayerControlHandle>,
     view: VideoViewMode,
+    slide_from: VideoViewMode,
+    slide_token: u64,
 }
 
 impl VideoToolbar {
@@ -21,6 +24,8 @@ impl VideoToolbar {
         Self {
             controls: None,
             view: VideoViewMode::FullColor,
+            slide_from: VideoViewMode::FullColor,
+            slide_token: 0,
         }
     }
 
@@ -33,6 +38,8 @@ impl VideoToolbar {
         if self.view == view {
             return;
         }
+        self.slide_from = self.view;
+        self.slide_token = self.slide_token.wrapping_add(1);
         self.view = view;
         self.apply_view();
         cx.notify();
@@ -57,6 +64,23 @@ impl Render for VideoToolbar {
         } else {
             hsla(0.0, 0.0, 1.0, 0.35)
         };
+        let active_text_color = if enabled {
+            hsla(0.0, 0.0, 1.0, 0.92)
+        } else {
+            hsla(0.0, 0.0, 1.0, 0.4)
+        };
+        let inactive_text_color = if enabled {
+            hsla(0.0, 0.0, 1.0, 0.62)
+        } else {
+            hsla(0.0, 0.0, 1.0, 0.35)
+        };
+
+        let segment_height = px(20.0);
+        let segment_width = px(42.0);
+        let segment_radius = px(6.0);
+        let segment_inset = px(1.0);
+        let slider_height = segment_height - segment_inset * 2.0;
+        let slider_width = segment_width - segment_inset * 2.0;
 
         let button = |label: &'static str, active: bool, mode: VideoViewMode| {
             let id = match mode {
@@ -68,18 +92,15 @@ impl Render for VideoToolbar {
                 .flex()
                 .items_center()
                 .justify_center()
-                .px(px(2.0))
-                .py(px(3.0))
-                .rounded(px(999.0))
-                .border_1()
-                .border_color(hsla(0.0, 0.0, 1.0, if active { 0.45 } else { 0.25 }))
+                .h_full()
+                .w(segment_width)
                 .text_xs()
-                .text_color(text_color)
+                .text_color(if active {
+                    active_text_color
+                } else {
+                    inactive_text_color
+                })
                 .child(label);
-
-            if active {
-                view = view.bg(hsla(0.0, 0.0, 1.0, 0.12));
-            }
 
             if enabled {
                 view = view
@@ -93,20 +114,64 @@ impl Render for VideoToolbar {
             view
         };
 
+        let slider_start = segment_inset
+            + match self.slide_from {
+                VideoViewMode::FullColor => px(0.0),
+                VideoViewMode::YPlane => segment_width,
+            };
+        let slider_end = segment_inset
+            + match self.view {
+                VideoViewMode::FullColor => px(0.0),
+                VideoViewMode::YPlane => segment_width,
+            };
+
+        let slider = div()
+            .id(("video-view-slider", cx.entity_id()))
+            .absolute()
+            .top(segment_inset)
+            .left(slider_start)
+            .w(slider_width)
+            .h(slider_height)
+            .rounded(segment_radius - segment_inset)
+            .bg(hsla(0.0, 0.0, 1.0, if enabled { 0.16 } else { 0.08 }))
+            .with_animation(
+                ("video-view-slider-anim", self.slide_token),
+                Animation::new(Duration::from_millis(160)).with_easing(ease_out_quint()),
+                move |slider, delta| {
+                    let left = slider_start + (slider_end - slider_start) * delta;
+                    slider.left(left)
+                },
+            );
+
         let view_group = div()
+            .id(("video-view-toggle", cx.entity_id()))
+            .relative()
             .flex()
             .items_center()
-            .gap(px(8.0))
-            .child(button(
-                "Full Color",
-                self.view == VideoViewMode::FullColor,
-                VideoViewMode::FullColor,
-            ))
-            .child(button(
-                "Y Plane",
-                self.view == VideoViewMode::YPlane,
-                VideoViewMode::YPlane,
-            ));
+            .h(segment_height)
+            .w(segment_width * 2.0)
+            .border_1()
+            .border_color(hsla(0.0, 0.0, 1.0, if enabled { 0.32 } else { 0.2 }))
+            .rounded(segment_radius)
+            .overflow_hidden()
+            .child(slider)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .h_full()
+                    .w_full()
+                    .child(button(
+                        "YUV",
+                        self.view == VideoViewMode::FullColor,
+                        VideoViewMode::FullColor,
+                    ))
+                    .child(button(
+                        "Y",
+                        self.view == VideoViewMode::YPlane,
+                        VideoViewMode::YPlane,
+                    )),
+            );
 
         div()
             .id(("video-toolbar", cx.entity_id()))
@@ -114,8 +179,9 @@ impl Render for VideoToolbar {
             .items_center()
             .justify_between()
             .w_full()
+            .h(px(24.0))
             .p(px(0.0))
-            .text_sm()
+            .text_xs()
             .text_color(text_color)
             .child(div().child("View"))
             .child(view_group)

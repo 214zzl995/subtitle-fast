@@ -257,8 +257,9 @@ impl Render for MainWindow {
                     .min_w(px(0.0))
                     .h_full()
                     .bg(rgb(0x1b1b1b))
-                    .p(px(16.0))
-                    .gap(px(12.0))
+                    .px(px(8.0))
+                    .py(px(2.0))
+                    .gap(px(2.0))
                     .child(self.toolbar_view.clone())
                     .child(video_wrapper)
                     .child(self.controls_view.clone());
