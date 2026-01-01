@@ -175,12 +175,6 @@ impl VideoPlayerInfoHandle {
                         if fps.is_finite() && fps > 0.0 {
                             let frame = position.as_secs_f64() * fps;
                             if frame.is_finite() && frame >= 0.0 {
-                                eprintln!(
-                                    "seek preview frame estimate: {:.6} * {:.6} = {:.6}",
-                                    position.as_secs_f64(),
-                                    fps,
-                                    frame
-                                );
                                 state.last_frame_index = Some(frame.round() as u64);
                             }
                         }
@@ -332,7 +326,6 @@ struct CachedFrame {
 
 struct SeekTiming {
     serial: u64,
-    sent_at: Instant,
 }
 
 fn open_session(
@@ -410,16 +403,12 @@ fn handle_command(
             info.update_playback(|state| state.scrubbing = false);
         }
         PlayerCommand::Seek(seek) => {
-            eprintln!("seek command: {seek:?}");
             info.apply_seek_preview(seek);
             if let Some(session) = session {
                 match session.controller.seek(seek) {
                     Ok(serial) => {
                         *pending_seek = None;
-                        *seek_timing = Some(SeekTiming {
-                            serial,
-                            sent_at: Instant::now(),
-                        });
+                        *seek_timing = Some(SeekTiming { serial });
                     }
                     Err(_) => {
                         *pending_seek = Some(seek);
@@ -510,7 +499,6 @@ fn spawn_decoder(
                                 Ok(serial) => {
                                     seek_timing = Some(SeekTiming {
                                         serial,
-                                        sent_at: Instant::now(),
                                     });
                                 }
                                 Err(_) => {
@@ -666,13 +654,7 @@ fn spawn_decoder(
                                 }
                                 if let Some(timing) = seek_timing.as_ref() {
                                     if timing.serial == frame.serial() {
-                                        let elapsed = timing.sent_at.elapsed();
                                         seek_timing = None;
-                                        eprintln!(
-                                            "seek latency: serial={} elapsed_ms={:.2}",
-                                            frame.serial(),
-                                            elapsed.as_secs_f64() * 1000.0
-                                        );
                                     }
                                 }
                                 if !started {
