@@ -11,7 +11,10 @@ use subtitle_fast_decoder::{
     Backend, Configuration, DecoderController, FrameStream, OutputFormat, SeekInfo, SeekMode,
     VideoFrame, VideoMetadata,
 };
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::{
+    mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    watch,
+};
 use tokio_stream::StreamExt;
 
 #[derive(Clone, Copy, Debug)]
@@ -97,34 +100,61 @@ enum PlayerCommand {
 
 #[derive(Clone)]
 pub struct VideoPlayerInfoHandle {
-    inner: Arc<Mutex<VideoPlayerInfoState>>,
+    inner: Arc<VideoPlayerInfoInner>,
+    playback_rx: watch::Receiver<PlaybackState>,
 }
 
 impl VideoPlayerInfoHandle {
     fn new() -> Self {
+        let (playback_tx, playback_rx) = watch::channel(PlaybackState::default());
         Self {
-            inner: Arc::new(Mutex::new(VideoPlayerInfoState::default())),
+            inner: Arc::new(VideoPlayerInfoInner {
+                metadata: Mutex::new(VideoMetadata::default()),
+                playback_tx,
+            }),
+            playback_rx,
         }
     }
 
     pub fn snapshot(&self) -> VideoPlayerInfoSnapshot {
-        let state = self.inner.lock().expect("video info mutex poisoned");
+        let metadata = self.metadata();
+        let playback = *self.playback_rx.borrow();
         VideoPlayerInfoSnapshot {
-            metadata: state.metadata,
-            last_timestamp: state.last_timestamp,
-            last_frame_index: state.last_frame_index,
-            ended: state.ended,
-            scrubbing: state.scrubbing,
+            metadata,
+            last_timestamp: playback.last_timestamp,
+            last_frame_index: playback.last_frame_index,
+            ended: playback.ended,
+            scrubbing: playback.scrubbing,
         }
     }
 
-    fn update(&self, update: impl FnOnce(&mut VideoPlayerInfoState)) {
-        let mut state = self.inner.lock().expect("video info mutex poisoned");
-        update(&mut state);
+    fn metadata(&self) -> VideoMetadata {
+        *self
+            .inner
+            .metadata
+            .lock()
+            .expect("video info mutex poisoned")
+    }
+
+    fn set_metadata(&self, metadata: VideoMetadata) {
+        let mut guard = self
+            .inner
+            .metadata
+            .lock()
+            .expect("video info mutex poisoned");
+        *guard = metadata;
+    }
+
+    fn update_playback(&self, update: impl FnOnce(&mut PlaybackState)) {
+        let _ = self.inner.playback_tx.send_if_modified(|state| {
+            let before = *state;
+            update(state);
+            *state != before
+        });
     }
 
     fn reset_for_replay(&self) {
-        self.update(|state| {
+        self.update_playback(|state| {
             state.last_timestamp = None;
             state.last_frame_index = None;
             state.ended = false;
@@ -133,14 +163,15 @@ impl VideoPlayerInfoHandle {
     }
 
     fn apply_seek_preview(&self, info: SeekInfo) {
-        self.update(|state| {
+        let metadata = self.metadata();
+        self.update_playback(|state| {
             state.ended = false;
             state.last_timestamp = None;
             state.last_frame_index = None;
             match info {
                 SeekInfo::Time { position, .. } => {
                     state.last_timestamp = Some(position);
-                    if let Some(fps) = state.metadata.fps {
+                    if let Some(fps) = metadata.fps {
                         if fps.is_finite() && fps > 0.0 {
                             let frame = position.as_secs_f64() * fps;
                             if frame.is_finite() && frame >= 0.0 {
@@ -151,7 +182,7 @@ impl VideoPlayerInfoHandle {
                 }
                 SeekInfo::Frame { frame, .. } => {
                     state.last_frame_index = Some(frame);
-                    if let Some(fps) = state.metadata.fps {
+                    if let Some(fps) = metadata.fps {
                         if fps.is_finite() && fps > 0.0 {
                             let seconds = frame as f64 / fps;
                             if seconds.is_finite() && seconds >= 0.0 {
@@ -174,25 +205,17 @@ pub struct VideoPlayerInfoSnapshot {
     pub scrubbing: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct VideoPlayerInfoState {
-    metadata: VideoMetadata,
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct PlaybackState {
     last_timestamp: Option<Duration>,
     last_frame_index: Option<u64>,
     ended: bool,
     scrubbing: bool,
 }
 
-impl Default for VideoPlayerInfoState {
-    fn default() -> Self {
-        Self {
-            metadata: VideoMetadata::default(),
-            last_timestamp: None,
-            last_frame_index: None,
-            ended: false,
-            scrubbing: false,
-        }
-    }
+struct VideoPlayerInfoInner {
+    metadata: Mutex<VideoMetadata>,
+    playback_tx: watch::Sender<PlaybackState>,
 }
 
 pub struct VideoPlayer {
@@ -323,13 +346,13 @@ fn open_session(
         Ok(provider) => provider,
         Err(err) => {
             eprintln!("failed to create decoder provider: {err}");
-            info.update(|state| state.ended = true);
+            info.update_playback(|state| state.ended = true);
             return None;
         }
     };
 
     let metadata = provider.metadata();
-    info.update(|state| state.metadata = metadata);
+    info.set_metadata(metadata);
     let frame_duration = metadata
         .fps
         .and_then(|fps| (fps > 0.0).then(|| Duration::from_secs_f64(1.0 / fps)));
@@ -338,7 +361,7 @@ fn open_session(
         Ok(value) => value,
         Err(err) => {
             eprintln!("failed to open decoder stream: {err}");
-            info.update(|state| state.ended = true);
+            info.update_playback(|state| state.ended = true);
             return None;
         }
     };
@@ -374,11 +397,11 @@ fn handle_command(
         }
         PlayerCommand::BeginScrub => {
             *scrubbing = true;
-            info.update(|state| state.scrubbing = true);
+            info.update_playback(|state| state.scrubbing = true);
         }
         PlayerCommand::EndScrub => {
             *scrubbing = false;
-            info.update(|state| state.scrubbing = false);
+            info.update_playback(|state| state.scrubbing = false);
         }
         PlayerCommand::Seek(seek) => {
             info.apply_seek_preview(seek);
@@ -407,7 +430,7 @@ fn handle_command(
             *paused = false;
             if *scrubbing {
                 *scrubbing = false;
-                info.update(|state| state.scrubbing = false);
+                info.update_playback(|state| state.scrubbing = false);
             }
             *pending_seek = None;
             *seek_timing = None;
@@ -437,7 +460,7 @@ fn spawn_decoder(
         runtime.block_on(async move {
             if !input_path.exists() {
                 eprintln!("input video not found: {input_path:?}");
-                info.update(|state| state.ended = true);
+                info.update_playback(|state| state.ended = true);
                 return;
             }
 
@@ -446,7 +469,7 @@ fn spawn_decoder(
                 eprintln!(
                     "no decoder backend is compiled; enable a backend feature such as backend-ffmpeg"
                 );
-                info.update(|state| state.ended = true);
+                info.update_playback(|state| state.ended = true);
                 return;
             }
 
@@ -492,7 +515,7 @@ fn spawn_decoder(
                             }
                         }
 
-                        info.update(|state| state.ended = false);
+                        info.update_playback(|state| state.ended = false);
                         open_requested = false;
                         active_serial = None;
                         started = false;
@@ -674,7 +697,7 @@ fn spawn_decoder(
                                     }
                                 }
 
-                                info.update(|state| {
+                                info.update_playback(|state| {
                                     state.last_timestamp = frame.timestamp();
                                     state.last_frame_index = frame.frame_index();
                                 });
@@ -692,14 +715,14 @@ fn spawn_decoder(
                             }
                             Some(Err(err)) => {
                                 eprintln!("decoder error: {err}");
-                                info.update(|state| state.ended = true);
+                                info.update_playback(|state| state.ended = true);
                                 session = None;
                                 open_requested = false;
                                 seek_timing = None;
                                 continue;
                             }
                             None => {
-                                info.update(|state| state.ended = true);
+                                info.update_playback(|state| state.ended = true);
                                 session = None;
                                 open_requested = false;
                                 seek_timing = None;
