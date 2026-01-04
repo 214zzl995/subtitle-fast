@@ -2,7 +2,7 @@ use gpui::prelude::*;
 use gpui::*;
 use rust_embed::RustEmbed;
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::gui::components::{
@@ -111,6 +111,10 @@ impl SubtitleFastApp {
     }
 }
 
+const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &[
+    "mp4", "mov", "mkv", "webm", "avi", "m4v", "mpg", "mpeg", "ts",
+];
+
 pub struct MainWindow {
     player: Option<Entity<VideoPlayer>>,
     titlebar: Entity<Titlebar>,
@@ -148,37 +152,67 @@ impl MainWindow {
         }
     }
 
-    fn prompt_for_video(&mut self, cx: &mut Context<Self>) {
-        let receiver = cx.prompt_for_paths(PathPromptOptions {
+    fn prompt_for_video(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let options = PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
             prompt: Some("Select video".into()),
-        });
+        };
+        let supported_detail = supported_video_extensions_detail();
 
-        cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let mut cx = cx.clone();
-            async move {
-                let selection = match receiver.await {
-                    Ok(Ok(Some(mut paths))) => paths.pop(),
-                    Ok(Ok(None)) => None,
-                    Ok(Err(err)) => {
-                        eprintln!("video selection failed: {err}");
-                        None
-                    }
-                    Err(err) => {
-                        eprintln!("video selection canceled: {err}");
-                        None
-                    }
-                };
+        cx.spawn_in(
+            window,
+            move |this: WeakEntity<Self>, cx: &mut AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    loop {
+                        let receiver =
+                            match cx.update(|_, app| app.prompt_for_paths(options.clone())) {
+                                Ok(receiver) => receiver,
+                                Err(err) => {
+                                    eprintln!("video selection failed: {err}");
+                                    return;
+                                }
+                            };
 
-                if let Some(path) = selection {
-                    let _ = this.update(&mut cx, |this, cx| {
-                        this.load_video(path, cx);
-                    });
+                        let selection = match receiver.await {
+                            Ok(Ok(Some(mut paths))) => paths.pop(),
+                            Ok(Ok(None)) => None,
+                            Ok(Err(err)) => {
+                                eprintln!("video selection failed: {err}");
+                                None
+                            }
+                            Err(err) => {
+                                eprintln!("video selection canceled: {err}");
+                                None
+                            }
+                        };
+
+                        let Some(path) = selection else {
+                            return;
+                        };
+
+                        if is_supported_video_path(&path) {
+                            let _ = this.update(&mut cx, move |this, cx| {
+                                this.load_video(path, cx);
+                            });
+                            return;
+                        }
+
+                        let answers = [PromptButton::ok("OK")];
+                        let _ = cx
+                            .prompt(
+                                PromptLevel::Warning,
+                                "Unsupported video format",
+                                Some(&supported_detail),
+                                &answers,
+                            )
+                            .await;
+                    }
                 }
-            }
-        })
+            },
+        )
         .detach();
     }
 
@@ -216,7 +250,6 @@ impl Render for MainWindow {
                     let roi_overlay = self.roi_overlay.clone();
                     div()
                         .flex()
-                        .flex_none()
                         .w_full()
                         .rounded(px(16.0))
                         .overflow_hidden()
@@ -226,7 +259,6 @@ impl Render for MainWindow {
                 } else {
                     div()
                         .flex()
-                        .flex_none()
                         .w_full()
                         .rounded(px(16.0))
                         .overflow_hidden()
@@ -246,14 +278,11 @@ impl Render for MainWindow {
                                 .child("Click to select a video"),
                         )
                         .id(("video-wrapper", cx.entity_id()))
-                        .on_click(cx.listener(|this, _event, _window, cx| {
-                            this.prompt_for_video(cx);
+                        .on_click(cx.listener(|this, _event, window, cx| {
+                            this.prompt_for_video(window, cx);
                         }))
                 };
-                let video_wrapper = video_wrapper.map(|mut view| {
-                    view.style().aspect_ratio = Some(3.0 / 2.0);
-                    view
-                });
+                let video_wrapper = video_wrapper.flex_1().min_h(px(0.0));
 
                 let video_area = div()
                     .flex()
@@ -279,4 +308,22 @@ impl Render for MainWindow {
                     .child(self.right_panel.clone())
             })
     }
+}
+
+fn is_supported_video_path(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    SUPPORTED_VIDEO_EXTENSIONS
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(ext))
+}
+
+fn supported_video_extensions_detail() -> String {
+    let list = SUPPORTED_VIDEO_EXTENSIONS
+        .iter()
+        .map(|ext| format!(".{ext}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Supported formats: {list}")
 }

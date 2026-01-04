@@ -17,6 +17,7 @@ const BORDER_WIDTH: f32 = 1.5;
 const DASH_LENGTH: f32 = 8.0;
 const DASH_GAP: f32 = 3.0;
 const HANDLE_SIZE: f32 = 12.0;
+const MIN_ROI_HEIGHT_FRACTION: f32 = 0.02;
 
 #[derive(Clone)]
 pub struct VideoRoiHandle {
@@ -105,46 +106,53 @@ impl VideoRoiOverlay {
             return;
         };
 
-        let mut picture = container;
-        if let Some(info) = self.info.as_ref() {
-            let snapshot = info.snapshot();
-            if let (Some(width), Some(height)) = (snapshot.metadata.width, snapshot.metadata.height)
-            {
-                if width > 0 && height > 0 {
-                    let container_w: f32 = container.size.width.into();
-                    let container_h: f32 = container.size.height.into();
-                    if container_w > 0.0 && container_h > 0.0 {
-                        let video_aspect = width as f32 / height as f32;
-                        if video_aspect.is_finite() && video_aspect > 0.0 {
-                            let container_aspect = container_w / container_h;
-                            if container_aspect > video_aspect {
-                                let height_px = container_h;
-                                let width_px = height_px * video_aspect;
-                                let offset_x = (container_w - width_px) * 0.5;
-                                picture = Bounds {
-                                    origin: point(
-                                        container.origin.x + px(offset_x),
-                                        container.origin.y,
-                                    ),
-                                    size: size(px(width_px), px(height_px)),
-                                };
-                            } else {
-                                let width_px = container_w;
-                                let height_px = width_px / video_aspect;
-                                let offset_y = (container_h - height_px) * 0.5;
-                                picture = Bounds {
-                                    origin: point(
-                                        container.origin.x,
-                                        container.origin.y + px(offset_y),
-                                    ),
-                                    size: size(px(width_px), px(height_px)),
-                                };
-                            }
-                        }
-                    }
-                }
-            }
+        let Some(info) = self.info.as_ref() else {
+            self.picture_bounds = None;
+            return;
+        };
+
+        let snapshot = info.snapshot();
+        let (Some(width), Some(height)) = (snapshot.metadata.width, snapshot.metadata.height)
+        else {
+            self.picture_bounds = None;
+            return;
+        };
+        if width == 0 || height == 0 {
+            self.picture_bounds = None;
+            return;
         }
+
+        let container_w: f32 = container.size.width.into();
+        let container_h: f32 = container.size.height.into();
+        if container_w <= 0.0 || container_h <= 0.0 {
+            self.picture_bounds = None;
+            return;
+        }
+
+        let video_aspect = width as f32 / height as f32;
+        if !video_aspect.is_finite() || video_aspect <= 0.0 {
+            self.picture_bounds = None;
+            return;
+        }
+
+        let container_aspect = container_w / container_h;
+        let picture = if container_aspect > video_aspect {
+            let height_px = container_h;
+            let width_px = height_px * video_aspect;
+            let offset_x = (container_w - width_px) * 0.5;
+            Bounds {
+                origin: point(container.origin.x + px(offset_x), container.origin.y),
+                size: size(px(width_px), px(height_px)),
+            }
+        } else {
+            let width_px = container_w;
+            let height_px = width_px / video_aspect;
+            let offset_y = (container_h - height_px) * 0.5;
+            Bounds {
+                origin: point(container.origin.x, container.origin.y + px(offset_y)),
+                size: size(px(width_px), px(height_px)),
+            }
+        };
 
         self.picture_bounds = Some(picture);
     }
@@ -173,23 +181,28 @@ impl VideoRoiOverlay {
         let dy = (position.y - drag.origin.y) / picture.size.height;
 
         let (mut left, mut top, mut right, mut bottom) = roi_edges(drag.roi);
+        let min_height = min_roi_height(picture);
 
         match drag.corner {
             DragCorner::TopLeft => {
                 left = (left + dx).clamp(0.0, right);
-                top = (top + dy).clamp(0.0, bottom);
+                let max_top = (bottom - min_height).max(0.0);
+                top = (top + dy).clamp(0.0, max_top);
             }
             DragCorner::TopRight => {
                 right = (right + dx).clamp(left, 1.0);
-                top = (top + dy).clamp(0.0, bottom);
+                let max_top = (bottom - min_height).max(0.0);
+                top = (top + dy).clamp(0.0, max_top);
             }
             DragCorner::BottomLeft => {
                 left = (left + dx).clamp(0.0, right);
-                bottom = (bottom + dy).clamp(top, 1.0);
+                let min_bottom = (top + min_height).min(1.0);
+                bottom = (bottom + dy).clamp(min_bottom, 1.0);
             }
             DragCorner::BottomRight => {
                 right = (right + dx).clamp(left, 1.0);
-                bottom = (bottom + dy).clamp(top, 1.0);
+                let min_bottom = (top + min_height).min(1.0);
+                bottom = (bottom + dy).clamp(min_bottom, 1.0);
             }
         }
 
@@ -422,6 +435,15 @@ fn roi_edges(roi: RoiConfig) -> (f32, f32, f32, f32) {
     let right = (roi.x + roi.width).clamp(left, 1.0);
     let bottom = (roi.y + roi.height).clamp(top, 1.0);
     (left, top, right, bottom)
+}
+
+fn min_roi_height(picture: Bounds<Pixels>) -> f32 {
+    let height_px: f32 = picture.size.height.into();
+    if height_px <= 0.0 {
+        return MIN_ROI_HEIGHT_FRACTION;
+    }
+    let min_from_handle = (HANDLE_SIZE / height_px).min(1.0);
+    MIN_ROI_HEIGHT_FRACTION.max(min_from_handle).min(1.0)
 }
 
 fn hover_cursor_for_corner(corner: DragCorner) -> CursorStyle {
