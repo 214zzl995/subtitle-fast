@@ -237,7 +237,7 @@ impl VideoRoiOverlay {
 impl Render for VideoRoiOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(dragging) = self.dragging {
-            window.set_window_cursor_style(drag_cursor_for_corner(dragging.corner));
+            window.set_window_cursor_style(cursor_for_corner(dragging.corner));
             let handle = cx.entity();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Capture {
@@ -390,7 +390,7 @@ impl Render for VideoRoiOverlay {
         ];
 
         for (corner, x, y) in handle_positions {
-            let cursor = hover_cursor_for_corner(corner);
+            let cursor = cursor_for_corner(corner);
             let id = match corner {
                 DragCorner::TopLeft => "video-roi-handle-tl",
                 DragCorner::TopRight => "video-roi-handle-tr",
@@ -476,7 +476,7 @@ fn min_roi_width(picture: Bounds<Pixels>) -> f32 {
     MIN_ROI_WIDTH_FRACTION.max(min_from_handle).min(1.0)
 }
 
-fn hover_cursor_for_corner(corner: DragCorner) -> CursorStyle {
+fn cursor_for_corner(corner: DragCorner) -> CursorStyle {
     #[cfg(target_os = "windows")]
     {
         let _ = corner;
@@ -486,17 +486,5 @@ fn hover_cursor_for_corner(corner: DragCorner) -> CursorStyle {
     match corner {
         DragCorner::TopLeft | DragCorner::BottomRight => CursorStyle::ResizeUpLeftDownRight,
         DragCorner::TopRight | DragCorner::BottomLeft => CursorStyle::ResizeUpRightDownLeft,
-    }
-}
-
-fn drag_cursor_for_corner(corner: DragCorner) -> CursorStyle {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = corner;
-        CursorStyle::ClosedHand
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        hover_cursor_for_corner(corner)
     }
 }
