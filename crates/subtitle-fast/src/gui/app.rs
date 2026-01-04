@@ -271,21 +271,13 @@ impl MainWindow {
     fn video_frame_size(&self) -> Option<(f32, f32)> {
         let bounds = self.video_bounds?;
         let container_w: f32 = bounds.size.width.into();
-        let container_h: f32 = bounds.size.height.into();
-        if container_w <= 0.0 || container_h <= 0.0 {
+        if container_w <= 0.0 {
             return None;
         }
 
-        let container_aspect = container_w / container_h;
-        if container_aspect >= VIDEO_AREA_ASPECT {
-            let height = container_h;
-            let width = height * VIDEO_AREA_ASPECT;
-            Some((width, height))
-        } else {
-            let width = container_w;
-            let height = width / VIDEO_AREA_ASPECT;
-            Some((width, height))
-        }
+        let width = container_w;
+        let height = width / VIDEO_AREA_ASPECT;
+        Some((width, height))
     }
 }
 
@@ -370,8 +362,8 @@ impl Render for MainWindow {
                 let handle = cx.entity();
                 let video_slot = div()
                     .flex()
-                    .flex_1()
-                    .min_h(px(0.0))
+                    .flex_none()
+                    .w_full()
                     .on_children_prepainted(move |bounds, _window, cx| {
                         let bounds = bounds.first().copied();
                         let _ = handle.update(cx, |this, cx| {
@@ -385,7 +377,7 @@ impl Render for MainWindow {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .size_full()
+                            .w_full()
                             .child(video_wrapper),
                     );
 
@@ -396,6 +388,7 @@ impl Render for MainWindow {
                     .min_w(px(0.0))
                     .min_h(px(0.0))
                     .bg(rgb(0x1b1b1b))
+                    .justify_start()
                     .px(px(8.0))
                     .py(px(2.0))
                     .gap(px(2.0))
