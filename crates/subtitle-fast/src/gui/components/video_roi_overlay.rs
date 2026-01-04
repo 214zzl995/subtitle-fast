@@ -265,6 +265,8 @@ impl Render for VideoRoiOverlay {
 
         self.update_picture_bounds();
 
+        let has_frame = self.has_frame();
+
         let handle = cx.entity();
         let mut root = div()
             .absolute()
@@ -292,6 +294,9 @@ impl Render for VideoRoiOverlay {
         let Some(picture) = self.picture_bounds else {
             return root;
         };
+        if !has_frame {
+            return root;
+        }
 
         let local_origin = point(
             picture.origin.x - container.origin.x,
@@ -419,6 +424,16 @@ impl Render for VideoRoiOverlay {
         }
 
         root
+    }
+}
+
+impl VideoRoiOverlay {
+    fn has_frame(&self) -> bool {
+        let Some(info) = self.info.as_ref() else {
+            return false;
+        };
+        let snapshot = info.snapshot();
+        snapshot.last_frame_index.is_some() || snapshot.last_timestamp.is_some()
     }
 }
 
