@@ -325,7 +325,6 @@ impl Render for VideoControls {
 
         let time_text = format!("{}-{}", format_time(current_time), format_time(total_time));
         let frame_text = format!("{current_frame_display}-{total_frames}");
-        let info_width = px(160.0);
 
         let playback_button = div()
             .id(("toggle-playback", cx.entity_id()))
@@ -344,19 +343,13 @@ impl Render for VideoControls {
             }))
             .child(icon_md(playback_icon, hsla(0.0, 0.0, 1.0, 0.85)));
 
-        let progress_bar = div()
-            .flex()
-            .flex_1()
-            .h(px(8.0))
-            .rounded(px(999.0))
-            .bg(rgb(0x2a2a2a))
-            .overflow_hidden()
-            .child(div().h_full().w(relative(progress)).bg(rgb(0x4d9bf5)));
         let progress_bar = {
             let handle = cx.entity();
             div()
                 .flex()
                 .flex_1()
+                .h(px(24.0))
+                .items_center()
                 .cursor_pointer()
                 .on_children_prepainted(move |bounds, _window, cx| {
                     let bounds = bounds.first().copied();
@@ -370,53 +363,75 @@ impl Render for VideoControls {
                         this.begin_seek_drag(event.position, cx);
                     }),
                 )
-                .child(progress_bar)
+                .group("progress")
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(4.0))
+                        .rounded(px(2.0))
+                        .bg(hsla(0.0, 0.0, 1.0, 0.15))
+                        .group_hover("progress", |s| s.h(px(6.0)))
+                        .child(
+                            div()
+                                .h_full()
+                                .w(relative(progress))
+                                .bg(hsla(0.0, 0.0, 1.0, 1.0))
+                                .rounded(px(2.0))
+                                .relative()
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .right(px(-6.0))
+                                        .h_full()
+                                        .w(px(12.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            div()
+                                                .bg(hsla(0.0, 0.0, 1.0, 1.0))
+                                                .shadow_sm()
+                                                .opacity(0.5)
+                                                .w(px(4.0))
+                                                .h(px(4.0))
+                                                .rounded(px(2.0))
+                                                .group_hover("progress", |s| {
+                                                    s.opacity(1.0)
+                                                        .w(px(12.0))
+                                                        .h(px(12.0))
+                                                        .rounded(px(6.0))
+                                                }),
+                                        ),
+                                ),
+                        ),
+                )
         };
 
         let info_row = div()
             .flex()
-            .w_full()
-            .justify_between()
+            .gap(px(24.0))
             .text_sm()
             .text_color(hsla(0.0, 0.0, 1.0, 0.6))
-            .child(
-                div()
-                    .flex()
-                    .justify_start()
-                    .w(info_width)
-                    .min_w(info_width)
-                    .max_w(info_width)
-                    .text_left()
-                    .child(frame_text),
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .w(info_width)
-                    .min_w(info_width)
-                    .max_w(info_width)
-                    .text_right()
-                    .child(time_text),
-            );
+            .child(div().flex().child(frame_text))
+            .child(div().flex().child(time_text));
 
         div()
             .flex()
-            .items_center()
-            .gap(px(12.0))
+            .flex_col()
             .w_full()
             .p(px(12.0))
             .rounded(px(12.0))
             .bg(rgb(0x111111))
             .id(("video-controls", cx.entity_id()))
-            .child(playback_button)
+            .child(progress_bar)
+            .gap(px(6.0))
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .flex_1()
-                    .gap(px(6.0))
-                    .child(progress_bar)
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .child(playback_button)
                     .child(info_row),
             )
     }
