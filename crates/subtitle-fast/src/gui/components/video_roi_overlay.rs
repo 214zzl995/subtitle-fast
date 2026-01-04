@@ -480,7 +480,7 @@ fn cursor_for_corner(corner: DragCorner) -> CursorStyle {
     #[cfg(target_os = "windows")]
     {
         let _ = corner;
-        CursorStyle::OpenHand
+        CursorStyle::default()
     }
     #[cfg(not(target_os = "windows"))]
     match corner {
