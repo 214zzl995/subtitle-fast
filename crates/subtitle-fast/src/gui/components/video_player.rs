@@ -128,6 +128,7 @@ impl VideoPlayerInfoHandle {
             metadata,
             last_timestamp: playback.last_timestamp,
             last_frame_index: playback.last_frame_index,
+            has_frame: playback.has_frame,
             ended: playback.ended,
             scrubbing: playback.scrubbing,
         }
@@ -162,6 +163,16 @@ impl VideoPlayerInfoHandle {
         self.update_playback(|state| {
             state.last_timestamp = None;
             state.last_frame_index = None;
+            state.ended = false;
+            state.scrubbing = false;
+        });
+    }
+
+    fn reset_for_open(&self) {
+        self.update_playback(|state| {
+            state.last_timestamp = None;
+            state.last_frame_index = None;
+            state.has_frame = false;
             state.ended = false;
             state.scrubbing = false;
         });
@@ -206,6 +217,7 @@ pub struct VideoPlayerInfoSnapshot {
     pub metadata: VideoMetadata,
     pub last_timestamp: Option<Duration>,
     pub last_frame_index: Option<u64>,
+    pub has_frame: bool,
     pub ended: bool,
     pub scrubbing: bool,
 }
@@ -214,6 +226,7 @@ pub struct VideoPlayerInfoSnapshot {
 struct PlaybackState {
     last_timestamp: Option<Duration>,
     last_frame_index: Option<u64>,
+    has_frame: bool,
     ended: bool,
     scrubbing: bool,
 }
@@ -398,7 +411,7 @@ fn handle_command(
             *seek_timing = None;
             *open_requested = true;
             info.set_metadata(VideoMetadata::default());
-            info.reset_for_replay();
+            info.reset_for_open();
         }
         PlayerCommand::Play => {
             *paused = false;
@@ -753,6 +766,7 @@ fn spawn_decoder(
                                     if !suppress_seek_frame {
                                         state.last_frame_index = frame.index();
                                     }
+                                    state.has_frame = true;
                                 });
 
                                 if let Some(cache) = cache_from_video_frame(&frame) {

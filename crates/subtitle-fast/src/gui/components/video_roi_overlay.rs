@@ -433,7 +433,7 @@ impl VideoRoiOverlay {
             return false;
         };
         let snapshot = info.snapshot();
-        snapshot.last_frame_index.is_some() || snapshot.last_timestamp.is_some()
+        snapshot.has_frame
     }
 }
 
