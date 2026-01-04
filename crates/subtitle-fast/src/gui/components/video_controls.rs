@@ -2,8 +2,9 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    Bounds, Context, DispatchPhase, IsZero, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Render, Window, div, hsla, px, relative, rgb,
+    Animation, AnimationExt as _, Bounds, Context, DispatchPhase, IsZero, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, Window, div,
+    ease_out_quint, hsla, px, relative, rgb,
 };
 
 use crate::gui::components::{VideoPlayerControlHandle, VideoPlayerInfoHandle};
@@ -16,6 +17,9 @@ pub struct VideoControls {
     paused: bool,
     pending_paused: Option<bool>,
     seek: SeekDragState,
+    progress_hovered: bool,
+    progress_hover_from: bool,
+    progress_hover_token: u64,
 }
 
 struct SeekDragState {
@@ -62,6 +66,9 @@ impl VideoControls {
             paused: false,
             pending_paused: None,
             seek: SeekDragState::new(),
+            progress_hovered: false,
+            progress_hover_from: false,
+            progress_hover_token: 0,
         }
     }
 
@@ -78,6 +85,9 @@ impl VideoControls {
         self.paused = false;
         self.pending_paused = None;
         self.seek.reset_all();
+        self.progress_hovered = false;
+        self.progress_hover_from = false;
+        self.progress_hover_token = 0;
     }
 
     fn toggle_playback(&mut self, cx: &mut Context<Self>) {
@@ -188,6 +198,16 @@ impl VideoControls {
         self.seek.pending_ratio = None;
         self.update_drag_ratio(position);
         self.seek_from_position_throttled(position, Instant::now(), true);
+        cx.notify();
+    }
+
+    fn set_progress_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        if self.progress_hovered == hovered {
+            return;
+        }
+        self.progress_hover_from = self.progress_hovered;
+        self.progress_hovered = hovered;
+        self.progress_hover_token = self.progress_hover_token.wrapping_add(1);
         cx.notify();
     }
 
@@ -326,6 +346,34 @@ impl Render for VideoControls {
         let time_text = format!("{}-{}", format_time(current_time), format_time(total_time));
         let frame_text = format!("{current_frame_display}-{total_frames}");
 
+        let hover_from = if self.progress_hover_from {
+            1.0_f32
+        } else {
+            0.0_f32
+        };
+        let hover_to = if self.progress_hovered {
+            1.0_f32
+        } else {
+            0.0_f32
+        };
+        let progress_track = if (hover_from - hover_to).abs() < f32::EPSILON {
+            build_progress_track(progress, hover_to).into_any_element()
+        } else {
+            let animation =
+                Animation::new(Duration::from_millis(180)).with_easing(ease_out_quint());
+            let token = self.progress_hover_token;
+            let animation_id = (
+                gpui::ElementId::from(("progress-hover", cx.entity_id())),
+                token.to_string(),
+            );
+            build_progress_track(progress, hover_from)
+                .with_animation(animation_id, animation, move |_track, delta| {
+                    let mix = hover_from + (hover_to - hover_from) * delta;
+                    build_progress_track(progress, mix)
+                })
+                .into_any_element()
+        };
+
         let playback_button = div()
             .id(("toggle-playback", cx.entity_id()))
             .flex()
@@ -363,48 +411,11 @@ impl Render for VideoControls {
                         this.begin_seek_drag(event.position, cx);
                     }),
                 )
-                .group("progress")
-                .child(
-                    div()
-                        .w_full()
-                        .h(px(4.0))
-                        .rounded(px(2.0))
-                        .bg(hsla(0.0, 0.0, 1.0, 0.15))
-                        .group_hover("progress", |s| s.h(px(6.0)))
-                        .child(
-                            div()
-                                .h_full()
-                                .w(relative(progress))
-                                .bg(hsla(0.0, 0.0, 1.0, 1.0))
-                                .rounded(px(2.0))
-                                .relative()
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .right(px(-6.0))
-                                        .h_full()
-                                        .w(px(12.0))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(
-                                            div()
-                                                .bg(hsla(0.0, 0.0, 1.0, 1.0))
-                                                .shadow_sm()
-                                                .opacity(0.5)
-                                                .w(px(4.0))
-                                                .h(px(4.0))
-                                                .rounded(px(2.0))
-                                                .group_hover("progress", |s| {
-                                                    s.opacity(1.0)
-                                                        .w(px(12.0))
-                                                        .h(px(12.0))
-                                                        .rounded(px(6.0))
-                                                }),
-                                        ),
-                                ),
-                        ),
-                )
+                .child(progress_track)
+                .id(("progress-track", cx.entity_id()))
+                .on_hover(cx.listener(|this, hovered, _window, cx| {
+                    this.set_progress_hovered(*hovered, cx);
+                }))
         };
 
         let info_row = div()
@@ -435,6 +446,54 @@ impl Render for VideoControls {
                     .child(info_row),
             )
     }
+}
+
+fn build_progress_track(progress: f32, mix: f32) -> gpui::Div {
+    let track_base = 4.0;
+    let track_hover = 6.0;
+    let thumb_base = 4.0;
+    let thumb_hover = 12.0;
+    let thumb_opacity_base = 0.5;
+    let thumb_opacity_hover = 1.0;
+
+    let track_height = track_base + (track_hover - track_base) * mix;
+    let track_radius = track_height / 2.0;
+    let thumb_size = thumb_base + (thumb_hover - thumb_base) * mix;
+    let thumb_radius = thumb_size / 2.0;
+    let thumb_opacity = thumb_opacity_base + (thumb_opacity_hover - thumb_opacity_base) * mix;
+
+    div()
+        .w_full()
+        .h(px(track_height))
+        .rounded(px(track_radius))
+        .bg(hsla(0.0, 0.0, 1.0, 0.15))
+        .child(
+            div()
+                .h_full()
+                .w(relative(progress))
+                .bg(hsla(0.0, 0.0, 1.0, 1.0))
+                .rounded(px(track_radius))
+                .relative()
+                .child(
+                    div()
+                        .absolute()
+                        .right(px(-thumb_radius))
+                        .h_full()
+                        .w(px(thumb_size))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .bg(hsla(0.0, 0.0, 1.0, 1.0))
+                                .shadow_sm()
+                                .opacity(thumb_opacity)
+                                .w(px(thumb_size))
+                                .h(px(thumb_size))
+                                .rounded(px(thumb_radius)),
+                        ),
+                ),
+        )
 }
 
 fn format_time(duration: Duration) -> String {
