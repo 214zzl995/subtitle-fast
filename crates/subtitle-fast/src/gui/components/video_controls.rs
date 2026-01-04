@@ -14,6 +14,7 @@ pub struct VideoControls {
     controls: Option<VideoPlayerControlHandle>,
     info: Option<VideoPlayerInfoHandle>,
     paused: bool,
+    pending_paused: Option<bool>,
     seek: SeekDragState,
 }
 
@@ -59,6 +60,7 @@ impl VideoControls {
             controls: None,
             info: None,
             paused: false,
+            pending_paused: None,
             seek: SeekDragState::new(),
         }
     }
@@ -74,6 +76,7 @@ impl VideoControls {
         self.controls = controls;
         self.info = info;
         self.paused = false;
+        self.pending_paused = None;
         self.seek.reset_all();
     }
 
@@ -83,7 +86,19 @@ impl VideoControls {
         };
         controls.toggle_pause();
         self.paused = !self.paused;
+        self.pending_paused = Some(self.paused);
         cx.notify();
+    }
+
+    fn sync_paused(&mut self, paused: bool) {
+        if let Some(pending) = self.pending_paused {
+            if pending == paused {
+                self.pending_paused = None;
+                self.paused = paused;
+            }
+        } else if self.paused != paused {
+            self.paused = paused;
+        }
     }
 
     fn update_progress_bounds(&mut self, bounds: Option<Bounds<Pixels>>) {
@@ -247,6 +262,7 @@ impl Render for VideoControls {
         let snapshot = self.info.as_ref().map(|info| info.snapshot());
 
         if let Some(snapshot) = snapshot {
+            self.sync_paused(snapshot.paused);
             if let Some(timestamp) = snapshot.last_timestamp {
                 current_time = timestamp;
             } else if let (Some(frame_index), Some(fps)) =

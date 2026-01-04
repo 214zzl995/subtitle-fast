@@ -129,6 +129,7 @@ impl VideoPlayerInfoHandle {
             last_timestamp: playback.last_timestamp,
             last_frame_index: playback.last_frame_index,
             has_frame: playback.has_frame,
+            paused: playback.paused,
             ended: playback.ended,
             scrubbing: playback.scrubbing,
         }
@@ -165,6 +166,7 @@ impl VideoPlayerInfoHandle {
             state.last_frame_index = None;
             state.ended = false;
             state.scrubbing = false;
+            state.paused = false;
         });
     }
 
@@ -175,6 +177,7 @@ impl VideoPlayerInfoHandle {
             state.has_frame = false;
             state.ended = false;
             state.scrubbing = false;
+            state.paused = false;
         });
     }
 
@@ -218,6 +221,7 @@ pub struct VideoPlayerInfoSnapshot {
     pub last_timestamp: Option<Duration>,
     pub last_frame_index: Option<u64>,
     pub has_frame: bool,
+    pub paused: bool,
     pub ended: bool,
     pub scrubbing: bool,
 }
@@ -227,6 +231,7 @@ struct PlaybackState {
     last_timestamp: Option<Duration>,
     last_frame_index: Option<u64>,
     has_frame: bool,
+    paused: bool,
     ended: bool,
     scrubbing: bool,
 }
@@ -415,12 +420,16 @@ fn handle_command(
         }
         PlayerCommand::Play => {
             *paused = false;
+            info.update_playback(|state| state.paused = false);
         }
         PlayerCommand::Pause => {
             *paused = true;
+            info.update_playback(|state| state.paused = true);
         }
         PlayerCommand::TogglePause => {
             *paused = !*paused;
+            let paused = *paused;
+            info.update_playback(|state| state.paused = paused);
         }
         PlayerCommand::BeginScrub => {
             *scrubbing = true;
@@ -468,6 +477,7 @@ fn handle_command(
         }
         PlayerCommand::Replay => {
             *paused = false;
+            info.update_playback(|state| state.paused = false);
             if *scrubbing {
                 *scrubbing = false;
                 info.update_playback(|state| state.scrubbing = false);
