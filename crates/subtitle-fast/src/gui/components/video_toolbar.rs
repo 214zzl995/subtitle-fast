@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    Animation, AnimationExt as _, Context, Entity, Render, Window, div, ease_out_quint, hsla, px,
+    Animation, AnimationExt as _, BoxShadow, Context, Entity, FontWeight, InteractiveElement,
+    Render, StatefulInteractiveElement, Window, div, ease_out_quint, hsla, px, rgb,
 };
 
 use crate::gui::components::{FramePreprocessor, VideoPlayerControlHandle, VideoRoiOverlay};
@@ -11,8 +12,8 @@ use crate::gui::icons::{Icon, icon_sm};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VideoViewMode {
-    FullColor,
-    YPlane,
+    Yuv,
+    Y,
 }
 
 pub struct VideoToolbar {
@@ -28,8 +29,8 @@ impl VideoToolbar {
         Self {
             controls: None,
             roi_overlay: None,
-            view: VideoViewMode::FullColor,
-            slide_from: VideoViewMode::FullColor,
+            view: VideoViewMode::Yuv,
+            slide_from: VideoViewMode::Yuv,
             slide_token: 0,
         }
     }
@@ -59,8 +60,8 @@ impl VideoToolbar {
             return;
         };
         match self.view {
-            VideoViewMode::FullColor => controls.clear_preprocessor(),
-            VideoViewMode::YPlane => controls.set_preprocessor(y_plane_preprocessor()),
+            VideoViewMode::Yuv => controls.clear_preprocessor(),
+            VideoViewMode::Y => controls.set_preprocessor(y_plane_preprocessor()),
         }
     }
 }
@@ -68,26 +69,15 @@ impl VideoToolbar {
 impl Render for VideoToolbar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled = self.controls.is_some();
-        let text_color = if enabled {
-            hsla(0.0, 0.0, 1.0, 0.8)
-        } else {
-            hsla(0.0, 0.0, 1.0, 0.35)
-        };
-        let active_text_color = if enabled {
-            hsla(0.0, 0.0, 1.0, 0.92)
-        } else {
-            hsla(0.0, 0.0, 1.0, 0.4)
-        };
-        let inactive_text_color = if enabled {
-            hsla(0.0, 0.0, 1.0, 0.62)
-        } else {
-            hsla(0.0, 0.0, 1.0, 0.35)
-        };
 
-        let toggle_height = px(24.0);
-        let segment_width = px(42.0);
-        let segment_radius = px(7.0);
-        let toggle_width = segment_width * 2.0;
+        let container_bg = rgb(0x2b2b2b);
+        let container_border = rgb(0x3a3a3a);
+        let glider_bg = rgb(0x3f3f3f);
+        let text_active_y = rgb(0xE0E0E0);
+        let text_active_yuv = rgb(0xFFE259);
+        let text_inactive = rgb(0x666666);
+        let text_hover = rgb(0x888888);
+        let hover_bg = rgb(0x3f3f3f);
 
         let reset_button = {
             let mut view = div()
@@ -95,18 +85,19 @@ impl Render for VideoToolbar {
                 .flex()
                 .items_center()
                 .justify_center()
-                .h(toggle_height)
-                .w(toggle_height)
-                .rounded(segment_radius)
+                .h(px(26.0))
+                .w(px(26.0))
+                .rounded(px(6.0))
+                .bg(container_bg)
                 .border_1()
-                .border_color(hsla(0.0, 0.0, 1.0, if enabled { 0.32 } else { 0.2 }))
+                .border_color(container_border)
                 .child(
                     icon_sm(
                         Icon::RotateCcw,
                         if enabled {
-                            active_text_color
+                            text_active_y.into()
                         } else {
-                            inactive_text_color
+                            text_inactive.into()
                         },
                     )
                     .w(px(12.0))
@@ -117,7 +108,7 @@ impl Render for VideoToolbar {
                 if let Some(roi_overlay) = self.roi_overlay.clone() {
                     view = view
                         .cursor_pointer()
-                        .hover(|style| style.bg(hsla(0.0, 0.0, 1.0, 0.08)))
+                        .hover(|style| style.bg(hover_bg))
                         .on_click(cx.listener(move |_, _event, _window, cx| {
                             let _ = roi_overlay.update(cx, |overlay, cx| {
                                 overlay.reset_roi(cx);
@@ -129,118 +120,117 @@ impl Render for VideoToolbar {
             view
         };
 
-        let button = |label: &'static str, active: bool, mode: VideoViewMode| {
-            let id = match mode {
-                VideoViewMode::FullColor => "video-view-full",
-                VideoViewMode::YPlane => "video-view-y",
-            };
-            let mut view = div()
-                .id((id, cx.entity_id()))
-                .flex()
-                .items_center()
-                .justify_center()
-                .h_full()
-                .w(segment_width)
-                .text_size(px(12.0))
-                .line_height(px(12.0))
-                .text_color(if active {
-                    active_text_color
-                } else {
-                    inactive_text_color
-                })
-                .child(label);
+        let button_width = px(40.0);
+        let button_height = px(20.0);
+        let padding = px(2.0);
 
-            if enabled {
-                view = view.cursor_pointer().on_click(cx.listener(
-                    move |this, _event, _window, cx| {
-                        this.set_view(mode, cx);
-                    },
-                ));
-            }
-
-            view
-        };
+        let start_x = padding;
+        let end_x = padding + button_width;
 
         let slider_start = match self.slide_from {
-            VideoViewMode::FullColor => px(0.0),
-            VideoViewMode::YPlane => segment_width,
+            VideoViewMode::Yuv => start_x,
+            VideoViewMode::Y => end_x,
         };
         let slider_end = match self.view {
-            VideoViewMode::FullColor => px(0.0),
-            VideoViewMode::YPlane => segment_width,
+            VideoViewMode::Yuv => start_x,
+            VideoViewMode::Y => end_x,
         };
 
         let slider = div()
             .id(("video-view-slider", cx.entity_id()))
             .absolute()
-            .top(px(0.0))
+            .top(padding)
             .left(slider_start)
-            .w(segment_width)
-            .h_full()
-            .rounded(segment_radius)
-            .bg(hsla(0.0, 0.0, 1.0, if enabled { 0.16 } else { 0.08 }))
-            .border_5()
-            .border_color(hsla(0.0, 0.0, 0.0, 0.0))
+            .w(button_width)
+            .h(button_height)
+            .rounded(px(4.0))
+            .bg(glider_bg)
+            .shadow(vec![BoxShadow {
+                color: hsla(0.0, 0.0, 0.0, 0.3),
+                offset: gpui::point(px(0.0), px(1.0)),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+            }])
             .with_animation(
                 ("video-view-slider-anim", self.slide_token),
-                Animation::new(Duration::from_millis(160)).with_easing(ease_out_quint()),
+                Animation::new(Duration::from_millis(200)).with_easing(ease_out_quint()),
                 move |slider, delta| {
                     let left = slider_start + (slider_end - slider_start) * delta;
                     slider.left(left)
                 },
             );
 
-        let view_group = div()
-            .id(("video-view-toggle", cx.entity_id()))
-            .relative()
+        let toggle_label = |label: &'static str, mode: VideoViewMode, cx: &mut Context<Self>| {
+            let is_active = self.view == mode;
+            let target_color = if is_active {
+                match mode {
+                    VideoViewMode::Yuv => text_active_yuv,
+                    VideoViewMode::Y => text_active_y,
+                }
+            } else {
+                text_inactive
+            };
+
+            let mut el = div()
+                .id(label)
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(button_width)
+                .h(button_height)
+                .text_size(px(11.0))
+                .font_weight(FontWeight::BOLD)
+                .text_color(target_color)
+                .child(label);
+
+            if enabled && !is_active {
+                el = el
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(text_hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_view(mode, cx);
+                    }));
+            } else if enabled && is_active {
+                el = el.cursor_default();
+            }
+
+            el
+        };
+
+        // Container
+        let toggle_container = div()
             .flex()
-            .items_center()
-            .justify_center()
-            .h(toggle_height)
-            .w(toggle_width)
+            .relative()
+            .bg(container_bg)
             .border_1()
-            .border_color(hsla(0.0, 0.0, 1.0, if enabled { 0.32 } else { 0.2 }))
-            .rounded(segment_radius)
-            .overflow_hidden()
-            .bg(hsla(0.0, 0.0, 1.0, 0.04))
+            .border_color(container_border)
+            .rounded(px(6.0))
+            .p(padding)
             .child(slider)
             .child(
                 div()
-                    .relative()
                     .flex()
-                    .items_center()
-                    .h_full()
-                    .w_full()
-                    .child(button(
-                        "YUV",
-                        self.view == VideoViewMode::FullColor,
-                        VideoViewMode::FullColor,
-                    ))
-                    .child(button(
-                        "Y",
-                        self.view == VideoViewMode::YPlane,
-                        VideoViewMode::YPlane,
-                    )),
+                    .relative()
+                    .child(toggle_label("YUV", VideoViewMode::Yuv, cx))
+                    .child(toggle_label("Y", VideoViewMode::Y, cx)),
             );
 
         div()
             .id(("video-toolbar", cx.entity_id()))
             .flex()
             .items_center()
-            .justify_between()
+            .justify_end()
             .w_full()
             .h(px(29.0))
             .p(px(0.0))
             .text_xs()
-            .text_color(text_color)
-            .child(div().child("View"))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(6.0))
                     .child(reset_button)
-                    .child(view_group),
+                    .child(toggle_container),
             )
     }
 }
