@@ -2,9 +2,9 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    Animation, AnimationExt as _, Bounds, Context, DispatchPhase, IsZero, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, Window, div,
-    ease_out_quint, hsla, px, relative, rgb,
+    Animation, AnimationExt as _, BorderStyle, Bounds, BoxShadow, Context, Corners, DispatchPhase,
+    Half, IsZero, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render,
+    Window, canvas, div, hsla, point, px, quad, rgb, size, transparent_black,
 };
 
 use crate::gui::components::{VideoPlayerControlHandle, VideoPlayerInfoHandle};
@@ -115,6 +115,13 @@ impl VideoControls {
         self.seek.progress_bounds = bounds;
     }
 
+    fn progress_bounds_contains(&self, position: Point<Pixels>) -> bool {
+        self.seek
+            .progress_bounds
+            .map(|bounds| bounds.contains(&position))
+            .unwrap_or(false)
+    }
+
     fn progress_ratio_from_position(&self, position: Point<Pixels>) -> Option<f32> {
         let Some(bounds) = self.seek.progress_bounds else {
             return None;
@@ -198,6 +205,7 @@ impl VideoControls {
         self.seek.pending_ratio = None;
         self.update_drag_ratio(position);
         self.seek_from_position_throttled(position, Instant::now(), true);
+        self.set_progress_hovered(true, cx);
         cx.notify();
     }
 
@@ -207,6 +215,16 @@ impl VideoControls {
         }
         self.progress_hover_from = self.progress_hovered;
         self.progress_hovered = hovered;
+        self.progress_hover_token = self.progress_hover_token.wrapping_add(1);
+        cx.notify();
+    }
+
+    fn reset_progress_hover(&mut self, cx: &mut Context<Self>) {
+        if !self.progress_hovered && !self.progress_hover_from {
+            return;
+        }
+        self.progress_hovered = false;
+        self.progress_hover_from = false;
         self.progress_hover_token = self.progress_hover_token.wrapping_add(1);
         cx.notify();
     }
@@ -241,6 +259,8 @@ impl VideoControls {
         if let Some(controls) = self.controls.as_ref() {
             controls.end_scrub();
         }
+        let hovered = self.progress_bounds_contains(position);
+        self.set_progress_hovered(hovered, cx);
         cx.notify();
     }
 }
@@ -346,6 +366,11 @@ impl Render for VideoControls {
         let time_text = format!("{}-{}", format_time(current_time), format_time(total_time));
         let frame_text = format!("{current_frame_display}-{total_frames}");
 
+        let interaction_enabled = self.controls.is_some();
+        if !interaction_enabled {
+            self.reset_progress_hover(cx);
+        }
+
         let hover_from = if self.progress_hover_from {
             1.0_f32
         } else {
@@ -356,20 +381,24 @@ impl Render for VideoControls {
         } else {
             0.0_f32
         };
-        let progress_track = if (hover_from - hover_to).abs() < f32::EPSILON {
-            build_progress_track(progress, hover_to).into_any_element()
+        let (hover_from, hover_to) = if interaction_enabled {
+            (hover_from, hover_to)
         } else {
-            let animation =
-                Animation::new(Duration::from_millis(180)).with_easing(ease_out_quint());
+            (0.0_f32, 0.0_f32)
+        };
+        let progress_canvas = if (hover_from - hover_to).abs() < f32::EPSILON {
+            build_progress_canvas(progress, hover_to).into_any_element()
+        } else {
+            let animation = Animation::new(Duration::from_millis(230)).with_easing(css_ease);
             let token = self.progress_hover_token;
             let animation_id = (
                 gpui::ElementId::from(("progress-hover", cx.entity_id())),
                 token.to_string(),
             );
-            build_progress_track(progress, hover_from)
+            build_progress_canvas(progress, hover_from)
                 .with_animation(animation_id, animation, move |_track, delta| {
                     let mix = hover_from + (hover_to - hover_from) * delta;
-                    build_progress_track(progress, mix)
+                    build_progress_canvas(progress, mix)
                 })
                 .into_any_element()
         };
@@ -393,29 +422,38 @@ impl Render for VideoControls {
 
         let progress_bar = {
             let handle = cx.entity();
-            div()
+            let mut bar = div()
                 .flex()
                 .flex_1()
                 .h(px(24.0))
                 .items_center()
-                .cursor_pointer()
                 .on_children_prepainted(move |bounds, _window, cx| {
                     let bounds = bounds.first().copied();
                     let _ = handle.update(cx, |this, _| {
                         this.update_progress_bounds(bounds);
                     });
                 })
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                        this.begin_seek_drag(event.position, cx);
-                    }),
-                )
-                .child(progress_track)
-                .id(("progress-track", cx.entity_id()))
-                .on_hover(cx.listener(|this, hovered, _window, cx| {
-                    this.set_progress_hovered(*hovered, cx);
-                }))
+                .child(progress_canvas)
+                .id(("progress-track", cx.entity_id()));
+
+            if interaction_enabled {
+                bar = bar
+                    .cursor_pointer()
+                    .on_hover(cx.listener(|this, hovered, _window, cx| {
+                        if this.seek.dragging {
+                            return;
+                        }
+                        this.set_progress_hovered(*hovered, cx);
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                            this.begin_seek_drag(event.position, cx);
+                        }),
+                    );
+            }
+
+            bar
         };
 
         let info_row = div()
@@ -448,52 +486,150 @@ impl Render for VideoControls {
     }
 }
 
-fn build_progress_track(progress: f32, mix: f32) -> gpui::Div {
+fn build_progress_canvas(progress: f32, mix: f32) -> gpui::Canvas<()> {
+    let progress = progress.clamp(0.0, 1.0);
+    let mix = mix.clamp(0.0, 1.0);
     let track_base = 4.0;
     let track_hover = 6.0;
-    let thumb_base = 4.0;
-    let thumb_hover = 12.0;
-    let thumb_opacity_base = 0.5;
-    let thumb_opacity_hover = 1.0;
+    let thumb_base = 6.0;
+    let thumb_hover = 14.0;
 
-    let track_height = track_base + (track_hover - track_base) * mix;
-    let track_radius = track_height / 2.0;
-    let thumb_size = thumb_base + (thumb_hover - thumb_base) * mix;
-    let thumb_radius = thumb_size / 2.0;
-    let thumb_opacity = thumb_opacity_base + (thumb_opacity_hover - thumb_opacity_base) * mix;
+    canvas(
+        move |_, _, _| {},
+        move |bounds, _, window, _| {
+            let track_height = track_base + (track_hover - track_base) * mix;
+            let track_height_px = px(track_height);
+            let track_radius = track_height_px.half();
+            let center_y = bounds.center().y;
+            let track_top = center_y - track_height_px.half();
+            let track_bounds = Bounds {
+                origin: point(bounds.origin.x, track_top),
+                size: size(bounds.size.width, track_height_px),
+            };
+            let track_corners =
+                Corners::from(track_radius).clamp_radii_for_quad_size(track_bounds.size);
 
-    div()
-        .w_full()
-        .h(px(track_height))
-        .rounded(px(track_radius))
-        .bg(hsla(0.0, 0.0, 1.0, 0.15))
-        .child(
-            div()
-                .h_full()
-                .w(relative(progress))
-                .bg(hsla(0.0, 0.0, 1.0, 1.0))
-                .rounded(px(track_radius))
-                .relative()
-                .child(
-                    div()
-                        .absolute()
-                        .right(px(-thumb_radius))
-                        .h_full()
-                        .w(px(thumb_size))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .bg(hsla(0.0, 0.0, 1.0, 1.0))
-                                .shadow_sm()
-                                .opacity(thumb_opacity)
-                                .w(px(thumb_size))
-                                .h(px(thumb_size))
-                                .rounded(px(thumb_radius)),
-                        ),
-                ),
-        )
+            let fill_width = (bounds.size.width * progress).clamp(px(0.0), bounds.size.width);
+            let fill_bounds = Bounds {
+                origin: track_bounds.origin,
+                size: size(fill_width, track_bounds.size.height),
+            };
+            let fill_radius = fill_width.min(track_height_px).half();
+            let fill_corners =
+                Corners::from(fill_radius).clamp_radii_for_quad_size(fill_bounds.size);
+
+            let track_bg = hsla(0.0, 0.0, 1.0, 0.15);
+            let fill_bg = hsla(0.0, 0.0, 1.0, 1.0);
+
+            window.paint_quad(quad(
+                track_bounds,
+                track_corners,
+                track_bg,
+                px(0.0),
+                transparent_black(),
+                BorderStyle::default(),
+            ));
+
+            if fill_width > px(0.0) {
+                window.paint_quad(quad(
+                    fill_bounds,
+                    fill_corners,
+                    fill_bg,
+                    px(0.0),
+                    transparent_black(),
+                    BorderStyle::default(),
+                ));
+            }
+
+            let thumb_size = thumb_base + (thumb_hover - thumb_base) * mix;
+            let thumb_size_px = px(thumb_size);
+            let thumb_radius = thumb_size_px.half();
+            let thumb_center_x = bounds.origin.x + fill_width;
+            let thumb_center = point(thumb_center_x, center_y);
+            let thumb_bounds = Bounds {
+                origin: point(thumb_center.x - thumb_radius, thumb_center.y - thumb_radius),
+                size: size(thumb_size_px, thumb_size_px),
+            };
+
+            let shadow_alpha = 0.25 * mix;
+            if shadow_alpha > 0.0 {
+                let shadow = BoxShadow {
+                    color: hsla(0.0, 0.0, 0.0, shadow_alpha),
+                    offset: point(px(0.0), px(1.0)),
+                    blur_radius: px(4.0),
+                    spread_radius: px(0.0),
+                };
+                let thumb_corners =
+                    Corners::from(thumb_radius).clamp_radii_for_quad_size(thumb_bounds.size);
+                window.paint_shadows(thumb_bounds, thumb_corners, &[shadow]);
+            }
+
+            let thumb_opacity = 0.85 + 0.15 * mix;
+            let thumb_bg = hsla(0.0, 0.0, 1.0, thumb_opacity);
+            window.paint_quad(quad(
+                thumb_bounds,
+                thumb_radius,
+                thumb_bg,
+                px(0.0),
+                transparent_black(),
+                BorderStyle::default(),
+            ));
+        },
+    )
+    .size_full()
+}
+
+fn css_ease(delta: f32) -> f32 {
+    cubic_bezier_ease(delta, 0.25, 0.1, 0.25, 1.0)
+}
+
+fn cubic_bezier_ease(delta: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    if delta <= 0.0 {
+        return 0.0;
+    }
+    if delta >= 1.0 {
+        return 1.0;
+    }
+
+    let sample_x = |t: f32| {
+        let inv = 1.0 - t;
+        3.0 * inv * inv * t * x1 + 3.0 * inv * t * t * x2 + t * t * t
+    };
+    let sample_y = |t: f32| {
+        let inv = 1.0 - t;
+        3.0 * inv * inv * t * y1 + 3.0 * inv * t * t * y2 + t * t * t
+    };
+    let sample_dx = |t: f32| {
+        let inv = 1.0 - t;
+        3.0 * inv * inv * x1 + 6.0 * inv * t * (x2 - x1) + 3.0 * t * t * (1.0 - x2)
+    };
+
+    let mut t = delta;
+    for _ in 0..6 {
+        let x = sample_x(t) - delta;
+        let dx = sample_dx(t);
+        if dx.abs() < 1e-4 {
+            break;
+        }
+        t = (t - x / dx).clamp(0.0, 1.0);
+    }
+
+    let mut t0 = 0.0;
+    let mut t1 = 1.0;
+    for _ in 0..8 {
+        let x = sample_x(t);
+        if (x - delta).abs() < 1e-4 {
+            break;
+        }
+        if x > delta {
+            t1 = t;
+        } else {
+            t0 = t;
+        }
+        t = 0.5 * (t0 + t1);
+    }
+
+    sample_y(t).clamp(0.0, 1.0)
 }
 
 fn format_time(duration: Duration) -> String {
