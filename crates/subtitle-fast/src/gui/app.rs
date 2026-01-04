@@ -114,12 +114,7 @@ impl SubtitleFastApp {
 const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mov", "mkv", "webm", "avi", "m4v", "mpg", "mpeg", "ts",
 ];
-
-#[derive(Clone, Copy, Debug)]
-enum VideoFitAxis {
-    Width,
-    Height,
-}
+const VIDEO_AREA_ASPECT: f32 = 3.0 / 2.0;
 
 pub struct MainWindow {
     player: Option<Entity<VideoPlayer>>,
@@ -259,48 +254,31 @@ impl MainWindow {
         false
     }
 
-    fn video_fit_axis(&self, video_aspect: f32) -> VideoFitAxis {
-        if let Some(bounds) = self.video_bounds {
-            let container_w: f32 = bounds.size.width.into();
-            let container_h: f32 = bounds.size.height.into();
-            if container_w > 0.0 && container_h > 0.0 {
-                let container_aspect = container_w / container_h;
-                return if container_aspect >= video_aspect {
-                    VideoFitAxis::Height
-                } else {
-                    VideoFitAxis::Width
-                };
-            }
+    fn video_area_size(&self) -> Option<(f32, f32)> {
+        let bounds = self.video_bounds?;
+        let container_w: f32 = bounds.size.width.into();
+        let container_h: f32 = bounds.size.height.into();
+        if container_w <= 0.0 || container_h <= 0.0 {
+            return None;
         }
 
-        if video_aspect >= 1.0 {
-            VideoFitAxis::Width
+        let container_aspect = container_w / container_h;
+        if container_aspect >= VIDEO_AREA_ASPECT {
+            let height = container_h;
+            let width = height * VIDEO_AREA_ASPECT;
+            Some((width, height))
         } else {
-            VideoFitAxis::Height
+            let width = container_w;
+            let height = width / VIDEO_AREA_ASPECT;
+            Some((width, height))
         }
-    }
-
-    fn video_layout(&self) -> Option<(f32, VideoFitAxis)> {
-        let info = self.video_info.as_ref()?;
-        let snapshot = info.snapshot();
-        let (width, height) = (snapshot.metadata.width?, snapshot.metadata.height?);
-        if width == 0 || height == 0 {
-            return None;
-        }
-        let aspect = width as f32 / height as f32;
-        if !aspect.is_finite() || aspect <= 0.0 {
-            return None;
-        }
-        Some((aspect, self.video_fit_axis(aspect)))
     }
 }
 
 impl Render for MainWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let video_content = self.player.as_ref().map(|player| player.clone());
-        let video_layout = self.video_layout();
-        let video_aspect = video_layout.map(|(aspect, _)| aspect);
-        let fit_axis = video_layout.map(|(_, axis)| axis);
+        let video_size = self.video_area_size();
 
         div()
             .flex()
@@ -343,16 +321,8 @@ impl Render for MainWindow {
                             this.prompt_for_video(window, cx);
                         }))
                 };
-                if let Some(aspect) = video_aspect {
-                    let axis = fit_axis.unwrap_or(VideoFitAxis::Width);
-                    video_wrapper = video_wrapper.map(|mut view| {
-                        view.style().aspect_ratio = Some(aspect);
-                        view
-                    });
-                    video_wrapper = match axis {
-                        VideoFitAxis::Width => video_wrapper.w_full(),
-                        VideoFitAxis::Height => video_wrapper.h_full(),
-                    };
+                if let Some((width, height)) = video_size {
+                    video_wrapper = video_wrapper.w(px(width)).h(px(height));
                 } else {
                     video_wrapper = video_wrapper.w_full().h_full();
                 }

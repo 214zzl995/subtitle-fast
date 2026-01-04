@@ -17,7 +17,8 @@ const BORDER_WIDTH: f32 = 1.5;
 const DASH_LENGTH: f32 = 8.0;
 const DASH_GAP: f32 = 3.0;
 const HANDLE_SIZE: f32 = 12.0;
-const MIN_ROI_HEIGHT_FRACTION: f32 = 0.02;
+const MIN_ROI_HEIGHT_FRACTION: f32 = 0.05;
+const MIN_ROI_WIDTH_FRACTION: f32 = 0.05;
 
 #[derive(Clone)]
 pub struct VideoRoiHandle {
@@ -182,25 +183,30 @@ impl VideoRoiOverlay {
 
         let (mut left, mut top, mut right, mut bottom) = roi_edges(drag.roi);
         let min_height = min_roi_height(picture);
+        let min_width = min_roi_width(picture);
 
         match drag.corner {
             DragCorner::TopLeft => {
-                left = (left + dx).clamp(0.0, right);
+                let max_left = (right - min_width).max(0.0);
+                left = (left + dx).clamp(0.0, max_left);
                 let max_top = (bottom - min_height).max(0.0);
                 top = (top + dy).clamp(0.0, max_top);
             }
             DragCorner::TopRight => {
-                right = (right + dx).clamp(left, 1.0);
+                let min_right = (left + min_width).min(1.0);
+                right = (right + dx).clamp(min_right, 1.0);
                 let max_top = (bottom - min_height).max(0.0);
                 top = (top + dy).clamp(0.0, max_top);
             }
             DragCorner::BottomLeft => {
-                left = (left + dx).clamp(0.0, right);
+                let max_left = (right - min_width).max(0.0);
+                left = (left + dx).clamp(0.0, max_left);
                 let min_bottom = (top + min_height).min(1.0);
                 bottom = (bottom + dy).clamp(min_bottom, 1.0);
             }
             DragCorner::BottomRight => {
-                right = (right + dx).clamp(left, 1.0);
+                let min_right = (left + min_width).min(1.0);
+                right = (right + dx).clamp(min_right, 1.0);
                 let min_bottom = (top + min_height).min(1.0);
                 bottom = (bottom + dy).clamp(min_bottom, 1.0);
             }
@@ -444,6 +450,15 @@ fn min_roi_height(picture: Bounds<Pixels>) -> f32 {
     }
     let min_from_handle = (HANDLE_SIZE / height_px).min(1.0);
     MIN_ROI_HEIGHT_FRACTION.max(min_from_handle).min(1.0)
+}
+
+fn min_roi_width(picture: Bounds<Pixels>) -> f32 {
+    let width_px: f32 = picture.size.width.into();
+    if width_px <= 0.0 {
+        return MIN_ROI_WIDTH_FRACTION;
+    }
+    let min_from_handle = (HANDLE_SIZE / width_px).min(1.0);
+    MIN_ROI_WIDTH_FRACTION.max(min_from_handle).min(1.0)
 }
 
 fn hover_cursor_for_corner(corner: DragCorner) -> CursorStyle {
