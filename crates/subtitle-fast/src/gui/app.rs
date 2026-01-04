@@ -254,7 +254,21 @@ impl MainWindow {
         false
     }
 
-    fn video_area_size(&self) -> Option<(f32, f32)> {
+    fn video_aspect(&self) -> Option<f32> {
+        let info = self.video_info.as_ref()?;
+        let snapshot = info.snapshot();
+        let (width, height) = (snapshot.metadata.width?, snapshot.metadata.height?);
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let aspect = width as f32 / height as f32;
+        if !aspect.is_finite() || aspect <= 0.0 {
+            return None;
+        }
+        Some(aspect)
+    }
+
+    fn video_frame_size(&self) -> Option<(f32, f32)> {
         let bounds = self.video_bounds?;
         let container_w: f32 = bounds.size.width.into();
         let container_h: f32 = bounds.size.height.into();
@@ -278,7 +292,8 @@ impl MainWindow {
 impl Render for MainWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let video_content = self.player.as_ref().map(|player| player.clone());
-        let video_size = self.video_area_size();
+        let video_aspect = self.video_aspect();
+        let frame_size = self.video_frame_size();
 
         div()
             .flex()
@@ -287,24 +302,53 @@ impl Render for MainWindow {
             .h_full()
             .child(self.titlebar.clone())
             .child({
-                let mut video_wrapper = if let Some(video) = video_content {
+                let mut video_frame = div()
+                    .flex()
+                    .rounded(px(16.0))
+                    .overflow_hidden()
+                    .bg(rgb(0x111111))
+                    .items_center()
+                    .justify_center()
+                    .id(("video-frame", cx.entity_id()));
+                if let Some((width, height)) = frame_size {
+                    video_frame = video_frame.w(px(width)).h(px(height));
+                } else {
+                    video_frame = video_frame.w_full().h_full();
+                }
+
+                let frame_content = if let Some(video) = video_content {
                     let roi_overlay = self.roi_overlay.clone();
-                    div()
-                        .flex()
-                        .rounded(px(16.0))
-                        .overflow_hidden()
-                        .bg(rgb(0x111111))
+                    let mut video_wrapper = div()
+                        .relative()
                         .child(div().relative().size_full().child(video).child(roi_overlay))
-                        .id(("video-wrapper", cx.entity_id()))
+                        .id(("video-wrapper", cx.entity_id()));
+
+                    if let Some(aspect) = video_aspect {
+                        let fit_by_height = frame_size
+                            .map(|(width, height)| (width / height) >= aspect)
+                            .unwrap_or(aspect < 1.0);
+                        video_wrapper = video_wrapper.map(|mut view| {
+                            view.style().aspect_ratio = Some(aspect);
+                            view
+                        });
+                        video_wrapper = if fit_by_height {
+                            video_wrapper.h_full()
+                        } else {
+                            video_wrapper.w_full()
+                        };
+                    } else {
+                        video_wrapper = video_wrapper.w_full().h_full();
+                    }
+
+                    video_wrapper
                 } else {
                     div()
                         .flex()
-                        .rounded(px(16.0))
-                        .overflow_hidden()
-                        .bg(rgb(0x111111))
-                        .cursor_pointer()
+                        .flex_col()
                         .items_center()
                         .justify_center()
+                        .size_full()
+                        .cursor_pointer()
                         .text_color(hsla(0.0, 0.0, 1.0, 0.7))
                         .gap(px(8.0))
                         .child(
@@ -321,11 +365,7 @@ impl Render for MainWindow {
                             this.prompt_for_video(window, cx);
                         }))
                 };
-                if let Some((width, height)) = video_size {
-                    video_wrapper = video_wrapper.w(px(width)).h(px(height));
-                } else {
-                    video_wrapper = video_wrapper.w_full().h_full();
-                }
+                let video_wrapper = video_frame.child(frame_content);
 
                 let handle = cx.entity();
                 let video_slot = div()
