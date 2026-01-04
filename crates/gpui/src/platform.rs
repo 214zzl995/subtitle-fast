@@ -1336,6 +1336,8 @@ pub struct PathPromptOptions {
     pub multiple: bool,
     /// The prompt to show to a user when selecting a path
     pub prompt: Option<SharedString>,
+    /// Optional list of allowed file extensions (without leading dots).
+    pub allowed_extensions: Option<Vec<SharedString>>,
 }
 
 /// What kind of prompt styling to show

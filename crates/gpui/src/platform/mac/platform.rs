@@ -750,6 +750,28 @@ impl Platform for MacPlatform {
                         let _: () = msg_send![panel, setPrompt: ns_string(&prompt)];
                     }
 
+                    if let Some(extensions) = options
+                        .allowed_extensions
+                        .as_ref()
+                        .filter(|list| !list.is_empty())
+                    {
+                        let types: Vec<id> = extensions
+                            .iter()
+                            .filter_map(|ext| {
+                                let ext = ext.as_ref().trim_start_matches('.');
+                                (!ext.is_empty()).then(|| ns_string(ext))
+                            })
+                            .collect();
+                        if !types.is_empty() {
+                            let types_array: id = msg_send![
+                                class!(NSArray),
+                                arrayWithObjects: types.as_ptr()
+                                count: types.len()
+                            ];
+                            let _: () = msg_send![panel, setAllowedFileTypes: types_array];
+                        }
+                    }
+
                     let _: () = msg_send![panel, beginWithCompletionHandler: block];
                 }
             })

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::gui::components::{
     CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle, Titlebar, VideoControls,
-    VideoPlayer, VideoRoiHandle, VideoRoiOverlay, VideoToolbar,
+    VideoPlayer, VideoPlayerInfoHandle, VideoRoiHandle, VideoRoiOverlay, VideoToolbar,
 };
 use crate::gui::icons::{Icon, icon_md};
 
@@ -115,8 +115,16 @@ const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mov", "mkv", "webm", "avi", "m4v", "mpg", "mpeg", "ts",
 ];
 
+#[derive(Clone, Copy, Debug)]
+enum VideoFitAxis {
+    Width,
+    Height,
+}
+
 pub struct MainWindow {
     player: Option<Entity<VideoPlayer>>,
+    video_info: Option<VideoPlayerInfoHandle>,
+    video_bounds: Option<Bounds<Pixels>>,
     titlebar: Entity<Titlebar>,
     left_panel: Entity<Sidebar>,
     _left_panel_handle: SidebarHandle,
@@ -141,6 +149,8 @@ impl MainWindow {
     ) -> Self {
         Self {
             player,
+            video_info: None,
+            video_bounds: None,
             titlebar,
             left_panel,
             _left_panel_handle: left_panel_handle,
@@ -158,6 +168,12 @@ impl MainWindow {
             directories: false,
             multiple: false,
             prompt: Some("Select video".into()),
+            allowed_extensions: Some(
+                SUPPORTED_VIDEO_EXTENSIONS
+                    .iter()
+                    .map(|ext| SharedString::new_static(*ext))
+                    .collect(),
+            ),
         };
         let supported_detail = supported_video_extensions_detail();
 
@@ -220,6 +236,7 @@ impl MainWindow {
         let (player, controls, info) = VideoPlayer::new();
         controls.open(path);
         self.player = Some(cx.new(|_| player));
+        self.video_info = Some(info.clone());
         let _ = self.controls_view.update(cx, |controls_view, cx| {
             controls_view.set_handles(Some(controls.clone()), Some(info.clone()));
             cx.notify();
@@ -233,11 +250,57 @@ impl MainWindow {
         });
         cx.notify();
     }
+
+    fn update_video_bounds(&mut self, bounds: Option<Bounds<Pixels>>) -> bool {
+        if self.video_bounds != bounds {
+            self.video_bounds = bounds;
+            return true;
+        }
+        false
+    }
+
+    fn video_fit_axis(&self, video_aspect: f32) -> VideoFitAxis {
+        if let Some(bounds) = self.video_bounds {
+            let container_w: f32 = bounds.size.width.into();
+            let container_h: f32 = bounds.size.height.into();
+            if container_w > 0.0 && container_h > 0.0 {
+                let container_aspect = container_w / container_h;
+                return if container_aspect >= video_aspect {
+                    VideoFitAxis::Height
+                } else {
+                    VideoFitAxis::Width
+                };
+            }
+        }
+
+        if video_aspect >= 1.0 {
+            VideoFitAxis::Width
+        } else {
+            VideoFitAxis::Height
+        }
+    }
+
+    fn video_layout(&self) -> Option<(f32, VideoFitAxis)> {
+        let info = self.video_info.as_ref()?;
+        let snapshot = info.snapshot();
+        let (width, height) = (snapshot.metadata.width?, snapshot.metadata.height?);
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let aspect = width as f32 / height as f32;
+        if !aspect.is_finite() || aspect <= 0.0 {
+            return None;
+        }
+        Some((aspect, self.video_fit_axis(aspect)))
+    }
 }
 
 impl Render for MainWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let video_content = self.player.as_ref().map(|player| player.clone());
+        let video_layout = self.video_layout();
+        let video_aspect = video_layout.map(|(aspect, _)| aspect);
+        let fit_axis = video_layout.map(|(_, axis)| axis);
 
         div()
             .flex()
@@ -246,11 +309,10 @@ impl Render for MainWindow {
             .h_full()
             .child(self.titlebar.clone())
             .child({
-                let video_wrapper = if let Some(video) = video_content {
+                let mut video_wrapper = if let Some(video) = video_content {
                     let roi_overlay = self.roi_overlay.clone();
                     div()
                         .flex()
-                        .w_full()
                         .rounded(px(16.0))
                         .overflow_hidden()
                         .bg(rgb(0x111111))
@@ -259,7 +321,6 @@ impl Render for MainWindow {
                 } else {
                     div()
                         .flex()
-                        .w_full()
                         .rounded(px(16.0))
                         .overflow_hidden()
                         .bg(rgb(0x111111))
@@ -282,27 +343,62 @@ impl Render for MainWindow {
                             this.prompt_for_video(window, cx);
                         }))
                 };
-                let video_wrapper = video_wrapper.flex_1().min_h(px(0.0));
+                if let Some(aspect) = video_aspect {
+                    let axis = fit_axis.unwrap_or(VideoFitAxis::Width);
+                    video_wrapper = video_wrapper.map(|mut view| {
+                        view.style().aspect_ratio = Some(aspect);
+                        view
+                    });
+                    video_wrapper = match axis {
+                        VideoFitAxis::Width => video_wrapper.w_full(),
+                        VideoFitAxis::Height => video_wrapper.h_full(),
+                    };
+                } else {
+                    video_wrapper = video_wrapper.w_full().h_full();
+                }
+
+                let handle = cx.entity();
+                let video_slot = div()
+                    .flex()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .on_children_prepainted(move |bounds, _window, cx| {
+                        let bounds = bounds.first().copied();
+                        let _ = handle.update(cx, |this, cx| {
+                            if this.update_video_bounds(bounds) {
+                                cx.notify();
+                            }
+                        });
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size_full()
+                            .child(video_wrapper),
+                    );
 
                 let video_area = div()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_w(px(0.0))
-                    .h_full()
+                    .min_h(px(0.0))
                     .bg(rgb(0x1b1b1b))
                     .px(px(8.0))
                     .py(px(2.0))
                     .gap(px(2.0))
                     .child(self.toolbar_view.clone())
-                    .child(video_wrapper)
+                    .child(video_slot)
                     .child(self.controls_view.clone());
 
                 div()
                     .flex()
                     .flex_row()
-                    .flex_grow()
+                    .flex_1()
                     .w_full()
+                    .min_h(px(0.0))
                     .child(self.left_panel.clone())
                     .child(video_area)
                     .child(self.right_panel.clone())

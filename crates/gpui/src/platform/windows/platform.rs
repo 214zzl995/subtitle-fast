@@ -922,6 +922,56 @@ fn file_open_dialog(
             folder_dialog.SetOkButtonLabel(&HSTRING::from(prompt))?;
         }
 
+        let mut filter_storage: Vec<HSTRING> = Vec::new();
+        let mut filters: Vec<Common::COMDLG_FILTERSPEC> = Vec::new();
+        if let Some(extensions) = options
+            .allowed_extensions
+            .as_ref()
+            .filter(|list| !list.is_empty())
+        {
+            let mut normalized = Vec::new();
+            for ext in extensions {
+                let ext = ext.as_ref().trim().trim_start_matches('.');
+                if ext.is_empty() {
+                    continue;
+                }
+                normalized.push(ext.to_string());
+            }
+            normalized.sort();
+            normalized.dedup();
+
+            if !normalized.is_empty() {
+                let display = normalized
+                    .iter()
+                    .map(|ext| format!(".{ext}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let spec = normalized
+                    .iter()
+                    .map(|ext| format!("*.{ext}"))
+                    .collect::<Vec<_>>()
+                    .join(";");
+                let name = format!("Supported files ({display})");
+                filter_storage.push(HSTRING::from(name));
+                filter_storage.push(HSTRING::from(spec));
+                let name_ptr = PCWSTR(filter_storage[0].as_ptr());
+                let spec_ptr = PCWSTR(filter_storage[1].as_ptr());
+                filters.push(Common::COMDLG_FILTERSPEC {
+                    pszName: name_ptr,
+                    pszSpec: spec_ptr,
+                });
+            }
+        }
+
+        if filters.is_empty() {
+            filters.push(Common::COMDLG_FILTERSPEC {
+                pszName: windows::core::w!("All files"),
+                pszSpec: windows::core::w!("*.*"),
+            });
+        }
+
+        folder_dialog.SetFileTypes(&filters)?;
+
         if folder_dialog.Show(window).is_err() {
             // User cancelled
             return Ok(None);
