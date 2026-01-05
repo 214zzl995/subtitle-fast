@@ -95,7 +95,7 @@ impl SubtitleFastApp {
                         toolbar_view.set_luma_handle(Some(luma_handle.clone()));
                         toolbar_view.set_roi_overlay(Some(roi_overlay_view.clone()), cx);
                         toolbar_view.set_roi_handle(Some(roi_handle.clone()));
-                        toolbar_view.set_color_picker(Some(color_picker_view.clone()));
+                        toolbar_view.set_color_picker(Some(color_picker_view.clone()), cx);
                         cx.notify();
                     });
                     cx.new(|_| {
@@ -252,7 +252,7 @@ impl MainWindow {
             luma_controls.set_enabled(true, cx);
         });
         let _ = self.toolbar_view.update(cx, |toolbar_view, cx| {
-            toolbar_view.set_controls(Some(controls));
+            toolbar_view.set_controls(Some(controls), cx);
             cx.notify();
         });
         let _ = self.roi_overlay.update(cx, |overlay, cx| {

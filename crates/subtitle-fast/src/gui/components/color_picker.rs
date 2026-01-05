@@ -1,8 +1,8 @@
 use gpui::prelude::*;
 use gpui::{
     Bounds, BoxShadow, Context, DispatchPhase, InteractiveElement, MouseButton, MouseDownEvent,
-    Pixels, Render, Rgba, SharedString, StatefulInteractiveElement, Window, deferred, div, hsla,
-    px, rgb,
+    PathBuilder, Pixels, Render, Rgba, SharedString, StatefulInteractiveElement, Window, canvas,
+    deferred, div, hsla, point, px, rgb,
 };
 
 #[derive(Clone, Copy)]
@@ -14,6 +14,8 @@ struct ColorOption {
 pub struct ColorPicker {
     open: bool,
     selected: usize,
+    enabled: bool,
+    button_bounds: Option<Bounds<Pixels>>,
     popup_bounds: Option<Bounds<Pixels>>,
 }
 
@@ -22,13 +24,30 @@ impl ColorPicker {
         Self {
             open: false,
             selected: 0,
+            enabled: false,
+            button_bounds: None,
             popup_bounds: None,
         }
     }
 
     fn toggle_open(&mut self, cx: &mut Context<Self>) {
+        if !self.enabled {
+            return;
+        }
         self.open = !self.open;
         if !self.open {
+            self.popup_bounds = None;
+        }
+        cx.notify();
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.enabled == enabled {
+            return;
+        }
+        self.enabled = enabled;
+        if !self.enabled {
+            self.open = false;
             self.popup_bounds = None;
         }
         cx.notify();
@@ -62,20 +81,43 @@ impl Render for ColorPicker {
         let swatch_size = px(14.0);
         let swatch_radius = px(4.0);
         let button_size = px(26.0);
-        let popup_width = px(180.0);
-        let popup_offset = px(2.0);
+        let popup_width = px(140.0);
+        let popup_radius = px(10.0);
+        let tail_width = px(16.0);
+        let tail_height = px(8.0);
+        let tail_top_radius = px(1.0);
+        let popup_offset = tail_height + px(3.0);
+        let popup_left = (button_size - popup_width) * 0.5;
+        let tail_left = (popup_width - tail_width) * 0.5;
 
         let options = color_options();
         let selected = options.get(self.selected).copied().unwrap_or(options[0]);
+
+        let swatch_color = if self.enabled {
+            selected.color
+        } else {
+            rgb(0x666666)
+        };
+
+        let button_bg = if self.enabled {
+            container_bg
+        } else {
+            rgb(0x242424)
+        };
+        let button_border = if self.enabled {
+            container_border
+        } else {
+            rgb(0x303030)
+        };
 
         let swatch = div()
             .id(("color-picker-swatch", cx.entity_id()))
             .w(swatch_size)
             .h(swatch_size)
             .rounded(swatch_radius)
-            .bg(selected.color);
+            .bg(swatch_color);
 
-        let button = div()
+        let mut button = div()
             .id(("color-picker-button", cx.entity_id()))
             .flex()
             .items_center()
@@ -83,20 +125,34 @@ impl Render for ColorPicker {
             .w(button_size)
             .h(button_size)
             .rounded(px(6.0))
-            .bg(container_bg)
+            .bg(button_bg)
             .border_1()
-            .border_color(container_border)
-            .cursor_pointer()
-            .hover(|style| style.bg(hover_bg))
-            .on_click(cx.listener(|this, _event, _window, cx| {
-                this.toggle_open(cx);
-            }))
+            .border_color(button_border)
             .child(swatch);
+
+        if self.enabled {
+            button = button
+                .cursor_pointer()
+                .hover(|style| style.bg(hover_bg))
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.toggle_open(cx);
+                }));
+        }
+
+        let handle = cx.entity();
+        let button_wrapper = div()
+            .on_children_prepainted(move |bounds, _window, cx| {
+                let bounds = bounds.first().copied();
+                let _ = handle.update(cx, |this, _cx| {
+                    this.button_bounds = bounds;
+                });
+            })
+            .child(button);
 
         let mut root = div()
             .id(("color-picker", cx.entity_id()))
             .relative()
-            .child(button);
+            .child(button_wrapper);
 
         if self.open {
             let handle = cx.entity();
@@ -114,8 +170,18 @@ impl Render for ColorPicker {
                     }
                     if let Some(bounds) = this.popup_bounds {
                         if !bounds.contains(&position) {
+                            if let Some(button_bounds) = this.button_bounds {
+                                if button_bounds.contains(&position) {
+                                    return;
+                                }
+                            }
                             this.close(cx);
                         }
+                    } else if let Some(button_bounds) = this.button_bounds {
+                        if button_bounds.contains(&position) {
+                            return;
+                        }
+                        this.close(cx);
                     }
                 });
             });
@@ -124,12 +190,12 @@ impl Render for ColorPicker {
                 .id(("color-picker-popup", cx.entity_id()))
                 .absolute()
                 .top(popup_offset)
-                .left(px(0.0))
+                .left(popup_left)
                 .w(popup_width)
                 .bg(popup_bg)
                 .border_1()
                 .border_color(container_border)
-                .rounded(px(8.0))
+                .rounded(popup_radius)
                 .shadow(vec![BoxShadow {
                     color: hsla(0.0, 0.0, 0.0, 0.35),
                     offset: gpui::point(px(0.0), px(4.0)),
@@ -137,6 +203,71 @@ impl Render for ColorPicker {
                     spread_radius: px(0.0),
                 }])
                 .occlude();
+
+            let tail = div()
+                .id(("color-picker-tail", cx.entity_id()))
+                .absolute()
+                .top(px(-7.0))
+                .left(tail_left)
+                .w(tail_width)
+                .h(tail_height)
+                .child(
+                    canvas(
+                        |_bounds, _window, _cx| (),
+                        move |bounds, _, window, _cx| {
+                            let left_f: f32 = bounds.origin.x.into();
+                            let top_f: f32 = bounds.origin.y.into();
+                            let width_f: f32 = bounds.size.width.into();
+                            let height_f: f32 = bounds.size.height.into();
+                            let mut radius_f: f32 = tail_top_radius.into();
+                            radius_f = radius_f.min(height_f);
+
+                            let apex_x = left_f + width_f * 0.5;
+                            let apex_y = top_f;
+                            let bottom_left_f = left_f;
+                            let bottom_right_f = left_f + width_f;
+                            let bottom_y_f = top_f + height_f;
+
+                            let left_dx = bottom_left_f - apex_x;
+                            let left_dy = bottom_y_f - apex_y;
+                            let left_len = (left_dx * left_dx + left_dy * left_dy).sqrt();
+                            let left_t = if left_len > 0.0 {
+                                (radius_f / left_len).min(1.0)
+                            } else {
+                                0.0
+                            };
+                            let left_join_x = apex_x + left_dx * left_t;
+                            let left_join_y = apex_y + left_dy * left_t;
+
+                            let right_dx = bottom_right_f - apex_x;
+                            let right_dy = bottom_y_f - apex_y;
+                            let right_len = (right_dx * right_dx + right_dy * right_dy).sqrt();
+                            let right_t = if right_len > 0.0 {
+                                (radius_f / right_len).min(1.0)
+                            } else {
+                                0.0
+                            };
+                            let right_join_x = apex_x + right_dx * right_t;
+                            let right_join_y = apex_y + right_dy * right_t;
+
+                            let mut builder = PathBuilder::fill();
+                            builder.move_to(point(px(bottom_left_f), px(bottom_y_f)));
+                            builder.line_to(point(px(bottom_right_f), px(bottom_y_f)));
+                            builder.line_to(point(px(right_join_x), px(right_join_y)));
+                            builder.curve_to(
+                                point(px(left_join_x), px(left_join_y)),
+                                point(px(apex_x), px(apex_y)),
+                            );
+                            builder.line_to(point(px(bottom_left_f), px(bottom_y_f)));
+                            if let Ok(path) = builder.build() {
+                                window.paint_path(path, popup_bg);
+                            }
+                        },
+                    )
+                    .size_full(),
+                );
+
+            popup = popup.child(tail);
 
             let entity_id = cx.entity_id().as_u64();
             let option_base_id = SharedString::from(format!("color-picker-option-{entity_id}"));

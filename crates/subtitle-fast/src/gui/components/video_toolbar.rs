@@ -48,9 +48,19 @@ impl VideoToolbar {
         }
     }
 
-    pub fn set_controls(&mut self, controls: Option<VideoPlayerControlHandle>) {
+    pub fn set_controls(
+        &mut self,
+        controls: Option<VideoPlayerControlHandle>,
+        cx: &mut Context<Self>,
+    ) {
         self.controls = controls;
         self.apply_view();
+        if let Some(color_picker) = self.color_picker.clone() {
+            let enabled = self.controls.is_some();
+            let _ = color_picker.update(cx, |picker, cx| {
+                picker.set_enabled(enabled, cx);
+            });
+        }
     }
 
     pub fn set_roi_overlay(
@@ -77,8 +87,18 @@ impl VideoToolbar {
         self.luma_handle = handle;
     }
 
-    pub fn set_color_picker(&mut self, picker: Option<Entity<ColorPicker>>) {
+    pub fn set_color_picker(
+        &mut self,
+        picker: Option<Entity<ColorPicker>>,
+        cx: &mut Context<Self>,
+    ) {
         self.color_picker = picker;
+        if let Some(color_picker) = self.color_picker.clone() {
+            let enabled = self.controls.is_some();
+            let _ = color_picker.update(cx, |picker, cx| {
+                picker.set_enabled(enabled, cx);
+            });
+        }
     }
 
     pub fn set_roi_handle(&mut self, handle: Option<VideoRoiHandle>) {
