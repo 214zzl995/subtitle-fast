@@ -425,7 +425,7 @@ impl Render for VideoControls {
             let mut bar = div()
                 .flex()
                 .flex_1()
-                .h(px(24.0))
+                .h(px(26.0))
                 .items_center()
                 .on_children_prepainted(move |bounds, _window, cx| {
                     let bounds = bounds.first().copied();
