@@ -21,6 +21,7 @@ pub struct VideoControls {
     progress_hovered: bool,
     progress_hover_from: bool,
     progress_hover_token: u64,
+    playback_hovered: bool,
 }
 
 struct SeekDragState {
@@ -70,6 +71,7 @@ impl VideoControls {
             progress_hovered: false,
             progress_hover_from: false,
             progress_hover_token: 0,
+            playback_hovered: false,
         }
     }
 
@@ -89,6 +91,7 @@ impl VideoControls {
         self.progress_hovered = false;
         self.progress_hover_from = false;
         self.progress_hover_token = 0;
+        self.playback_hovered = false;
     }
 
     fn toggle_playback(&mut self, cx: &mut Context<Self>) {
@@ -227,6 +230,14 @@ impl VideoControls {
         self.progress_hovered = false;
         self.progress_hover_from = false;
         self.progress_hover_token = self.progress_hover_token.wrapping_add(1);
+        cx.notify();
+    }
+
+    fn set_playback_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        if self.playback_hovered == hovered {
+            return;
+        }
+        self.playback_hovered = hovered;
         cx.notify();
     }
 
@@ -404,6 +415,12 @@ impl Render for VideoControls {
                 .into_any_element()
         };
 
+        let playback_icon_color = if self.playback_hovered {
+            rgb(0x000000)
+        } else {
+            rgb(0xffffff)
+        };
+
         let playback_button = div()
             .id(("toggle-playback", cx.entity_id()))
             .flex()
@@ -413,16 +430,19 @@ impl Render for VideoControls {
             .h(px(32.0))
             .rounded(px(999.0))
             .bg(hsla(0.0, 0.0, 1.0, 0.1))
-            .text_color(rgb(0xffffff))
-            .hover(|style| style.bg(rgb(0xffffff)).text_color(rgb(0x000000)))
+            .hover(|style| style.bg(rgb(0xffffff)))
             .cursor_pointer()
+            .on_hover(cx.listener(|this, hovered, _window, cx| {
+                this.set_playback_hovered(*hovered, cx);
+            }))
             .on_click(cx.listener(|this, _event, _window, cx| {
                 this.toggle_playback(cx);
             }))
             .child(
                 IconComponent::new(playback_icon)
-                    .w(px(18.0))
-                    .h(px(18.0))
+                    .w(px(16.0))
+                    .h(px(16.0))
+                    .text_color(playback_icon_color)
                     .map(|this| if !self.paused { this } else { this.ml(px(2.0)) }),
             );
 
