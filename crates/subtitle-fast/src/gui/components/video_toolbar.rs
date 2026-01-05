@@ -8,7 +8,8 @@ use gpui::{
 };
 
 use crate::gui::components::{
-    FramePreprocessor, VideoLumaHandle, VideoPlayerControlHandle, VideoRoiHandle, VideoRoiOverlay,
+    ColorPicker, FramePreprocessor, VideoLumaHandle, VideoPlayerControlHandle, VideoRoiHandle,
+    VideoRoiOverlay,
 };
 use crate::gui::icons::{Icon, icon_sm};
 
@@ -25,6 +26,7 @@ pub struct VideoToolbar {
     roi_subscription: Option<Subscription>,
     roi_visible: bool,
     luma_handle: Option<VideoLumaHandle>,
+    color_picker: Option<Entity<ColorPicker>>,
     view: VideoViewMode,
     slide_from: VideoViewMode,
     slide_token: u64,
@@ -39,6 +41,7 @@ impl VideoToolbar {
             roi_subscription: None,
             roi_visible: true,
             luma_handle: None,
+            color_picker: None,
             view: VideoViewMode::Yuv,
             slide_from: VideoViewMode::Yuv,
             slide_token: 0,
@@ -72,6 +75,10 @@ impl VideoToolbar {
 
     pub fn set_luma_handle(&mut self, handle: Option<VideoLumaHandle>) {
         self.luma_handle = handle;
+    }
+
+    pub fn set_color_picker(&mut self, picker: Option<Entity<ColorPicker>>) {
+        self.color_picker = picker;
     }
 
     pub fn set_roi_handle(&mut self, handle: Option<VideoRoiHandle>) {
@@ -354,6 +361,27 @@ impl Render for VideoToolbar {
                     .child(toggle_label("Y", VideoViewMode::Y, cx)),
             );
 
+        let mut control_group = div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .child(roi_toggle_button)
+            .child(reset_button);
+
+        if let Some(color_picker) = self.color_picker.clone() {
+            control_group = control_group.child(color_picker);
+        }
+
+        control_group = control_group
+            .child(
+                div()
+                    .id(("video-toolbar-divider", cx.entity_id()))
+                    .w(px(1.0))
+                    .h(px(18.0))
+                    .bg(container_border),
+            )
+            .child(toggle_container);
+
         div()
             .id(("video-toolbar", cx.entity_id()))
             .flex()
@@ -364,22 +392,7 @@ impl Render for VideoToolbar {
             .p(px(0.0))
             .text_xs()
             .child(info_group)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(roi_toggle_button)
-                    .child(reset_button)
-                    .child(
-                        div()
-                            .id(("video-toolbar-divider", cx.entity_id()))
-                            .w(px(1.0))
-                            .h(px(18.0))
-                            .bg(container_border),
-                    )
-                    .child(toggle_container),
-            )
+            .child(control_group)
     }
 }
 

@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::gui::components::{
-    CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle, Titlebar, VideoControls,
-    VideoLumaControls, VideoPlayer, VideoPlayerInfoHandle, VideoRoiHandle, VideoRoiOverlay,
-    VideoToolbar,
+    CollapseDirection, ColorPicker, DragRange, DraggableEdge, Sidebar, SidebarHandle, Titlebar,
+    VideoControls, VideoLumaControls, VideoPlayer, VideoPlayerInfoHandle, VideoRoiHandle,
+    VideoRoiOverlay, VideoToolbar,
 };
 use crate::gui::icons::{Icon, icon_md};
 
@@ -87,6 +87,7 @@ impl SubtitleFastApp {
                     let (luma_controls, luma_handle) = VideoLumaControls::new();
                     let luma_controls_view = cx.new(|_| luma_controls);
                     let controls_view = cx.new(|_| VideoControls::new());
+                    let color_picker_view = cx.new(|_| ColorPicker::new());
                     let toolbar_view = cx.new(|_| VideoToolbar::new());
                     let (roi_overlay, roi_handle) = VideoRoiOverlay::new();
                     let roi_overlay_view = cx.new(|_| roi_overlay);
@@ -94,6 +95,7 @@ impl SubtitleFastApp {
                         toolbar_view.set_luma_handle(Some(luma_handle.clone()));
                         toolbar_view.set_roi_overlay(Some(roi_overlay_view.clone()), cx);
                         toolbar_view.set_roi_handle(Some(roi_handle.clone()));
+                        toolbar_view.set_color_picker(Some(color_picker_view.clone()));
                         cx.notify();
                     });
                     cx.new(|_| {
