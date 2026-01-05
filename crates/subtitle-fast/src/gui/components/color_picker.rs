@@ -63,7 +63,7 @@ impl Render for ColorPicker {
         let swatch_radius = px(4.0);
         let button_size = px(26.0);
         let popup_width = px(180.0);
-        let popup_offset = px(30.0);
+        let popup_offset = px(2.0);
 
         let options = color_options();
         let selected = options.get(self.selected).copied().unwrap_or(options[0]);
