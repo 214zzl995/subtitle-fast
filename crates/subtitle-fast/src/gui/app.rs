@@ -56,6 +56,7 @@ impl SubtitleFastApp {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_min_size: Some(size(px(960.0), px(640.0))),
                     titlebar: Some(TitlebarOptions {
                         title: Some("subtitle-fast".into()),
                         appears_transparent: true,
@@ -114,7 +115,7 @@ impl SubtitleFastApp {
 const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mov", "mkv", "webm", "avi", "m4v", "mpg", "mpeg", "ts",
 ];
-const VIDEO_AREA_ASPECT: f32 = 3.0 / 2.0;
+const VIDEO_AREA_HEIGHT_RATIO: f32 = 0.6;
 
 pub struct MainWindow {
     player: Option<Entity<VideoPlayer>>,
@@ -268,24 +269,25 @@ impl MainWindow {
         Some(aspect)
     }
 
-    fn video_frame_size(&self) -> Option<(f32, f32)> {
+    fn video_frame_size(&self, total_height: f32) -> Option<(f32, f32)> {
         let bounds = self.video_bounds?;
         let container_w: f32 = bounds.size.width.into();
-        if container_w <= 0.0 {
+        if container_w <= 0.0 || total_height <= 0.0 {
             return None;
         }
 
         let width = container_w;
-        let height = width / VIDEO_AREA_ASPECT;
+        let height = total_height * VIDEO_AREA_HEIGHT_RATIO;
         Some((width, height))
     }
 }
 
 impl Render for MainWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let total_height: f32 = window.bounds().size.height.into();
         let video_content = self.player.as_ref().map(|player| player.clone());
         let video_aspect = self.video_aspect();
-        let frame_size = self.video_frame_size();
+        let frame_size = self.video_frame_size(total_height);
 
         div()
             .flex()
