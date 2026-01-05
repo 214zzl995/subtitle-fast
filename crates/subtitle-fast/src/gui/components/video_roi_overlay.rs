@@ -56,6 +56,7 @@ pub struct VideoRoiOverlay {
     picture_bounds: Option<Bounds<Pixels>>,
     roi: RoiConfig,
     dragging: Option<DragState>,
+    visible: bool,
     sender: watch::Sender<RoiConfig>,
 }
 
@@ -70,6 +71,7 @@ impl VideoRoiOverlay {
                 picture_bounds: None,
                 roi,
                 dragging: None,
+                visible: true,
                 sender,
             },
             VideoRoiHandle { receiver },
@@ -90,6 +92,17 @@ impl VideoRoiOverlay {
         self.dragging = None;
         self.roi = default_roi();
         let _ = self.sender.send(self.roi);
+        cx.notify();
+    }
+
+    pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.visible == visible {
+            return;
+        }
+        self.visible = visible;
+        if !self.visible {
+            self.dragging = None;
+        }
         cx.notify();
     }
 
@@ -236,36 +249,34 @@ impl VideoRoiOverlay {
 
 impl Render for VideoRoiOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(dragging) = self.dragging {
-            window.set_window_cursor_style(cursor_for_corner(dragging.corner));
-            let handle = cx.entity();
-            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                if phase != DispatchPhase::Capture {
-                    return;
-                }
-                let _ = handle.update(cx, |this, cx| {
-                    this.update_drag(event.position, cx);
-                });
-                window.refresh();
-            });
-
-            let handle = cx.entity();
-            window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                if phase != DispatchPhase::Capture {
-                    return;
-                }
-                if event.button == MouseButton::Left {
+        if self.visible {
+            if let Some(dragging) = self.dragging {
+                window.set_window_cursor_style(cursor_for_corner(dragging.corner));
+                let handle = cx.entity();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Capture {
+                        return;
+                    }
                     let _ = handle.update(cx, |this, cx| {
-                        this.end_drag(cx);
+                        this.update_drag(event.position, cx);
                     });
                     window.refresh();
-                }
-            });
+                });
+
+                let handle = cx.entity();
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Capture {
+                        return;
+                    }
+                    if event.button == MouseButton::Left {
+                        let _ = handle.update(cx, |this, cx| {
+                            this.end_drag(cx);
+                        });
+                        window.refresh();
+                    }
+                });
+            }
         }
-
-        self.update_picture_bounds();
-
-        let has_frame = self.has_frame();
 
         let handle = cx.entity();
         let mut root = div()
@@ -287,6 +298,14 @@ impl Render for VideoRoiOverlay {
                     .size_full()
                     .id(("video-roi-overlay-bounds", cx.entity_id())),
             );
+
+        if !self.visible {
+            return root;
+        }
+
+        self.update_picture_bounds();
+
+        let has_frame = self.has_frame();
 
         let Some(container) = self.container_bounds else {
             return root;

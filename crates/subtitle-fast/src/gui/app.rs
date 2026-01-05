@@ -92,7 +92,8 @@ impl SubtitleFastApp {
                     let roi_overlay_view = cx.new(|_| roi_overlay);
                     let _ = toolbar_view.update(cx, |toolbar_view, cx| {
                         toolbar_view.set_luma_handle(Some(luma_handle.clone()));
-                        toolbar_view.set_roi_overlay(Some(roi_overlay_view.clone()));
+                        toolbar_view.set_roi_overlay(Some(roi_overlay_view.clone()), cx);
+                        toolbar_view.set_roi_handle(Some(roi_handle.clone()));
                         cx.notify();
                     });
                     cx.new(|_| {
