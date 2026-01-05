@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use crate::gui::components::{
     CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle, Titlebar, VideoControls,
-    VideoPlayer, VideoPlayerInfoHandle, VideoRoiHandle, VideoRoiOverlay, VideoToolbar,
+    VideoLumaControls, VideoPlayer, VideoPlayerInfoHandle, VideoRoiHandle, VideoRoiOverlay,
+    VideoToolbar,
 };
 use crate::gui::icons::{Icon, icon_md};
 
@@ -83,11 +84,14 @@ impl SubtitleFastApp {
                         Duration::from_millis(160),
                         cx,
                     );
-                    let toolbar_view = cx.new(|_| VideoToolbar::new());
+                    let (luma_controls, luma_handle) = VideoLumaControls::new();
+                    let luma_controls_view = cx.new(|_| luma_controls);
                     let controls_view = cx.new(|_| VideoControls::new());
+                    let toolbar_view = cx.new(|_| VideoToolbar::new());
                     let (roi_overlay, roi_handle) = VideoRoiOverlay::new();
                     let roi_overlay_view = cx.new(|_| roi_overlay);
                     let _ = toolbar_view.update(cx, |toolbar_view, cx| {
+                        toolbar_view.set_luma_handle(Some(luma_handle.clone()));
                         toolbar_view.set_roi_overlay(Some(roi_overlay_view.clone()));
                         cx.notify();
                     });
@@ -99,6 +103,7 @@ impl SubtitleFastApp {
                             left_panel_handle,
                             right_panel,
                             toolbar_view,
+                            luma_controls_view,
                             controls_view,
                             roi_overlay_view,
                             roi_handle,
@@ -126,6 +131,7 @@ pub struct MainWindow {
     _left_panel_handle: SidebarHandle,
     right_panel: Entity<Sidebar>,
     toolbar_view: Entity<VideoToolbar>,
+    luma_controls_view: Entity<VideoLumaControls>,
     controls_view: Entity<VideoControls>,
     roi_overlay: Entity<VideoRoiOverlay>,
     _roi_handle: VideoRoiHandle,
@@ -139,6 +145,7 @@ impl MainWindow {
         left_panel_handle: SidebarHandle,
         right_panel: Entity<Sidebar>,
         toolbar_view: Entity<VideoToolbar>,
+        luma_controls_view: Entity<VideoLumaControls>,
         controls_view: Entity<VideoControls>,
         roi_overlay: Entity<VideoRoiOverlay>,
         roi_handle: VideoRoiHandle,
@@ -152,6 +159,7 @@ impl MainWindow {
             _left_panel_handle: left_panel_handle,
             right_panel,
             toolbar_view,
+            luma_controls_view,
             controls_view,
             roi_overlay,
             _roi_handle: roi_handle,
@@ -396,7 +404,8 @@ impl Render for MainWindow {
                     .gap(px(2.0))
                     .child(self.toolbar_view.clone())
                     .child(video_slot)
-                    .child(self.controls_view.clone());
+                    .child(self.controls_view.clone())
+                    .child(self.luma_controls_view.clone());
 
                 div()
                     .flex()

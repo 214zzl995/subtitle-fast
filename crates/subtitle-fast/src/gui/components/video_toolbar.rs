@@ -7,7 +7,9 @@ use gpui::{
     Render, StatefulInteractiveElement, Window, div, ease_out_quint, hsla, px, rgb,
 };
 
-use crate::gui::components::{FramePreprocessor, VideoPlayerControlHandle, VideoRoiOverlay};
+use crate::gui::components::{
+    FramePreprocessor, VideoLumaHandle, VideoPlayerControlHandle, VideoRoiOverlay,
+};
 use crate::gui::icons::{Icon, icon_sm};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,6 +21,7 @@ enum VideoViewMode {
 pub struct VideoToolbar {
     controls: Option<VideoPlayerControlHandle>,
     roi_overlay: Option<Entity<VideoRoiOverlay>>,
+    luma_handle: Option<VideoLumaHandle>,
     view: VideoViewMode,
     slide_from: VideoViewMode,
     slide_token: u64,
@@ -29,6 +32,7 @@ impl VideoToolbar {
         Self {
             controls: None,
             roi_overlay: None,
+            luma_handle: None,
             view: VideoViewMode::Yuv,
             slide_from: VideoViewMode::Yuv,
             slide_token: 0,
@@ -42,6 +46,10 @@ impl VideoToolbar {
 
     pub fn set_roi_overlay(&mut self, overlay: Option<Entity<VideoRoiOverlay>>) {
         self.roi_overlay = overlay;
+    }
+
+    pub fn set_luma_handle(&mut self, handle: Option<VideoLumaHandle>) {
+        self.luma_handle = handle;
     }
 
     fn set_view(&mut self, view: VideoViewMode, cx: &mut Context<Self>) {
