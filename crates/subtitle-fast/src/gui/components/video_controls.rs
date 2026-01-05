@@ -7,6 +7,7 @@ use gpui::{
     Point, Render, Window, canvas, div, hsla, point, px, quad, rgb, size, transparent_black,
 };
 
+use crate::gui::components::video_player::VideoPlayerInfoSnapshot;
 use crate::gui::components::{VideoPlayerControlHandle, VideoPlayerInfoHandle};
 use crate::gui::icons::Icon;
 use gpui_component::Icon as IconComponent;
@@ -22,6 +23,15 @@ pub struct VideoControls {
     progress_hover_from: bool,
     progress_hover_token: u64,
     playback_hovered: bool,
+    jog_hovered: Option<JogButton>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JogButton {
+    Minus1s,
+    Plus1s,
+    Minus7f,
+    Plus7f,
 }
 
 struct SeekDragState {
@@ -72,6 +82,7 @@ impl VideoControls {
             progress_hover_from: false,
             progress_hover_token: 0,
             playback_hovered: false,
+            jog_hovered: None,
         }
     }
 
@@ -92,6 +103,7 @@ impl VideoControls {
         self.progress_hover_from = false;
         self.progress_hover_token = 0;
         self.playback_hovered = false;
+        self.jog_hovered = None;
     }
 
     fn toggle_playback(&mut self, cx: &mut Context<Self>) {
@@ -113,6 +125,66 @@ impl VideoControls {
         } else if self.paused != paused {
             self.paused = paused;
         }
+    }
+
+    fn seek_relative_time(&mut self, delta_seconds: f64) -> bool {
+        let Some(controls) = self.controls.as_ref() else {
+            return false;
+        };
+        let Some(info) = self.info.as_ref() else {
+            return false;
+        };
+        let snapshot = info.snapshot();
+        if snapshot.ended && delta_seconds > 0.0 {
+            return false;
+        }
+        let Some(current_time) = current_time_from_snapshot(&snapshot) else {
+            return false;
+        };
+
+        let mut target = current_time.as_secs_f64() + delta_seconds;
+        if !target.is_finite() {
+            return false;
+        }
+        if let Some(max_seconds) = max_time_seconds(&snapshot) {
+            target = target.clamp(0.0, max_seconds);
+        } else if target < 0.0 {
+            target = 0.0;
+        }
+
+        controls.seek_to(Duration::from_secs_f64(target));
+        true
+    }
+
+    fn seek_relative_frames(&mut self, delta_frames: i64) -> bool {
+        let Some(controls) = self.controls.as_ref() else {
+            return false;
+        };
+        let Some(info) = self.info.as_ref() else {
+            return false;
+        };
+        let snapshot = info.snapshot();
+        if snapshot.ended && delta_frames > 0 {
+            return false;
+        }
+        let Some(current_frame) = current_frame_from_snapshot(&snapshot) else {
+            return false;
+        };
+
+        let mut target = current_frame as i64 + delta_frames;
+        if target < 0 {
+            target = 0;
+        }
+        let total_frames = snapshot.metadata.calculate_total_frames().unwrap_or(0);
+        if total_frames > 0 {
+            let max_index = total_frames.saturating_sub(1) as i64;
+            if target > max_index {
+                target = max_index;
+            }
+        }
+
+        controls.seek_to_frame(target as u64);
+        true
     }
 
     fn update_progress_bounds(&mut self, bounds: Option<Bounds<Pixels>>) {
@@ -238,6 +310,29 @@ impl VideoControls {
             return;
         }
         self.playback_hovered = hovered;
+        cx.notify();
+    }
+
+    fn set_jog_hovered(&mut self, hovered: bool, button: JogButton, cx: &mut Context<Self>) {
+        let next = if hovered {
+            Some(button)
+        } else if self.jog_hovered == Some(button) {
+            None
+        } else {
+            self.jog_hovered
+        };
+        if self.jog_hovered == next {
+            return;
+        }
+        self.jog_hovered = next;
+        cx.notify();
+    }
+
+    fn reset_jog_hover(&mut self, cx: &mut Context<Self>) {
+        if self.jog_hovered.is_none() {
+            return;
+        }
+        self.jog_hovered = None;
         cx.notify();
     }
 
@@ -383,6 +478,7 @@ impl Render for VideoControls {
         let interaction_enabled = self.controls.is_some();
         if !interaction_enabled {
             self.reset_progress_hover(cx);
+            self.reset_jog_hover(cx);
         }
 
         let hover_from = if self.progress_hover_from {
@@ -460,12 +556,123 @@ impl Render for VideoControls {
                 }));
         }
 
+        let jog_text_color = if interaction_enabled {
+            hsla(0.0, 0.0, 1.0, 0.55)
+        } else {
+            hsla(0.0, 0.0, 1.0, 0.35)
+        };
+        let jog_hover_text = hsla(0.0, 0.0, 1.0, 1.0);
+        let jog_bg = hsla(0.0, 0.0, 1.0, 0.06);
+        let jog_hover_bg = hsla(0.0, 0.0, 1.0, 0.1);
+
+        let jog_button = |id: &'static str, label: &'static str, hovered: bool| {
+            let text_color = if hovered {
+                jog_hover_text
+            } else {
+                jog_text_color
+            };
+            let bg_color = if hovered { jog_hover_bg } else { jog_bg };
+            div()
+                .id((id, cx.entity_id()))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(11.0))
+                .text_color(text_color)
+                .bg(bg_color)
+                .px(px(8.0))
+                .py(px(4.0))
+                .child(label)
+        };
+
+        let mut jog_minus_1s = jog_button(
+            "jog-minus-1s",
+            "-1s",
+            self.jog_hovered == Some(JogButton::Minus1s),
+        )
+        .rounded_tl(px(4.0))
+        .rounded_bl(px(4.0));
+        let mut jog_plus_1s = jog_button(
+            "jog-plus-1s",
+            "+1s",
+            self.jog_hovered == Some(JogButton::Plus1s),
+        );
+        let mut jog_minus_7f = jog_button(
+            "jog-minus-7f",
+            "-7f",
+            self.jog_hovered == Some(JogButton::Minus7f),
+        );
+        let mut jog_plus_7f = jog_button(
+            "jog-plus-7f",
+            "+7f",
+            self.jog_hovered == Some(JogButton::Plus7f),
+        )
+        .rounded_tr(px(4.0))
+        .rounded_br(px(4.0));
+
+        if interaction_enabled {
+            jog_minus_1s = jog_minus_1s
+                .cursor_pointer()
+                .on_hover(cx.listener(|this, hovered, _window, cx| {
+                    this.set_jog_hovered(*hovered, JogButton::Minus1s, cx);
+                }))
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    if this.seek_relative_time(-1.0) {
+                        cx.notify();
+                    }
+                }));
+            jog_plus_1s = jog_plus_1s
+                .cursor_pointer()
+                .on_hover(cx.listener(|this, hovered, _window, cx| {
+                    this.set_jog_hovered(*hovered, JogButton::Plus1s, cx);
+                }))
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    if this.seek_relative_time(1.0) {
+                        cx.notify();
+                    }
+                }));
+            jog_minus_7f = jog_minus_7f
+                .cursor_pointer()
+                .on_hover(cx.listener(|this, hovered, _window, cx| {
+                    this.set_jog_hovered(*hovered, JogButton::Minus7f, cx);
+                }))
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    if this.seek_relative_frames(-7) {
+                        cx.notify();
+                    }
+                }));
+            jog_plus_7f = jog_plus_7f
+                .cursor_pointer()
+                .on_hover(cx.listener(|this, hovered, _window, cx| {
+                    this.set_jog_hovered(*hovered, JogButton::Plus7f, cx);
+                }))
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    if this.seek_relative_frames(7) {
+                        cx.notify();
+                    }
+                }));
+        }
+
+        let jog_cluster = div()
+            .id(("jog-cluster", cx.entity_id()))
+            .flex()
+            .items_center()
+            .gap(px(0.0))
+            .p(px(2.0))
+            .rounded(px(6.0))
+            .bg(hsla(0.0, 0.0, 0.0, 0.2))
+            .overflow_hidden()
+            .child(jog_minus_1s)
+            .child(jog_plus_1s)
+            .child(jog_minus_7f)
+            .child(jog_plus_7f);
+
         let progress_bar = {
             let handle = cx.entity();
             let mut bar = div()
                 .flex()
                 .flex_1()
-                .h(px(26.0))
+                .h(px(24.0))
                 .items_center()
                 .on_children_prepainted(move |bounds, _window, cx| {
                     let bounds = bounds.first().copied();
@@ -499,7 +706,7 @@ impl Render for VideoControls {
         let info_row = div()
             .flex()
             .items_center()
-            .gap(px(24.0))
+            .gap(px(18.0))
             .text_size(px(12.0))
             .text_color(hsla(0.0, 0.0, 1.0, 0.55))
             .child(
@@ -549,23 +756,30 @@ impl Render for VideoControls {
                     ),
             );
 
+        let left_group = div()
+            .flex()
+            .items_center()
+            .gap(px(12.0))
+            .child(playback_button)
+            .child(jog_cluster);
+
         div()
             .flex()
             .flex_col()
             .w_full()
-            .p(px(12.0))
+            .p(px(10.0))
             .rounded(px(12.0))
             .bg(rgb(0x111111))
             .id(("video-controls", cx.entity_id()))
             .child(progress_bar)
-            .gap(px(6.0))
+            .gap(px(4.0))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
                     .w_full()
-                    .child(playback_button)
+                    .child(left_group)
                     .child(info_row),
             )
     }
@@ -722,6 +936,57 @@ fn format_time(duration: Duration) -> String {
     let minutes = total_secs / 60;
     let seconds = total_secs % 60;
     format!("{minutes}:{seconds:02}")
+}
+
+fn current_time_from_snapshot(snapshot: &VideoPlayerInfoSnapshot) -> Option<Duration> {
+    if let Some(timestamp) = snapshot.last_timestamp {
+        return Some(timestamp);
+    }
+    if let (Some(frame_index), Some(fps)) = (snapshot.last_frame_index, snapshot.metadata.fps) {
+        if fps.is_finite() && fps > 0.0 {
+            let seconds = frame_index as f64 / fps;
+            if seconds.is_finite() && seconds >= 0.0 {
+                return Some(Duration::from_secs_f64(seconds));
+            }
+        }
+    }
+    None
+}
+
+fn current_frame_from_snapshot(snapshot: &VideoPlayerInfoSnapshot) -> Option<u64> {
+    if let Some(frame_index) = snapshot.last_frame_index {
+        return Some(frame_index);
+    }
+    if let (Some(timestamp), Some(fps)) = (snapshot.last_timestamp, snapshot.metadata.fps) {
+        if fps.is_finite() && fps > 0.0 {
+            let frame = timestamp.as_secs_f64() * fps;
+            if frame.is_finite() && frame >= 0.0 {
+                return Some(frame.round() as u64);
+            }
+        }
+    }
+    None
+}
+
+fn max_time_seconds(snapshot: &VideoPlayerInfoSnapshot) -> Option<f64> {
+    if let Some(duration) = snapshot.metadata.duration {
+        if duration > Duration::ZERO {
+            let seconds = duration.as_secs_f64();
+            if seconds.is_finite() && seconds > 0.0 {
+                return Some(seconds);
+            }
+        }
+    }
+
+    let total_frames = snapshot.metadata.calculate_total_frames()?;
+    let fps = snapshot.metadata.fps?;
+    if total_frames > 0 && fps.is_finite() && fps > 0.0 {
+        let seconds = total_frames as f64 / fps;
+        if seconds.is_finite() && seconds > 0.0 {
+            return Some(seconds);
+        }
+    }
+    None
 }
 
 fn preview_from_ratio(ratio: f32, metadata: VideoMetadata) -> (Option<Duration>, Option<u64>) {
