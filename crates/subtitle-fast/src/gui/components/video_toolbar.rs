@@ -4,12 +4,13 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     Animation, AnimationExt as _, BoxShadow, Context, Entity, FontWeight, InteractiveElement,
-    Render, StatefulInteractiveElement, Subscription, Window, div, ease_out_quint, hsla, px, rgb,
+    Render, Rgba, StatefulInteractiveElement, Subscription, Window, div, ease_out_quint, hsla, px,
+    rgb,
 };
 
 use crate::gui::components::{
-    ColorPicker, FramePreprocessor, VideoLumaHandle, VideoPlayerControlHandle, VideoRoiHandle,
-    VideoRoiOverlay,
+    ColorPicker, ColorPickerHandle, FramePreprocessor, VideoLumaControls, VideoLumaHandle,
+    VideoPlayerControlHandle, VideoRoiHandle, VideoRoiOverlay,
 };
 use crate::gui::icons::{Icon, icon_sm};
 
@@ -26,10 +27,14 @@ pub struct VideoToolbar {
     roi_subscription: Option<Subscription>,
     roi_visible: bool,
     luma_handle: Option<VideoLumaHandle>,
+    luma_subscription: Option<Subscription>,
     color_picker: Option<Entity<ColorPicker>>,
+    color_handle: Option<ColorPickerHandle>,
+    color_subscription: Option<Subscription>,
     view: VideoViewMode,
     slide_from: VideoViewMode,
     slide_token: u64,
+    highlight_visible: bool,
 }
 
 impl VideoToolbar {
@@ -41,10 +46,14 @@ impl VideoToolbar {
             roi_subscription: None,
             roi_visible: true,
             luma_handle: None,
+            luma_subscription: None,
             color_picker: None,
+            color_handle: None,
+            color_subscription: None,
             view: VideoViewMode::Yuv,
             slide_from: VideoViewMode::Yuv,
             slide_token: 0,
+            highlight_visible: false,
         }
     }
 
@@ -54,7 +63,7 @@ impl VideoToolbar {
         cx: &mut Context<Self>,
     ) {
         self.controls = controls;
-        self.apply_view();
+        self.sync_frame_preprocessor();
         if let Some(color_picker) = self.color_picker.clone() {
             let enabled = self.controls.is_some();
             let _ = color_picker.update(cx, |picker, cx| {
@@ -72,9 +81,7 @@ impl VideoToolbar {
         self.roi_subscription = None;
         if let Some(roi_overlay) = self.roi_overlay.clone() {
             self.roi_subscription = Some(cx.observe(&roi_overlay, |this, _, cx| {
-                if this.roi_handle.is_some() {
-                    cx.notify();
-                }
+                this.handle_roi_update(cx);
             }));
             let visible = self.roi_visible;
             let _ = roi_overlay.update(cx, |overlay, cx| {
@@ -83,22 +90,41 @@ impl VideoToolbar {
         }
     }
 
-    pub fn set_luma_handle(&mut self, handle: Option<VideoLumaHandle>) {
+    pub fn set_luma_controls(
+        &mut self,
+        handle: Option<VideoLumaHandle>,
+        controls: Option<Entity<VideoLumaControls>>,
+        cx: &mut Context<Self>,
+    ) {
         self.luma_handle = handle;
+        self.luma_subscription = None;
+        if let Some(controls) = controls {
+            self.luma_subscription = Some(cx.observe(&controls, |this, _, cx| {
+                this.handle_luma_update(cx);
+            }));
+        }
+        self.sync_frame_preprocessor();
     }
 
     pub fn set_color_picker(
         &mut self,
         picker: Option<Entity<ColorPicker>>,
+        handle: Option<ColorPickerHandle>,
         cx: &mut Context<Self>,
     ) {
         self.color_picker = picker;
+        self.color_handle = handle;
+        self.color_subscription = None;
         if let Some(color_picker) = self.color_picker.clone() {
+            self.color_subscription = Some(cx.observe(&color_picker, |this, _, cx| {
+                this.handle_color_update(cx);
+            }));
             let enabled = self.controls.is_some();
             let _ = color_picker.update(cx, |picker, cx| {
                 picker.set_enabled(enabled, cx);
             });
         }
+        self.sync_frame_preprocessor();
     }
 
     pub fn set_roi_handle(&mut self, handle: Option<VideoRoiHandle>) {
@@ -112,14 +138,29 @@ impl VideoToolbar {
         self.slide_from = self.view;
         self.slide_token = self.slide_token.wrapping_add(1);
         self.view = view;
-        self.apply_view();
+        self.sync_frame_preprocessor();
         cx.notify();
     }
 
-    fn apply_view(&self) {
+    fn sync_frame_preprocessor(&self) {
         let Some(controls) = self.controls.as_ref() else {
             return;
         };
+        if self.highlight_visible {
+            if let (Some(luma_handle), Some(color_handle)) =
+                (self.luma_handle.clone(), self.color_handle.clone())
+            {
+                let grayscale = self.view == VideoViewMode::Y;
+                controls.set_preprocessor(luma_highlight_preprocessor(
+                    luma_handle,
+                    color_handle,
+                    self.roi_handle.clone(),
+                    grayscale,
+                ));
+                return;
+            }
+        }
+
         match self.view {
             VideoViewMode::Yuv => controls.clear_preprocessor(),
             VideoViewMode::Y => controls.set_preprocessor(y_plane_preprocessor()),
@@ -142,6 +183,43 @@ impl VideoToolbar {
     fn toggle_roi_visible(&mut self, cx: &mut Context<Self>) {
         let visible = !self.roi_visible;
         self.set_roi_visible(visible, cx);
+    }
+
+    fn set_highlight_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.highlight_visible == visible {
+            return;
+        }
+        self.highlight_visible = visible;
+        self.sync_frame_preprocessor();
+        cx.notify();
+    }
+
+    fn toggle_highlight_visible(&mut self, cx: &mut Context<Self>) {
+        let visible = !self.highlight_visible;
+        self.set_highlight_visible(visible, cx);
+    }
+
+    fn handle_luma_update(&mut self, cx: &mut Context<Self>) {
+        if self.highlight_visible {
+            self.sync_frame_preprocessor();
+        }
+        cx.notify();
+    }
+
+    fn handle_color_update(&mut self, _cx: &mut Context<Self>) {
+        if self.highlight_visible {
+            self.sync_frame_preprocessor();
+        }
+    }
+
+    fn handle_roi_update(&mut self, cx: &mut Context<Self>) {
+        if self.roi_handle.is_none() {
+            return;
+        }
+        if self.highlight_visible {
+            self.sync_frame_preprocessor();
+        }
+        cx.notify();
     }
 }
 
@@ -239,6 +317,46 @@ impl Render for VideoToolbar {
                     .hover(|style| style.bg(hover_bg))
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.toggle_roi_visible(cx);
+                    }));
+            }
+
+            view
+        };
+
+        let highlight_visible = self.highlight_visible;
+        let highlight_icon_color = if enabled {
+            if highlight_visible {
+                text_active_y.into()
+            } else {
+                text_hover.into()
+            }
+        } else {
+            text_inactive.into()
+        };
+        let highlight_toggle_button = {
+            let mut view = div()
+                .id(("video-view-toggle-highlight", cx.entity_id()))
+                .flex()
+                .items_center()
+                .justify_center()
+                .h(px(26.0))
+                .w(px(26.0))
+                .rounded(px(6.0))
+                .bg(container_bg)
+                .border_1()
+                .border_color(container_border)
+                .child(
+                    icon_sm(Icon::Sparkles, highlight_icon_color)
+                        .w(px(12.0))
+                        .h(px(12.0)),
+                );
+
+            if enabled && self.luma_handle.is_some() && self.color_handle.is_some() {
+                view = view
+                    .cursor_pointer()
+                    .hover(|style| style.bg(hover_bg))
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.toggle_highlight_visible(cx);
                     }));
             }
 
@@ -386,6 +504,7 @@ impl Render for VideoToolbar {
             .items_center()
             .gap(px(6.0))
             .child(roi_toggle_button)
+            .child(highlight_toggle_button)
             .child(reset_button);
 
         if let Some(color_picker) = self.color_picker.clone() {
@@ -421,4 +540,139 @@ fn y_plane_preprocessor() -> FramePreprocessor {
         uv_plane.fill(128);
         true
     })
+}
+
+fn luma_highlight_preprocessor(
+    luma_handle: VideoLumaHandle,
+    color_handle: ColorPickerHandle,
+    roi_handle: Option<VideoRoiHandle>,
+    grayscale: bool,
+) -> FramePreprocessor {
+    Arc::new(move |y_plane, uv_plane, info| {
+        let values = luma_handle.latest();
+        let target_min = values.target.saturating_sub(values.delta);
+        let target_max = values.target.saturating_add(values.delta);
+        let (target_y, target_u, target_v) = rgb_to_nv12(color_handle.latest());
+
+        if grayscale {
+            uv_plane.fill(128);
+        }
+
+        let width = info.width as usize;
+        let height = info.height as usize;
+        if width == 0 || height == 0 {
+            return true;
+        }
+
+        let (roi_left, roi_top, roi_right, roi_bottom) = if let Some(handle) = roi_handle.as_ref() {
+            let roi = handle.latest();
+            let left = roi.x.clamp(0.0, 1.0);
+            let top = roi.y.clamp(0.0, 1.0);
+            let right = (roi.x + roi.width).clamp(left, 1.0);
+            let bottom = (roi.y + roi.height).clamp(top, 1.0);
+            let left_px = (left * width as f32).ceil() as usize;
+            let right_px = (right * width as f32).floor() as usize;
+            let top_px = (top * height as f32).ceil() as usize;
+            let bottom_px = (bottom * height as f32).floor() as usize;
+            (
+                left_px.min(width),
+                top_px.min(height),
+                right_px.min(width),
+                bottom_px.min(height),
+            )
+        } else {
+            (0, 0, width, height)
+        };
+
+        if roi_right <= roi_left || roi_bottom <= roi_top {
+            return true;
+        }
+
+        let blocks_w = (width + 1) / 2;
+        let blocks_h = (height + 1) / 2;
+
+        for by in 0..blocks_h {
+            let y0 = by * 2;
+            let y1 = y0 + 1;
+            let row0 = y0 * info.y_stride;
+            let row1 = y1 * info.y_stride;
+            let uv_row = by * info.uv_stride;
+            for bx in 0..blocks_w {
+                let x0 = bx * 2;
+                let x1 = x0 + 1;
+                let mut block_inside = true;
+                for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+                    if x < width && y < height {
+                        if x < roi_left || x >= roi_right || y < roi_top || y >= roi_bottom {
+                            block_inside = false;
+                            break;
+                        }
+                    }
+                }
+                if !block_inside {
+                    continue;
+                }
+                let mut hit = false;
+
+                if y0 < height && x0 < width {
+                    let idx = row0 + x0;
+                    let value = y_plane[idx];
+                    if value >= target_min && value <= target_max {
+                        y_plane[idx] = target_y;
+                        hit = true;
+                    }
+                }
+                if y0 < height && x1 < width {
+                    let idx = row0 + x1;
+                    let value = y_plane[idx];
+                    if value >= target_min && value <= target_max {
+                        y_plane[idx] = target_y;
+                        hit = true;
+                    }
+                }
+                if y1 < height && x0 < width {
+                    let idx = row1 + x0;
+                    let value = y_plane[idx];
+                    if value >= target_min && value <= target_max {
+                        y_plane[idx] = target_y;
+                        hit = true;
+                    }
+                }
+                if y1 < height && x1 < width {
+                    let idx = row1 + x1;
+                    let value = y_plane[idx];
+                    if value >= target_min && value <= target_max {
+                        y_plane[idx] = target_y;
+                        hit = true;
+                    }
+                }
+
+                if hit {
+                    let uv_index = uv_row + bx * 2;
+                    if uv_index + 1 < uv_plane.len() {
+                        uv_plane[uv_index] = target_u;
+                        uv_plane[uv_index + 1] = target_v;
+                    }
+                }
+            }
+        }
+
+        true
+    })
+}
+
+fn rgb_to_nv12(color: Rgba) -> (u8, u8, u8) {
+    let r = (color.r.clamp(0.0, 1.0) * 255.0).round();
+    let g = (color.g.clamp(0.0, 1.0) * 255.0).round();
+    let b = (color.b.clamp(0.0, 1.0) * 255.0).round();
+
+    let y = 0.299 * r + 0.587 * g + 0.114 * b;
+    let u = -0.168_736 * r - 0.331_264 * g + 0.5 * b + 128.0;
+    let v = 0.5 * r - 0.418_688 * g - 0.081_312 * b + 128.0;
+
+    (
+        y.round().clamp(0.0, 255.0) as u8,
+        u.round().clamp(0.0, 255.0) as u8,
+        v.round().clamp(0.0, 255.0) as u8,
+    )
 }

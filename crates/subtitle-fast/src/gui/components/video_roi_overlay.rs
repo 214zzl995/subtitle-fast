@@ -1,13 +1,13 @@
 use gpui::prelude::*;
 use gpui::{
-    Bounds, Context, CursorStyle, DispatchPhase, IsZero, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, Render, Window, canvas, div, hsla,
-    point, px, size,
+    Bounds, Context, CursorStyle, DispatchPhase, Entity, IsZero, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, Render, Rgba, Subscription, Window,
+    canvas, div, hsla, point, px, size,
 };
 use subtitle_fast_types::RoiConfig;
 use tokio::sync::watch;
 
-use crate::gui::components::VideoPlayerInfoHandle;
+use crate::gui::components::{ColorPicker, ColorPickerHandle, VideoPlayerInfoHandle};
 
 const DEFAULT_LEFT_GAP: f32 = 0.20;
 const DEFAULT_RIGHT_GAP: f32 = 0.20;
@@ -58,12 +58,16 @@ pub struct VideoRoiOverlay {
     dragging: Option<DragState>,
     visible: bool,
     sender: watch::Sender<RoiConfig>,
+    color: Rgba,
+    color_handle: Option<ColorPickerHandle>,
+    color_subscription: Option<Subscription>,
 }
 
 impl VideoRoiOverlay {
     pub fn new() -> (Self, VideoRoiHandle) {
         let roi = default_roi();
         let (sender, receiver) = watch::channel(roi);
+        let color = Rgba::from(hsla(0.12, 0.95, 0.6, 0.95));
         (
             Self {
                 info: None,
@@ -73,6 +77,9 @@ impl VideoRoiOverlay {
                 dragging: None,
                 visible: true,
                 sender,
+                color,
+                color_handle: None,
+                color_subscription: None,
             },
             VideoRoiHandle { receiver },
         )
@@ -104,6 +111,33 @@ impl VideoRoiOverlay {
             self.dragging = None;
         }
         cx.notify();
+    }
+
+    pub fn set_color_picker(
+        &mut self,
+        picker: Option<Entity<ColorPicker>>,
+        handle: Option<ColorPickerHandle>,
+        cx: &mut Context<Self>,
+    ) {
+        self.color_handle = handle;
+        self.color_subscription = None;
+        if let Some(picker) = picker {
+            self.color_subscription = Some(cx.observe(&picker, |this, _, cx| {
+                this.update_color(cx);
+            }));
+        }
+        self.update_color(cx);
+    }
+
+    fn update_color(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = self.color_handle.as_ref() else {
+            return;
+        };
+        let next = handle.latest();
+        if self.color != next {
+            self.color = next;
+            cx.notify();
+        }
     }
 
     fn update_container_bounds(&mut self, bounds: Option<Bounds<Pixels>>) -> bool {
@@ -328,7 +362,7 @@ impl Render for VideoRoiOverlay {
         let width_px = picture.size.width * (right - left);
         let height_px = picture.size.height * (bottom - top);
 
-        let border_color = hsla(0.12, 0.95, 0.6, 0.95);
+        let border_color = self.color;
 
         let stroke_width = px(BORDER_WIDTH);
         let stroke_inset = stroke_width * 0.5;

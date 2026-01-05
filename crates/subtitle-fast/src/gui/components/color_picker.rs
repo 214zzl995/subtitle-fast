@@ -4,6 +4,7 @@ use gpui::{
     PathBuilder, Pixels, Render, Rgba, SharedString, StatefulInteractiveElement, Window, canvas,
     deferred, div, hsla, point, px, rgb,
 };
+use tokio::sync::watch;
 
 #[derive(Clone, Copy)]
 struct ColorOption {
@@ -17,17 +18,43 @@ pub struct ColorPicker {
     enabled: bool,
     button_bounds: Option<Bounds<Pixels>>,
     popup_bounds: Option<Bounds<Pixels>>,
+    sender: watch::Sender<Rgba>,
 }
 
 impl ColorPicker {
-    pub fn new() -> Self {
-        Self {
-            open: false,
-            selected: 0,
-            enabled: false,
-            button_bounds: None,
-            popup_bounds: None,
+    pub fn new() -> (Self, ColorPickerHandle) {
+        let options = color_options();
+        let selected = options[0].color;
+        let (sender, receiver) = watch::channel(selected);
+        (
+            Self {
+                open: false,
+                selected: 0,
+                enabled: false,
+                button_bounds: None,
+                popup_bounds: None,
+                sender,
+            },
+            ColorPickerHandle { receiver },
+        )
+    }
+
+    fn selected_color(&self) -> Rgba {
+        let options = color_options();
+        options
+            .get(self.selected)
+            .copied()
+            .unwrap_or(options[0])
+            .color
+    }
+
+    fn set_selected(&mut self, index: usize) -> bool {
+        if self.selected == index {
+            return false;
         }
+        self.selected = index;
+        let _ = self.sender.send(self.selected_color());
+        true
     }
 
     fn toggle_open(&mut self, cx: &mut Context<Self>) {
@@ -62,10 +89,23 @@ impl ColorPicker {
     }
 
     fn select(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.selected != index {
-            self.selected = index;
-        }
+        let _ = self.set_selected(index);
         self.close(cx);
+    }
+}
+
+#[derive(Clone)]
+pub struct ColorPickerHandle {
+    receiver: watch::Receiver<Rgba>,
+}
+
+impl ColorPickerHandle {
+    pub fn subscribe(&self) -> watch::Receiver<Rgba> {
+        self.receiver.clone()
+    }
+
+    pub fn latest(&self) -> Rgba {
+        *self.receiver.borrow()
     }
 }
 

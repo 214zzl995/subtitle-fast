@@ -7,7 +7,7 @@ pub mod video_player;
 pub mod video_roi_overlay;
 pub mod video_toolbar;
 
-pub use color_picker::ColorPicker;
+pub use color_picker::{ColorPicker, ColorPickerHandle};
 pub use sidebar::{CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle};
 pub use titlebar::Titlebar;
 pub use video_controls::VideoControls;

@@ -87,16 +87,32 @@ impl SubtitleFastApp {
                     let (luma_controls, luma_handle) = VideoLumaControls::new();
                     let luma_controls_view = cx.new(|_| luma_controls);
                     let controls_view = cx.new(|_| VideoControls::new());
-                    let color_picker_view = cx.new(|_| ColorPicker::new());
+                    let (color_picker, color_picker_handle) = ColorPicker::new();
+                    let color_picker_view = cx.new(|_| color_picker);
                     let toolbar_view = cx.new(|_| VideoToolbar::new());
                     let (roi_overlay, roi_handle) = VideoRoiOverlay::new();
                     let roi_overlay_view = cx.new(|_| roi_overlay);
                     let _ = toolbar_view.update(cx, |toolbar_view, cx| {
-                        toolbar_view.set_luma_handle(Some(luma_handle.clone()));
+                        toolbar_view.set_luma_controls(
+                            Some(luma_handle.clone()),
+                            Some(luma_controls_view.clone()),
+                            cx,
+                        );
                         toolbar_view.set_roi_overlay(Some(roi_overlay_view.clone()), cx);
                         toolbar_view.set_roi_handle(Some(roi_handle.clone()));
-                        toolbar_view.set_color_picker(Some(color_picker_view.clone()), cx);
+                        toolbar_view.set_color_picker(
+                            Some(color_picker_view.clone()),
+                            Some(color_picker_handle.clone()),
+                            cx,
+                        );
                         cx.notify();
+                    });
+                    let _ = roi_overlay_view.update(cx, |overlay, cx| {
+                        overlay.set_color_picker(
+                            Some(color_picker_view.clone()),
+                            Some(color_picker_handle.clone()),
+                            cx,
+                        );
                     });
                     cx.new(|_| {
                         MainWindow::new(
