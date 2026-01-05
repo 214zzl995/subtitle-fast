@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    Animation, AnimationExt as _, BorderStyle, Bounds, BoxShadow, Context, Corners, DispatchPhase,
-    FontWeight, Half, Hsla, IsZero, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, Render, Window, canvas, div, ease_out_quint, hsla, point, px, quad, rgb, size,
+    Animation, AnimationExt as _, BorderStyle, Bounds, Context, Corners, DispatchPhase, FontWeight,
+    Half, Hsla, IsZero, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    Render, Window, canvas, div, ease_out_quint, hsla, point, px, quad, rgb, size,
     transparent_black,
 };
 use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET};
@@ -71,6 +71,7 @@ pub struct VideoLumaControls {
     target: u8,
     delta: u8,
     dragging: Option<LumaField>,
+    enabled: bool,
     target_state: SliderState,
     delta_state: SliderState,
     sender: watch::Sender<VideoLumaValues>,
@@ -88,12 +89,26 @@ impl VideoLumaControls {
                 target: values.target,
                 delta: values.delta,
                 dragging: None,
+                enabled: false,
                 target_state: SliderState::new(),
                 delta_state: SliderState::new(),
                 sender,
             },
             VideoLumaHandle { receiver },
         )
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.enabled == enabled {
+            return;
+        }
+        self.enabled = enabled;
+        self.dragging = None;
+        self.target_state.hovered = false;
+        self.target_state.hover_from = false;
+        self.delta_state.hovered = false;
+        self.delta_state.hover_from = false;
+        cx.notify();
     }
 
     fn state(&self, field: LumaField) -> &SliderState {
@@ -217,20 +232,23 @@ impl VideoLumaControls {
         label: &'static str,
         icon: Icon,
         accent: Hsla,
-        accent_soft: Hsla,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let value = self.value(field);
         let state = self.state(field);
-        let hover_from = if state.hover_from { 1.0_f32 } else { 0.0_f32 };
-        let hover_to = if state.hovered || self.dragging == Some(field) {
+        let enabled = self.enabled;
+        let hover_from = if self.enabled && state.hover_from {
             1.0_f32
         } else {
             0.0_f32
         };
-
+        let hover_to = if self.enabled && (state.hovered || self.dragging == Some(field)) {
+            1.0_f32
+        } else {
+            0.0_f32
+        };
         let slider_canvas = if (hover_from - hover_to).abs() < f32::EPSILON {
-            build_luma_slider_canvas(value, hover_to, accent).into_any_element()
+            build_luma_slider_canvas(value, hover_to, enabled).into_any_element()
         } else {
             let animation =
                 Animation::new(Duration::from_millis(180)).with_easing(ease_out_quint());
@@ -240,10 +258,10 @@ impl VideoLumaControls {
                 gpui::ElementId::from((base_id, field.id())),
                 token.to_string(),
             );
-            build_luma_slider_canvas(value, hover_from, accent)
+            build_luma_slider_canvas(value, hover_from, enabled)
                 .with_animation(animation_id, animation, move |_track, delta| {
                     let mix = hover_from + (hover_to - hover_from) * delta;
-                    build_luma_slider_canvas(value, mix, accent)
+                    build_luma_slider_canvas(value, mix, enabled)
                 })
                 .into_any_element()
         };
@@ -267,31 +285,46 @@ impl VideoLumaControls {
             .child(slider_canvas)
             .id(slider_id);
 
-        slider_track = slider_track
-            .cursor_pointer()
-            .on_hover(cx.listener(move |this, hovered, _window, cx| {
-                if this.dragging.is_some() {
-                    return;
-                }
-                this.set_hovered(field, *hovered, cx);
-            }))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
-                    this.begin_drag(field, event.position, cx);
-                }),
-            );
+        if self.enabled {
+            slider_track = slider_track
+                .cursor_pointer()
+                .on_hover(cx.listener(move |this, hovered, _window, cx| {
+                    if this.dragging.is_some() {
+                        return;
+                    }
+                    this.set_hovered(field, *hovered, cx);
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                        this.begin_drag(field, event.position, cx);
+                    }),
+                );
+        }
+
+        let label_color = if self.enabled {
+            hsla(0.0, 0.0, 1.0, 0.7)
+        } else {
+            hsla(0.0, 0.0, 1.0, 0.35)
+        };
 
         let label_group = div()
             .flex()
             .items_center()
             .gap(px(6.0))
-            .child(icon_sm(icon, accent))
+            .child(icon_sm(
+                icon,
+                if self.enabled {
+                    accent
+                } else {
+                    hsla(0.0, 0.0, 1.0, 0.35)
+                },
+            ))
             .child(
                 div()
                     .text_size(px(11.0))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(hsla(0.0, 0.0, 1.0, 0.7))
+                    .text_color(label_color)
                     .child(label),
             );
 
@@ -301,11 +334,7 @@ impl VideoLumaControls {
             .justify_center()
             .text_size(px(10.0))
             .font_weight(FontWeight::SEMIBOLD)
-            .text_color(accent)
-            .bg(accent_soft)
-            .rounded(px(999.0))
-            .px(px(6.0))
-            .py(px(2.0))
+            .text_color(label_color)
             .child(value.to_string());
 
         let head = div()
@@ -334,7 +363,7 @@ impl VideoLumaControls {
 
 impl Render for VideoLumaControls {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.dragging.is_some() {
+        if self.dragging.is_some() && self.enabled {
             let handle = cx.entity();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Capture {
@@ -365,7 +394,6 @@ impl Render for VideoLumaControls {
             "Y Brightness",
             Icon::Sun,
             hsla(0.0, 0.0, 1.0, 0.85),
-            hsla(0.0, 0.0, 1.0, 0.12),
             cx,
         );
         let delta_row = self.slider_row(
@@ -373,7 +401,6 @@ impl Render for VideoLumaControls {
             "Tolerance",
             Icon::Gauge,
             hsla(0.0, 0.0, 1.0, 0.65),
-            hsla(0.0, 0.0, 1.0, 0.1),
             cx,
         );
 
@@ -392,18 +419,17 @@ impl Render for VideoLumaControls {
     }
 }
 
-fn build_luma_slider_canvas(value: u8, mix: f32, accent: Hsla) -> gpui::Canvas<()> {
+fn build_luma_slider_canvas(value: u8, mix: f32, enabled: bool) -> gpui::Canvas<()> {
     let progress = (value as f32 / 255.0).clamp(0.0, 1.0);
     let mix = mix.clamp(0.0, 1.0);
     let track_base = 4.0;
-    let track_hover = 6.0;
     let thumb_base = 10.0;
     let thumb_hover = 14.0;
 
     canvas(
         move |_, _, _| {},
         move |bounds, _, window, _| {
-            let track_height = track_base + (track_hover - track_base) * mix;
+            let track_height = track_base;
             let track_height_px = px(track_height);
             let track_radius = track_height_px.half();
             let center_y = bounds.center().y;
@@ -424,8 +450,16 @@ fn build_luma_slider_canvas(value: u8, mix: f32, accent: Hsla) -> gpui::Canvas<(
             let fill_corners =
                 Corners::from(fill_radius).clamp_radii_for_quad_size(fill_bounds.size);
 
-            let track_bg = hsla(0.0, 0.0, 1.0, 0.12);
-            let fill_bg = accent;
+            let track_bg = if enabled {
+                rgb(0x2f2f2f)
+            } else {
+                rgb(0x232323)
+            };
+            let fill_bg = if enabled {
+                rgb(0xd6d6d6)
+            } else {
+                rgb(0x5a5a5a)
+            };
 
             window.paint_quad(quad(
                 track_bounds,
@@ -457,18 +491,11 @@ fn build_luma_slider_canvas(value: u8, mix: f32, accent: Hsla) -> gpui::Canvas<(
                 size: size(thumb_size_px, thumb_size_px),
             };
 
-            let shadow_alpha = 0.2 + 0.15 * mix;
-            let shadow = BoxShadow {
-                color: hsla(0.0, 0.0, 0.0, shadow_alpha),
-                offset: point(px(0.0), px(2.0)),
-                blur_radius: px(6.0),
-                spread_radius: px(0.0),
+            let thumb_bg = if enabled {
+                rgb(0xf2f2f2)
+            } else {
+                rgb(0x6a6a6a)
             };
-            let thumb_corners =
-                Corners::from(thumb_radius).clamp_radii_for_quad_size(thumb_bounds.size);
-            window.paint_shadows(thumb_bounds, thumb_corners, &[shadow]);
-
-            let thumb_bg = hsla(0.0, 0.0, 1.0, 1.0);
             window.paint_quad(quad(
                 thumb_bounds,
                 thumb_radius,

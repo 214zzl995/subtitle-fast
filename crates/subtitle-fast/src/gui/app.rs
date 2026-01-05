@@ -245,6 +245,9 @@ impl MainWindow {
             controls_view.set_handles(Some(controls.clone()), Some(info.clone()));
             cx.notify();
         });
+        let _ = self.luma_controls_view.update(cx, |luma_controls, cx| {
+            luma_controls.set_enabled(true, cx);
+        });
         let _ = self.toolbar_view.update(cx, |toolbar_view, cx| {
             toolbar_view.set_controls(Some(controls));
             cx.notify();
