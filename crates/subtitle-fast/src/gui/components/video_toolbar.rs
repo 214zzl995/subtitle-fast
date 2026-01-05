@@ -4,7 +4,7 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     Animation, AnimationExt as _, BoxShadow, Context, Entity, FontWeight, InteractiveElement,
-    Render, StatefulInteractiveElement, Window, div, ease_out_quint, hsla, px, rgb,
+    Render, StatefulInteractiveElement, Subscription, Window, div, ease_out_quint, hsla, px, rgb,
 };
 
 use crate::gui::components::{
@@ -22,6 +22,7 @@ pub struct VideoToolbar {
     controls: Option<VideoPlayerControlHandle>,
     roi_overlay: Option<Entity<VideoRoiOverlay>>,
     roi_handle: Option<VideoRoiHandle>,
+    roi_subscription: Option<Subscription>,
     roi_visible: bool,
     luma_handle: Option<VideoLumaHandle>,
     view: VideoViewMode,
@@ -35,6 +36,7 @@ impl VideoToolbar {
             controls: None,
             roi_overlay: None,
             roi_handle: None,
+            roi_subscription: None,
             roi_visible: true,
             luma_handle: None,
             view: VideoViewMode::Yuv,
@@ -54,7 +56,13 @@ impl VideoToolbar {
         cx: &mut Context<Self>,
     ) {
         self.roi_overlay = overlay;
+        self.roi_subscription = None;
         if let Some(roi_overlay) = self.roi_overlay.clone() {
+            self.roi_subscription = Some(cx.observe(&roi_overlay, |this, _, cx| {
+                if this.roi_handle.is_some() {
+                    cx.notify();
+                }
+            }));
             let visible = self.roi_visible;
             let _ = roi_overlay.update(cx, |overlay, cx| {
                 overlay.set_visible(visible, cx);
@@ -136,7 +144,7 @@ impl Render for VideoToolbar {
             .map(|handle| handle.latest())
             .map(|roi| {
                 format!(
-                    "x{:.0} y{:.0} w{:.0} h{:.0}",
+                    "x{:.3} y{:.3} w{:.3} h{:.3}",
                     roi.x, roi.y, roi.width, roi.height
                 )
             })
