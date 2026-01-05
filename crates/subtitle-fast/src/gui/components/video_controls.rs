@@ -415,13 +415,22 @@ impl Render for VideoControls {
                 .into_any_element()
         };
 
-        let playback_icon_color = if self.playback_hovered {
-            rgb(0x000000)
+        let playback_bg = if interaction_enabled {
+            hsla(0.0, 0.0, 1.0, 0.1)
         } else {
-            rgb(0xffffff)
+            hsla(0.0, 0.0, 1.0, 0.08)
+        };
+        let playback_icon_color = if interaction_enabled {
+            if self.playback_hovered {
+                hsla(0.0, 0.0, 0.0, 1.0)
+            } else {
+                hsla(0.0, 0.0, 1.0, 1.0)
+            }
+        } else {
+            hsla(0.0, 0.0, 1.0, 0.45)
         };
 
-        let playback_button = div()
+        let mut playback_button = div()
             .id(("toggle-playback", cx.entity_id()))
             .flex()
             .items_center()
@@ -429,15 +438,7 @@ impl Render for VideoControls {
             .w(px(32.0))
             .h(px(32.0))
             .rounded(px(999.0))
-            .bg(hsla(0.0, 0.0, 1.0, 0.1))
-            .hover(|style| style.bg(rgb(0xffffff)))
-            .cursor_pointer()
-            .on_hover(cx.listener(|this, hovered, _window, cx| {
-                this.set_playback_hovered(*hovered, cx);
-            }))
-            .on_click(cx.listener(|this, _event, _window, cx| {
-                this.toggle_playback(cx);
-            }))
+            .bg(playback_bg)
             .child(
                 IconComponent::new(playback_icon)
                     .w(px(16.0))
@@ -445,6 +446,17 @@ impl Render for VideoControls {
                     .text_color(playback_icon_color)
                     .map(|this| if !self.paused { this } else { this.ml(px(2.0)) }),
             );
+        if interaction_enabled {
+            playback_button = playback_button
+                .hover(|style| style.bg(rgb(0xffffff)))
+                .cursor_pointer()
+                .on_hover(cx.listener(|this, hovered, _window, cx| {
+                    this.set_playback_hovered(*hovered, cx);
+                }))
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.toggle_playback(cx);
+                }));
+        }
 
         let progress_bar = {
             let handle = cx.entity();
