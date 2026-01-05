@@ -1,7 +1,8 @@
 use gpui::prelude::*;
 use gpui::{
-    BoxShadow, Context, InteractiveElement, Render, Rgba, SharedString, StatefulInteractiveElement,
-    Window, deferred, div, hsla, px, rgb,
+    AnchoredPositionMode, BoxShadow, Context, Corner, InteractiveElement, Render, Rgba,
+    SharedString, StatefulInteractiveElement, Window, anchored, deferred, div, hsla, point, px,
+    rgb,
 };
 
 #[derive(Clone, Copy)]
@@ -28,17 +29,23 @@ impl ColorPicker {
         cx.notify();
     }
 
+    fn close(&mut self, cx: &mut Context<Self>) {
+        if self.open {
+            self.open = false;
+            cx.notify();
+        }
+    }
+
     fn select(&mut self, index: usize, cx: &mut Context<Self>) {
         if self.selected != index {
             self.selected = index;
         }
-        self.open = false;
-        cx.notify();
+        self.close(cx);
     }
 }
 
 impl Render for ColorPicker {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let container_bg = rgb(0x2b2b2b);
         let container_border = rgb(0x3a3a3a);
         let hover_bg = rgb(0x3f3f3f);
@@ -51,6 +58,7 @@ impl Render for ColorPicker {
         let button_size = px(26.0);
         let popup_width = px(180.0);
         let popup_offset = px(30.0);
+        let window_bounds = window.bounds();
 
         let options = color_options();
         let selected = options.get(self.selected).copied().unwrap_or(options[0]);
@@ -86,6 +94,22 @@ impl Render for ColorPicker {
             .child(button);
 
         if self.open {
+            let overlay = anchored()
+                .anchor(Corner::TopLeft)
+                .position_mode(AnchoredPositionMode::Window)
+                .position(point(px(0.0), px(0.0)))
+                .child(
+                    div()
+                        .id(("color-picker-backdrop", cx.entity_id()))
+                        .w(window_bounds.size.width)
+                        .h(window_bounds.size.height)
+                        .bg(hsla(0.0, 0.0, 0.0, 0.0))
+                        .occlude()
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.close(cx);
+                        })),
+                );
+
             let mut popup = div()
                 .id(("color-picker-popup", cx.entity_id()))
                 .absolute()
@@ -152,7 +176,9 @@ impl Render for ColorPicker {
                 }
             }
 
-            root = root.child(deferred(popup).with_priority(10));
+            root = root
+                .child(deferred(overlay).with_priority(5))
+                .child(deferred(popup).with_priority(10));
         }
 
         root
