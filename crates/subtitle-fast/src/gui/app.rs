@@ -397,6 +397,13 @@ impl Render for MainWindow {
                             .child(video_wrapper),
                     );
 
+                let toolbar_video_group = div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .child(self.toolbar_view.clone())
+                    .child(video_slot);
+
                 let video_area = div()
                     .flex()
                     .flex_col()
@@ -406,10 +413,10 @@ impl Render for MainWindow {
                     .bg(rgb(0x1b1b1b))
                     .justify_start()
                     .px(px(8.0))
-                    .py(px(2.0))
-                    .gap(px(2.0))
-                    .child(self.toolbar_view.clone())
-                    .child(video_slot)
+                    .pt(px(6.0))
+                    .pb(px(2.0))
+                    .gap(px(6.0))
+                    .child(toolbar_video_group)
                     .child(self.controls_view.clone())
                     .child(self.luma_controls_view.clone());
 
