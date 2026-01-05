@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use gpui::prelude::*;
 use gpui::{
     Animation, AnimationExt as _, BorderStyle, Bounds, BoxShadow, Context, Corners, DispatchPhase,
-    Half, IsZero, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render,
-    Window, canvas, div, hsla, point, px, quad, rgb, size, transparent_black,
+    FontWeight, Half, IsZero, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, Render, Window, canvas, div, hsla, point, px, quad, rgb, size, transparent_black,
 };
 
 use crate::gui::components::{VideoPlayerControlHandle, VideoPlayerInfoHandle};
@@ -375,8 +375,10 @@ impl Render for VideoControls {
 
         let progress = preview_ratio.unwrap_or(actual_progress);
 
-        let time_text = format!("{}-{}", format_time(current_time), format_time(total_time));
-        let frame_text = format!("{current_frame_display}-{total_frames}");
+        let time_value_text = format_time(current_time);
+        let time_total_text = format!("/{}", format_time(total_time));
+        let frame_value_text = current_frame_display.to_string();
+        let frame_total_text = format!("/{total_frames}");
 
         let interaction_enabled = self.controls.is_some();
         if !interaction_enabled {
@@ -496,11 +498,56 @@ impl Render for VideoControls {
 
         let info_row = div()
             .flex()
+            .items_center()
             .gap(px(24.0))
-            .text_sm()
-            .text_color(hsla(0.0, 0.0, 1.0, 0.6))
-            .child(div().flex().child(frame_text))
-            .child(div().flex().child(time_text));
+            .text_size(px(12.0))
+            .text_color(hsla(0.0, 0.0, 1.0, 0.55))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(hsla(0.0, 0.0, 1.0, 0.4))
+                            .child("FRAME:"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(hsla(0.0, 0.0, 1.0, 0.92))
+                            .child(frame_value_text)
+                            .child(div().opacity(0.5).child(frame_total_text)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(hsla(0.0, 0.0, 1.0, 0.4))
+                            .child("TIME:"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(hsla(0.0, 0.0, 1.0, 0.92))
+                            .child(time_value_text)
+                            .child(div().opacity(0.5).child(time_total_text)),
+                    ),
+            );
 
         div()
             .flex()
