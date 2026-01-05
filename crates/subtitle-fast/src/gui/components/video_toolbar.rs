@@ -122,7 +122,7 @@ impl Render for VideoToolbar {
         let text_inactive = rgb(0x666666);
         let text_hover = rgb(0x888888);
         let hover_bg = rgb(0x3f3f3f);
-        let info_text = rgb(0x9a9a9a);
+        let info_text = hsla(0.0, 0.0, 100.0, 0.3);
 
         let luma_values = self.luma_handle.as_ref().map(|handle| handle.latest());
         let (luma_target, luma_delta) = if let Some(values) = luma_values {
@@ -136,31 +136,40 @@ impl Render for VideoToolbar {
             .map(|handle| handle.latest())
             .map(|roi| {
                 format!(
-                    "ROI: x{:.2} y{:.2} w{:.2} h{:.2}",
+                    "x{:.0} y{:.0} w{:.0} h{:.0}",
                     roi.x, roi.y, roi.width, roi.height
                 )
             })
-            .unwrap_or_else(|| "ROI: --".to_string());
+            .unwrap_or_else(|| "--".to_string());
 
         let info_group = div()
             .id(("video-toolbar-info", cx.entity_id()))
             .flex()
-            .items_center()
-            .gap(px(12.0))
+            .flex_col()
+            .justify_center()
+            .items_start()
+            .gap(px(1.0))
+            .text_size(px(10.0))
+            .line_height(px(10.0))
             .text_color(info_text)
             .child(
                 div()
-                    .id(("video-toolbar-info-y", cx.entity_id()))
-                    .child(format!("Y: {luma_target}")),
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(icon_sm(Icon::Sun, info_text.into()).w(px(10.0)).h(px(10.0)))
+                    .child(format!("Y: {luma_target}  Tol: {luma_delta}")),
             )
             .child(
                 div()
-                    .id(("video-toolbar-info-tol", cx.entity_id()))
-                    .child(format!("Tol: {luma_delta}")),
-            )
-            .child(
-                div()
-                    .id(("video-toolbar-info-roi", cx.entity_id()))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(
+                        icon_sm(Icon::Crosshair, info_text.into())
+                            .w(px(10.0))
+                            .h(px(10.0)),
+                    )
                     .child(roi_text),
             );
 
