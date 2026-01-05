@@ -1,8 +1,8 @@
 use gpui::prelude::*;
 use gpui::{
-    AnchoredPositionMode, BoxShadow, Context, Corner, InteractiveElement, Render, Rgba,
-    SharedString, StatefulInteractiveElement, Window, anchored, deferred, div, hsla, point, px,
-    rgb,
+    Bounds, BoxShadow, Context, DispatchPhase, InteractiveElement, MouseButton, MouseDownEvent,
+    Pixels, Render, Rgba, SharedString, StatefulInteractiveElement, Window, deferred, div, hsla,
+    px, rgb,
 };
 
 #[derive(Clone, Copy)]
@@ -14,6 +14,7 @@ struct ColorOption {
 pub struct ColorPicker {
     open: bool,
     selected: usize,
+    popup_bounds: Option<Bounds<Pixels>>,
 }
 
 impl ColorPicker {
@@ -21,17 +22,22 @@ impl ColorPicker {
         Self {
             open: false,
             selected: 0,
+            popup_bounds: None,
         }
     }
 
     fn toggle_open(&mut self, cx: &mut Context<Self>) {
         self.open = !self.open;
+        if !self.open {
+            self.popup_bounds = None;
+        }
         cx.notify();
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
         if self.open {
             self.open = false;
+            self.popup_bounds = None;
             cx.notify();
         }
     }
@@ -58,7 +64,6 @@ impl Render for ColorPicker {
         let button_size = px(26.0);
         let popup_width = px(180.0);
         let popup_offset = px(30.0);
-        let window_bounds = window.bounds();
 
         let options = color_options();
         let selected = options.get(self.selected).copied().unwrap_or(options[0]);
@@ -94,21 +99,26 @@ impl Render for ColorPicker {
             .child(button);
 
         if self.open {
-            let overlay = anchored()
-                .anchor(Corner::TopLeft)
-                .position_mode(AnchoredPositionMode::Window)
-                .position(point(px(0.0), px(0.0)))
-                .child(
-                    div()
-                        .id(("color-picker-backdrop", cx.entity_id()))
-                        .w(window_bounds.size.width)
-                        .h(window_bounds.size.height)
-                        .bg(hsla(0.0, 0.0, 0.0, 0.0))
-                        .occlude()
-                        .on_click(cx.listener(|this, _event, _window, cx| {
+            let handle = cx.entity();
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, _window, cx| {
+                if phase != DispatchPhase::Capture {
+                    return;
+                }
+                if event.button != MouseButton::Left {
+                    return;
+                }
+                let position = event.position;
+                let _ = handle.update(cx, |this, cx| {
+                    if !this.open {
+                        return;
+                    }
+                    if let Some(bounds) = this.popup_bounds {
+                        if !bounds.contains(&position) {
                             this.close(cx);
-                        })),
-                );
+                        }
+                    }
+                });
+            });
 
             let mut popup = div()
                 .id(("color-picker-popup", cx.entity_id()))
@@ -176,9 +186,19 @@ impl Render for ColorPicker {
                 }
             }
 
-            root = root
-                .child(deferred(overlay).with_priority(5))
-                .child(deferred(popup).with_priority(10));
+            let handle = cx.entity();
+            let popup_host = div()
+                .on_children_prepainted(move |bounds, _window, cx| {
+                    let bounds = bounds.first().copied();
+                    let _ = handle.update(cx, |this, _cx| {
+                        this.popup_bounds = bounds;
+                    });
+                })
+                .id(("color-picker-popup-host", cx.entity_id()))
+                .relative()
+                .child(popup);
+
+            root = root.child(deferred(popup_host).with_priority(10));
         }
 
         root
