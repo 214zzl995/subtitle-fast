@@ -8,7 +8,8 @@ use gpui::{
 };
 
 use crate::gui::components::{VideoPlayerControlHandle, VideoPlayerInfoHandle};
-use crate::gui::icons::{Icon, icon_md};
+use crate::gui::icons::Icon;
+use gpui_component::Icon as IconComponent;
 use subtitle_fast_decoder::VideoMetadata;
 
 pub struct VideoControls {
@@ -408,17 +409,22 @@ impl Render for VideoControls {
             .flex()
             .items_center()
             .justify_center()
-            .w(px(40.0))
-            .h(px(40.0))
+            .w(px(32.0))
+            .h(px(32.0))
             .rounded(px(999.0))
-            .border_1()
-            .border_color(hsla(0.0, 0.0, 1.0, 0.35))
+            .bg(hsla(0.0, 0.0, 1.0, 0.1))
+            .text_color(rgb(0xffffff))
+            .hover(|style| style.bg(rgb(0xffffff)).text_color(rgb(0x000000)))
             .cursor_pointer()
-            .hover(|style| style.bg(hsla(0.0, 0.0, 1.0, 0.08)))
             .on_click(cx.listener(|this, _event, _window, cx| {
                 this.toggle_playback(cx);
             }))
-            .child(icon_md(playback_icon, hsla(0.0, 0.0, 1.0, 0.85)));
+            .child(
+                IconComponent::new(playback_icon)
+                    .w(px(18.0))
+                    .h(px(18.0))
+                    .map(|this| if !self.paused { this } else { this.ml(px(2.0)) }),
+            );
 
         let progress_bar = {
             let handle = cx.entity();
