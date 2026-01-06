@@ -109,6 +109,11 @@ impl ColorPickerHandle {
     }
 }
 
+fn snap_to_device(value: Pixels, scale: f32) -> Pixels {
+    let snapped = value.scale(scale).round();
+    px((f64::from(snapped) as f32) / scale)
+}
+
 impl Render for ColorPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let container_bg = rgb(0x2b2b2b);
@@ -152,16 +157,34 @@ impl Render for ColorPicker {
 
         let swatch = div()
             .id(("color-picker-swatch", cx.entity_id()))
-            .w(swatch_size)
-            .h(swatch_size)
-            .rounded(swatch_radius)
-            .bg(swatch_color);
+            .absolute()
+            .top(px(0.0))
+            .left(px(0.0))
+            .right(px(0.0))
+            .bottom(px(0.0))
+            .child(
+                canvas(
+                    |_bounds, _window, _cx| (),
+                    move |bounds, _, window, _cx| {
+                        let scale = window.scale_factor();
+                        let center = bounds.center();
+                        let center_x = snap_to_device(center.x, scale);
+                        let center_y = snap_to_device(center.y, scale);
+                        let swatch_bounds = Bounds::centered_at(
+                            point(center_x, center_y),
+                            gpui::size(swatch_size, swatch_size),
+                        );
+                        window.paint_quad(
+                            gpui::fill(swatch_bounds, swatch_color).corner_radii(swatch_radius),
+                        );
+                    },
+                )
+                .size_full(),
+            );
 
         let mut button = div()
             .id(("color-picker-button", cx.entity_id()))
-            .flex()
-            .items_center()
-            .justify_center()
+            .relative()
             .w(button_size)
             .h(button_size)
             .rounded(px(6.0))
