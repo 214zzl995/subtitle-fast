@@ -29,14 +29,13 @@ impl AssetSource for AppAssets {
             return Ok(Some(asset.data));
         }
 
-        gpui_component_assets::Assets.load(path)
+        Ok(None)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut entries: Vec<SharedString> = EmbeddedAssets::iter()
             .filter_map(|p| p.starts_with(path).then(|| p.into()))
             .collect();
-        entries.extend(gpui_component_assets::Assets.list(path)?);
         entries.sort();
         entries.dedup();
         Ok(entries)

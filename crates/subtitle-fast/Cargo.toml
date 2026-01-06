@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [features]
 default = ["gui", "detector-vision", "ocr-vision"]
-gui = ["dep:gpui", "dep:gpui-component", "dep:gpui-component-assets", "dep:anyhow", "dep:rust-embed"]
+gui = ["dep:gpui", "dep:anyhow", "dep:rust-embed"]
 detector-vision = ["subtitle-fast-validator/detector-vision"]
 ocr-vision = ["subtitle-fast-ocr/engine-vision"]
 
@@ -37,8 +37,6 @@ png = "0.18"
 
 # GUI dependencies (optional)
 gpui = { version = "0.2", optional = true }
-gpui-component = { version = "0.5", optional = true }
-gpui-component-assets = { version = "0.5", optional = true }
 anyhow = { version = "1", optional = true }
 rust-embed = { version = "8.7.2", optional = true }
 

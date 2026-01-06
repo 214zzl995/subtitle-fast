@@ -1,9 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
 
-use gpui_component::Icon as IconComponent;
-use gpui_component::IconNamed;
-
 #[derive(Clone, Copy)]
 pub enum Icon {
     Activity,
@@ -35,7 +32,7 @@ pub enum Icon {
     Upload,
 }
 
-impl IconNamed for Icon {
+impl Icon {
     fn path(self) -> SharedString {
         match self {
             Self::Activity => "icons/activity.svg",
@@ -70,29 +67,24 @@ impl IconNamed for Icon {
     }
 }
 
-pub fn icon(name: Icon, color: Hsla) -> IconComponent {
-    IconComponent::new(name).text_color(color)
+fn icon_base(name: Icon, color: Hsla) -> Svg {
+    svg().path(name.path()).text_color(color)
 }
 
-pub fn icon_sm(name: Icon, color: Hsla) -> IconComponent {
-    IconComponent::new(name)
-        .w(px(16.0))
-        .h(px(16.0))
-        .text_color(color)
+pub fn icon(name: Icon, color: Hsla) -> Svg {
+    icon_base(name, color)
 }
 
-pub fn icon_md(name: Icon, color: Hsla) -> IconComponent {
-    IconComponent::new(name)
-        .w(px(20.0))
-        .h(px(20.0))
-        .text_color(color)
+pub fn icon_sm(name: Icon, color: Hsla) -> Svg {
+    icon_base(name, color).w(px(16.0)).h(px(16.0))
 }
 
-pub fn icon_lg(name: Icon, color: Hsla) -> IconComponent {
-    IconComponent::new(name)
-        .w(px(24.0))
-        .h(px(24.0))
-        .text_color(color)
+pub fn icon_md(name: Icon, color: Hsla) -> Svg {
+    icon_base(name, color).w(px(20.0)).h(px(20.0))
+}
+
+pub fn icon_lg(name: Icon, color: Hsla) -> Svg {
+    icon_base(name, color).w(px(24.0)).h(px(24.0))
 }
 
 pub fn icon_button(name: Icon, color: Hsla, hover_bg: Hsla) -> impl IntoElement {

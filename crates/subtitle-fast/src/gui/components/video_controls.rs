@@ -9,8 +9,7 @@ use gpui::{
 
 use crate::gui::components::video_player::VideoPlayerInfoSnapshot;
 use crate::gui::components::{VideoPlayerControlHandle, VideoPlayerInfoHandle};
-use crate::gui::icons::Icon;
-use gpui_component::Icon as IconComponent;
+use crate::gui::icons::{Icon, icon_sm};
 use subtitle_fast_decoder::VideoMetadata;
 
 pub struct VideoControls {
@@ -538,10 +537,7 @@ impl Render for VideoControls {
             .rounded(px(999.0))
             .bg(playback_bg)
             .child(
-                IconComponent::new(playback_icon)
-                    .w(px(16.0))
-                    .h(px(16.0))
-                    .text_color(playback_icon_color)
+                icon_sm(playback_icon, playback_icon_color)
                     .map(|this| if !self.paused { this } else { this.ml(px(2.0)) }),
             );
         if interaction_enabled {

@@ -31,7 +31,6 @@ fn run_gui() -> Result<(), DecoderError> {
     Application::new()
         .with_assets(AppAssets)
         .run(|cx: &mut App| {
-            gpui_component::init(cx);
             let app = SubtitleFastApp::new(cx);
             app.open_window(cx);
             cx.activate(true);
