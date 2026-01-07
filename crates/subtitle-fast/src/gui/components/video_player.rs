@@ -4,7 +4,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use gpui::{Context, Frame, ObjectFit, Render, VideoHandle, Window, div, prelude::*, rgb, video};
+use futures_channel::mpsc::{
+    UnboundedReceiver as FrameReadyReceiver, UnboundedSender as FrameReadySender,
+    unbounded as unbounded_frame_channel,
+};
+use gpui::{
+    Context, Frame, ObjectFit, Render, Task, VideoHandle, Window, div, prelude::*, rgb, video,
+};
 use subtitle_fast_decoder::{
     Backend, Configuration, DecoderController, FrameStream, OutputFormat, SeekInfo, SeekMode,
     VideoFrame, VideoMetadata,
@@ -254,31 +260,73 @@ struct PreprocessorEntry {
 pub struct VideoPlayer {
     handle: VideoHandle,
     receiver: Receiver<Frame>,
+    info: VideoPlayerInfoHandle,
+    frame_ready_rx: Option<FrameReadyReceiver<()>>,
+    frame_ready_task: Option<Task<()>>,
 }
 
 impl VideoPlayer {
     pub fn new() -> (Self, VideoPlayerControlHandle, VideoPlayerInfoHandle) {
         let handle = VideoHandle::new();
         let (sender, receiver) = sync_channel(1);
+        let (frame_ready_tx, frame_ready_rx) = unbounded_frame_channel();
         let (command_tx, command_rx) = unbounded_channel();
         let control = VideoPlayerControlHandle::new(command_tx);
         let info = VideoPlayerInfoHandle::new();
 
-        spawn_decoder(sender.clone(), command_rx, info.clone());
+        spawn_decoder(sender.clone(), frame_ready_tx, command_rx, info.clone());
 
-        (Self { handle, receiver }, control, info)
+        (
+            Self {
+                handle,
+                receiver,
+                info: info.clone(),
+                frame_ready_rx: Some(frame_ready_rx),
+                frame_ready_task: None,
+            },
+            control,
+            info,
+        )
+    }
+
+    fn ensure_frame_listener(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.frame_ready_task.is_some() {
+            return;
+        }
+        let Some(mut frame_ready_rx) = self.frame_ready_rx.take() else {
+            return;
+        };
+        let entity_id = cx.entity_id();
+        let task = window.spawn(cx, async move |cx| {
+            while futures_util::StreamExt::next(&mut frame_ready_rx)
+                .await
+                .is_some()
+            {
+                cx.update(|_window, cx| {
+                    cx.notify(entity_id);
+                })
+                .ok();
+            }
+        });
+        self.frame_ready_task = Some(task);
     }
 }
 
 impl Render for VideoPlayer {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        window.request_animation_frame();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_frame_listener(window, cx);
         let mut latest = None;
         for frame in self.receiver.try_iter() {
             latest = Some(frame);
         }
         if let Some(frame) = latest {
             self.handle.submit(frame);
+        }
+        let snapshot = self.info.snapshot();
+        let active = (!snapshot.paused && !snapshot.ended) || snapshot.scrubbing;
+        if active {
+            println!("request animation frame");
+            window.request_animation_frame();
         }
         div().relative().size_full().bg(rgb(0x111111)).child(
             video(self.handle.clone())
@@ -465,6 +513,7 @@ fn handle_command(
 
 fn spawn_decoder(
     sender: SyncSender<Frame>,
+    frame_ready_tx: FrameReadySender<()>,
     mut command_rx: UnboundedReceiver<PlayerCommand>,
     info: VideoPlayerInfoHandle,
 ) {
@@ -571,7 +620,9 @@ fn spawn_decoder(
                             if let Some(cache) = last_frame.as_ref() {
                                 if let Some(gpui_frame) = frame_from_cache(cache, &preprocessors)
                                 {
-                                    let _ = sender.send(gpui_frame);
+                                    if sender.send(gpui_frame).is_ok() {
+                                        let _ = frame_ready_tx.unbounded_send(());
+                                    }
                                 }
                             }
                         }
@@ -618,7 +669,9 @@ fn spawn_decoder(
                             if let Some(cache) = last_frame.as_ref() {
                                 if let Some(gpui_frame) = frame_from_cache(cache, &preprocessors)
                                 {
-                                    let _ = sender.send(gpui_frame);
+                                    if sender.send(gpui_frame).is_ok() {
+                                        let _ = frame_ready_tx.unbounded_send(());
+                                    }
                                 }
                             }
                         }
@@ -660,7 +713,9 @@ fn spawn_decoder(
                             if let Some(cache) = last_frame.as_ref() {
                                 if let Some(gpui_frame) = frame_from_cache(cache, &preprocessors)
                                 {
-                                    let _ = sender.send(gpui_frame);
+                                    if sender.send(gpui_frame).is_ok() {
+                                        let _ = frame_ready_tx.unbounded_send(());
+                                    }
                                 }
                             }
                         }
@@ -750,6 +805,7 @@ fn spawn_decoder(
                                         if sender.send(gpui_frame).is_err() {
                                             break;
                                         }
+                                        let _ = frame_ready_tx.unbounded_send(());
                                     }
                                 }
                             }

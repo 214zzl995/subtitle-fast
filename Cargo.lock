@@ -5336,6 +5336,7 @@ dependencies = [
  "anyhow",
  "clap",
  "directories",
+ "futures-channel",
  "futures-util",
  "gpui",
  "indicatif 0.18.0",
