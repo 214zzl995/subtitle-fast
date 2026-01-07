@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::gui::components::{
-    CollapseDirection, ColorPicker, DragRange, DraggableEdge, FramePreprocessor, Nv12FrameInfo,
-    Sidebar, SidebarHandle, Titlebar, VideoControls, VideoLumaControls, VideoPlayer,
+    CollapseDirection, ColorPicker, DetectionControls, DragRange, DraggableEdge, FramePreprocessor,
+    Nv12FrameInfo, Sidebar, SidebarHandle, Titlebar, VideoControls, VideoLumaControls, VideoPlayer,
     VideoPlayerControlHandle, VideoPlayerInfoHandle, VideoRoiHandle, VideoRoiOverlay, VideoToolbar,
 };
 use crate::gui::icons::{Icon, icon_md, icon_sm};
@@ -78,6 +78,7 @@ impl SubtitleFastApp {
                         || sidebar_placeholder_content(DraggableEdge::Right),
                         cx,
                     );
+                    let detection_controls_view = cx.new(|_| DetectionControls::new());
                     let (right_panel, _) = Sidebar::create(
                         DraggableEdge::Left,
                         DragRange::new(px(200.0), px(480.0)),
@@ -85,7 +86,12 @@ impl SubtitleFastApp {
                         px(0.0),
                         Duration::from_millis(160),
                         px(SIDEBAR_DRAG_HIT_THICKNESS),
-                        || sidebar_placeholder_content(DraggableEdge::Left),
+                        {
+                            let detection_controls_view = detection_controls_view.clone();
+                            move || {
+                                detection_controls_sidebar_content(detection_controls_view.clone())
+                            }
+                        },
                         cx,
                     );
                     let (luma_controls, luma_handle) = VideoLumaControls::new();
@@ -166,6 +172,30 @@ fn sidebar_placeholder_content(edge: DraggableEdge) -> AnyElement {
     }
     .border_color(border_color);
     content.into_any_element()
+}
+
+fn detection_controls_sidebar_content(controls_view: Entity<DetectionControls>) -> AnyElement {
+    let border_width = px(SIDEBAR_BORDER_WIDTH);
+    let border_color = rgb(SIDEBAR_BORDER_COLOR);
+    div()
+        .flex()
+        .flex_col()
+        .size_full()
+        .bg(rgb(0x1a1a1a))
+        .border_l(border_width)
+        .border_color(border_color)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(12.0))
+                .pt(px(16.0))
+                .pb(px(16.0))
+                .pl(px(12.0))
+                .pr(px(12.0))
+                .child(controls_view),
+        )
+        .into_any_element()
 }
 
 pub struct MainWindow {

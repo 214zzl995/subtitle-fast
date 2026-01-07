@@ -1,4 +1,5 @@
 pub mod color_picker;
+pub mod detection_sidebar;
 pub mod sidebar;
 pub mod titlebar;
 pub mod video_controls;
@@ -8,6 +9,7 @@ pub mod video_roi_overlay;
 pub mod video_toolbar;
 
 pub use color_picker::{ColorPicker, ColorPickerHandle};
+pub use detection_sidebar::DetectionControls;
 pub use sidebar::{CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle};
 pub use titlebar::Titlebar;
 pub use video_controls::VideoControls;
