@@ -9,7 +9,7 @@ pub mod video_roi_overlay;
 pub mod video_toolbar;
 
 pub use color_picker::{ColorPicker, ColorPickerHandle};
-pub use detection_sidebar::{DetectionControls, DetectionHandle};
+pub use detection_sidebar::{DetectionControls, DetectionHandle, DetectionSidebar};
 pub use sidebar::{CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle};
 pub use titlebar::Titlebar;
 pub use video_controls::VideoControls;

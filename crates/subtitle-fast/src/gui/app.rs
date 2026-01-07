@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::gui::components::{
-    CollapseDirection, ColorPicker, DetectionControls, DetectionHandle, DragRange, DraggableEdge,
-    FramePreprocessor, Nv12FrameInfo, Sidebar, SidebarHandle, Titlebar, VideoControls,
-    VideoLumaControls, VideoPlayer, VideoPlayerControlHandle, VideoPlayerInfoHandle,
+    CollapseDirection, ColorPicker, DetectionControls, DetectionHandle, DetectionSidebar,
+    DragRange, DraggableEdge, FramePreprocessor, Nv12FrameInfo, Sidebar, SidebarHandle, Titlebar,
+    VideoControls, VideoLumaControls, VideoPlayer, VideoPlayerControlHandle, VideoPlayerInfoHandle,
     VideoRoiHandle, VideoRoiOverlay, VideoToolbar,
 };
 use crate::gui::icons::{Icon, icon_md, icon_sm};
@@ -82,6 +82,8 @@ impl SubtitleFastApp {
                     let detection_handle = DetectionHandle::new();
                     let detection_controls_view =
                         cx.new(|_| DetectionControls::new(detection_handle.clone()));
+                    let detection_sidebar_view =
+                        cx.new(|_| DetectionSidebar::new(detection_controls_view.clone()));
                     let (right_panel, _) = Sidebar::create(
                         DraggableEdge::Left,
                         DragRange::new(px(200.0), px(480.0)),
@@ -90,10 +92,8 @@ impl SubtitleFastApp {
                         Duration::from_millis(160),
                         px(SIDEBAR_DRAG_HIT_THICKNESS),
                         {
-                            let detection_controls_view = detection_controls_view.clone();
-                            move || {
-                                detection_controls_sidebar_content(detection_controls_view.clone())
-                            }
+                            let detection_sidebar_view = detection_sidebar_view.clone();
+                            move || detection_sidebar_content(detection_sidebar_view.clone())
                         },
                         cx,
                     );
@@ -180,7 +180,7 @@ fn sidebar_placeholder_content(edge: DraggableEdge) -> AnyElement {
     content.into_any_element()
 }
 
-fn detection_controls_sidebar_content(controls_view: Entity<DetectionControls>) -> AnyElement {
+fn detection_sidebar_content(panel_view: Entity<DetectionSidebar>) -> AnyElement {
     let border_width = px(SIDEBAR_BORDER_WIDTH);
     let border_color = rgb(SIDEBAR_BORDER_COLOR);
     div()
@@ -190,17 +190,7 @@ fn detection_controls_sidebar_content(controls_view: Entity<DetectionControls>) 
         .bg(rgb(0x1a1a1a))
         .border_l(border_width)
         .border_color(border_color)
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(12.0))
-                .pt(px(16.0))
-                .pb(px(16.0))
-                .pl(px(12.0))
-                .pr(px(12.0))
-                .child(controls_view),
-        )
+        .child(panel_view)
         .into_any_element()
 }
 
