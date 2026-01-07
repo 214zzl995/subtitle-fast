@@ -74,6 +74,8 @@ impl SubtitleFastApp {
                         CollapseDirection::Left,
                         px(0.0),
                         Duration::from_millis(160),
+                        px(SIDEBAR_DRAG_HIT_THICKNESS),
+                        || sidebar_placeholder_content(DraggableEdge::Right),
                         cx,
                     );
                     let (right_panel, _) = Sidebar::create(
@@ -82,6 +84,8 @@ impl SubtitleFastApp {
                         CollapseDirection::Right,
                         px(0.0),
                         Duration::from_millis(160),
+                        px(SIDEBAR_DRAG_HIT_THICKNESS),
+                        || sidebar_placeholder_content(DraggableEdge::Left),
                         cx,
                     );
                     let (luma_controls, luma_handle) = VideoLumaControls::new();
@@ -141,6 +145,28 @@ const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &[
 ];
 const VIDEO_AREA_HEIGHT_RATIO: f32 = 0.6;
 const REPLAY_PREPROCESSOR_KEY: &str = "replay-blur";
+const SIDEBAR_DRAG_HIT_THICKNESS: f32 = 6.0;
+const SIDEBAR_BORDER_WIDTH: f32 = 1.1;
+const SIDEBAR_BORDER_COLOR: u32 = 0x2b2b2b;
+
+fn sidebar_placeholder_content(edge: DraggableEdge) -> AnyElement {
+    let border_width = px(SIDEBAR_BORDER_WIDTH);
+    let border_color = rgb(SIDEBAR_BORDER_COLOR);
+    let content = div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size_full()
+        .bg(rgb(0x1a1a1a))
+        .text_color(rgb(0xf0f0f0))
+        .child("Sidebar");
+    let content = match edge {
+        DraggableEdge::Left => content.border_l(border_width),
+        DraggableEdge::Right => content.border_r(border_width),
+    }
+    .border_color(border_color);
+    content.into_any_element()
+}
 
 pub struct MainWindow {
     player: Option<Entity<VideoPlayer>>,
@@ -361,6 +387,7 @@ impl Render for MainWindow {
             .flex_col()
             .w_full()
             .h_full()
+            .bg(rgb(0x1b1b1b))
             .child(self.titlebar.clone())
             .child({
                 let mut video_frame = div()

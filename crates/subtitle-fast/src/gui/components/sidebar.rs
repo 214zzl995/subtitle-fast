@@ -3,8 +3,6 @@ use std::time::{Duration, Instant};
 use gpui::prelude::*;
 use gpui::*;
 
-const HANDLE_WIDTH: f32 = 6.0;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DraggableEdge {
     Left,
@@ -97,13 +95,25 @@ impl DraggableEdgeState {
     }
 }
 
-fn draggable_edge_handle(id: impl Into<ElementId>) -> Stateful<Div> {
-    div()
-        .w(px(HANDLE_WIDTH))
-        .h_full()
-        .bg(rgb(0x2b2b2b))
+fn draggable_edge_handle(
+    id: impl Into<ElementId>,
+    edge: DraggableEdge,
+    thickness: Pixels,
+) -> Stateful<Div> {
+    let mut handle = div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .w(thickness)
         .cursor_ew_resize()
-        .id(id)
+        .id(id);
+
+    handle = match edge {
+        DraggableEdge::Left => handle.left_0(),
+        DraggableEdge::Right => handle.right_0(),
+    };
+
+    handle
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,6 +161,8 @@ pub struct Sidebar {
     collapse_direction: CollapseDirection,
     collapsed_width: Pixels,
     collapse_duration: Duration,
+    drag_hit_thickness: Pixels,
+    content: Box<dyn Fn() -> AnyElement>,
     drag_state: DraggableEdgeState,
     visible_width: Pixels,
     animation: Option<CollapseAnimation>,
@@ -164,6 +176,8 @@ impl Sidebar {
         collapse_direction: CollapseDirection,
         collapsed_width: Pixels,
         collapse_duration: Duration,
+        drag_hit_thickness: Pixels,
+        content: impl Fn() -> AnyElement + 'static,
         cx: &mut App,
     ) -> (Entity<Self>, SidebarHandle) {
         let entity = cx.new(|_| {
@@ -173,6 +187,8 @@ impl Sidebar {
                 collapse_direction,
                 collapsed_width,
                 collapse_duration,
+                drag_hit_thickness,
+                Box::new(content),
             )
         });
         let handle = SidebarHandle::new(entity.downgrade());
@@ -185,16 +201,21 @@ impl Sidebar {
         collapse_direction: CollapseDirection,
         collapsed_width: Pixels,
         collapse_duration: Duration,
+        drag_hit_thickness: Pixels,
+        content: Box<dyn Fn() -> AnyElement>,
     ) -> Self {
         let drag_state = DraggableEdgeState::new(range);
         let visible_width = drag_state.width();
         let collapsed_width = collapsed_width.clamp(px(0.0), range.max);
+        let drag_hit_thickness = drag_hit_thickness.max(px(0.0));
         Self {
             edge,
             range,
             collapse_direction,
             collapsed_width,
             collapse_duration,
+            drag_hit_thickness,
+            content,
             drag_state,
             visible_width,
             animation: None,
@@ -274,10 +295,14 @@ impl Sidebar {
     }
 
     fn handle(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        draggable_edge_handle(("collapsible-sidebar-handle", cx.entity_id()))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::begin_drag))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::end_drag))
-            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::end_drag))
+        draggable_edge_handle(
+            ("collapsible-sidebar-handle", cx.entity_id()),
+            self.edge,
+            self.drag_hit_thickness,
+        )
+        .on_mouse_down(MouseButton::Left, cx.listener(Self::begin_drag))
+        .on_mouse_up(MouseButton::Left, cx.listener(Self::end_drag))
+        .on_mouse_up_out(MouseButton::Left, cx.listener(Self::end_drag))
     }
 }
 
@@ -316,31 +341,23 @@ impl Render for Sidebar {
         let current_width = self.visible_width;
         let anchor_width = self.drag_state.width();
 
+        let content_body = (self.content)();
         let content = div()
-            .flex_grow()
-            .h_full()
-            .bg(rgb(0x1a1a1a))
-            .items_center()
-            .justify_center()
-            .text_color(rgb(0xf0f0f0))
+            .relative()
+            .size_full()
             .id(("collapsible-sidebar-content", cx.entity_id()))
-            .child("Sidebar");
+            .child(content_body);
 
         let panel = div()
-            .flex()
-            .flex_row()
+            .relative()
             .h_full()
             .w(anchor_width)
             .min_w(anchor_width)
             .max_w(anchor_width)
             .flex_none()
-            .bg(rgb(0x1a1a1a))
-            .id(("collapsible-sidebar-panel", cx.entity_id()));
-
-        let panel = match self.edge {
-            DraggableEdge::Left => panel.child(self.handle(cx)).child(content),
-            DraggableEdge::Right => panel.child(content).child(self.handle(cx)),
-        };
+            .id(("collapsible-sidebar-panel", cx.entity_id()))
+            .child(self.handle(cx))
+            .child(content);
 
         let mut outer = div()
             .flex()
