@@ -260,7 +260,6 @@ struct PreprocessorEntry {
 pub struct VideoPlayer {
     handle: VideoHandle,
     receiver: Receiver<Frame>,
-    info: VideoPlayerInfoHandle,
     frame_ready_rx: Option<FrameReadyReceiver<()>>,
     frame_ready_task: Option<Task<()>>,
 }
@@ -280,7 +279,6 @@ impl VideoPlayer {
             Self {
                 handle,
                 receiver,
-                info: info.clone(),
                 frame_ready_rx: Some(frame_ready_rx),
                 frame_ready_task: None,
             },
@@ -321,12 +319,6 @@ impl Render for VideoPlayer {
         }
         if let Some(frame) = latest {
             self.handle.submit(frame);
-        }
-        let snapshot = self.info.snapshot();
-        let active = (!snapshot.paused && !snapshot.ended) || snapshot.scrubbing;
-        if active {
-            println!("request animation frame");
-            window.request_animation_frame();
         }
         div().relative().size_full().bg(rgb(0x111111)).child(
             video(self.handle.clone())
