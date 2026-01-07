@@ -25,6 +25,8 @@ enum VideoViewMode {
     Y,
 }
 
+const VIEW_PREPROCESSOR_KEY: &str = "video-view";
+
 pub struct VideoToolbar {
     controls: Option<VideoPlayerControlHandle>,
     roi_overlay: Option<Entity<VideoRoiOverlay>>,
@@ -162,23 +164,28 @@ impl VideoToolbar {
                 self.roi_handle.clone(),
             ) {
                 let grayscale = self.view == VideoViewMode::Y;
-                controls.set_preprocessor(frame_overlay_preprocessor(
-                    luma_handle,
-                    color_handle,
-                    roi_handle,
-                    OverlayOptions {
-                        highlight: self.highlight_visible,
-                        validator: self.validator_overlay_visible,
-                        grayscale,
-                    },
-                ));
+                controls.set_preprocessor(
+                    VIEW_PREPROCESSOR_KEY,
+                    frame_overlay_preprocessor(
+                        luma_handle,
+                        color_handle,
+                        roi_handle,
+                        OverlayOptions {
+                            highlight: self.highlight_visible,
+                            validator: self.validator_overlay_visible,
+                            grayscale,
+                        },
+                    ),
+                );
                 return;
             }
         }
 
         match self.view {
-            VideoViewMode::Yuv => controls.clear_preprocessor(),
-            VideoViewMode::Y => controls.set_preprocessor(y_plane_preprocessor()),
+            VideoViewMode::Yuv => controls.remove_preprocessor(VIEW_PREPROCESSOR_KEY),
+            VideoViewMode::Y => {
+                controls.set_preprocessor(VIEW_PREPROCESSOR_KEY, y_plane_preprocessor());
+            }
         }
     }
 

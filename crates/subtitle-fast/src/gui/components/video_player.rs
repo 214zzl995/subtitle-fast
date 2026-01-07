@@ -4,9 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use gpui::{
-    Context, Frame, ObjectFit, Render, VideoHandle, Window, div, hsla, prelude::*, px, rgb, video,
-};
+use gpui::{Context, Frame, ObjectFit, Render, VideoHandle, Window, div, prelude::*, rgb, video};
 use subtitle_fast_decoder::{
     Backend, Configuration, DecoderController, FrameStream, OutputFormat, SeekInfo, SeekMode,
     VideoFrame, VideoMetadata,
@@ -79,14 +77,17 @@ impl VideoPlayerControlHandle {
         let _ = self.sender.send(PlayerCommand::Replay);
     }
 
-    pub fn set_preprocessor(&self, preprocessor: FramePreprocessor) {
-        let _ = self
-            .sender
-            .send(PlayerCommand::SetPreprocessor(Some(preprocessor)));
+    pub fn set_preprocessor(&self, key: impl Into<String>, preprocessor: FramePreprocessor) {
+        let _ = self.sender.send(PlayerCommand::SetPreprocessor {
+            key: key.into(),
+            preprocessor,
+        });
     }
 
-    pub fn clear_preprocessor(&self) {
-        let _ = self.sender.send(PlayerCommand::SetPreprocessor(None));
+    pub fn remove_preprocessor(&self, key: impl Into<String>) {
+        let _ = self
+            .sender
+            .send(PlayerCommand::RemovePreprocessor(key.into()));
     }
 }
 
@@ -100,7 +101,11 @@ enum PlayerCommand {
     EndScrub,
     Seek(SeekInfo),
     Replay,
-    SetPreprocessor(Option<FramePreprocessor>),
+    SetPreprocessor {
+        key: String,
+        preprocessor: FramePreprocessor,
+    },
+    RemovePreprocessor(String),
 }
 
 #[derive(Clone)]
@@ -241,11 +246,14 @@ struct VideoPlayerInfoInner {
     playback_tx: watch::Sender<PlaybackState>,
 }
 
+struct PreprocessorEntry {
+    key: String,
+    hook: FramePreprocessor,
+}
+
 pub struct VideoPlayer {
     handle: VideoHandle,
     receiver: Receiver<Frame>,
-    control: VideoPlayerControlHandle,
-    info: VideoPlayerInfoHandle,
 }
 
 impl VideoPlayer {
@@ -258,21 +266,12 @@ impl VideoPlayer {
 
         spawn_decoder(sender.clone(), command_rx, info.clone());
 
-        (
-            Self {
-                handle,
-                receiver,
-                control: control.clone(),
-                info: info.clone(),
-            },
-            control,
-            info,
-        )
+        (Self { handle, receiver }, control, info)
     }
 }
 
 impl Render for VideoPlayer {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         window.request_animation_frame();
         let mut latest = None;
         for frame in self.receiver.try_iter() {
@@ -281,50 +280,12 @@ impl Render for VideoPlayer {
         if let Some(frame) = latest {
             self.handle.submit(frame);
         }
-        let snapshot = self.info.snapshot();
-        let show_replay = snapshot.ended && !snapshot.scrubbing;
-        let mut root = div().relative().size_full().bg(rgb(0x111111)).child(
+        div().relative().size_full().bg(rgb(0x111111)).child(
             video(self.handle.clone())
                 .object_fit(ObjectFit::Contain)
                 .w_full()
                 .h_full(),
-        );
-        if show_replay {
-            let replay_button = div()
-                .id(("replay-button", cx.entity_id()))
-                .flex()
-                .items_center()
-                .justify_center()
-                .px(px(20.0))
-                .py(px(10.0))
-                .rounded(px(999.0))
-                .border_1()
-                .border_color(hsla(0.0, 0.0, 1.0, 0.4))
-                .bg(hsla(0.0, 0.0, 0.1, 0.7))
-                .text_color(hsla(0.0, 0.0, 1.0, 0.9))
-                .cursor_pointer()
-                .child("Replay");
-            let control = self.control.clone();
-            let replay_button = replay_button.on_click(cx.listener(move |_, _, _, _| {
-                control.replay();
-            }));
-
-            root = root.child(
-                div()
-                    .id(("replay-overlay", cx.entity_id()))
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .bg(hsla(0.0, 0.0, 0.0, 0.5))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(replay_button),
-            );
-        }
-
-        root
+        )
     }
 }
 
@@ -402,7 +363,7 @@ fn handle_command(
     pending_seek_frame: &mut Option<u64>,
     seek_timing: &mut Option<SeekTiming>,
     open_requested: &mut bool,
-    preprocessor: &mut Option<FramePreprocessor>,
+    preprocessors: &mut Vec<PreprocessorEntry>,
     refresh_cached: &mut bool,
     info: &VideoPlayerInfoHandle,
 ) -> bool {
@@ -488,9 +449,15 @@ fn handle_command(
             *open_requested = true;
             info.reset_for_replay();
         }
-        PlayerCommand::SetPreprocessor(hook) => {
-            *preprocessor = hook;
-            *refresh_cached = true;
+        PlayerCommand::SetPreprocessor { key, preprocessor } => {
+            if upsert_preprocessor(preprocessors, key, preprocessor) {
+                *refresh_cached = true;
+            }
+        }
+        PlayerCommand::RemovePreprocessor(key) => {
+            if remove_preprocessor(preprocessors, &key) {
+                *refresh_cached = true;
+            }
         }
     }
     true
@@ -526,7 +493,7 @@ fn spawn_decoder(
             let mut pending_seek: Option<SeekInfo> = None;
             let mut pending_seek_frame: Option<u64> = None;
             let mut seek_timing: Option<SeekTiming> = None;
-            let mut preprocessor: Option<FramePreprocessor> = None;
+            let mut preprocessors: Vec<PreprocessorEntry> = Vec::new();
             let mut last_frame: Option<CachedFrame> = None;
 
             let mut started = false;
@@ -594,7 +561,7 @@ fn spawn_decoder(
                             &mut pending_seek_frame,
                             &mut seek_timing,
                             &mut open_requested,
-                            &mut preprocessor,
+                            &mut preprocessors,
                             &mut refresh_cached,
                             &info,
                         ) {
@@ -602,8 +569,7 @@ fn spawn_decoder(
                         }
                         if refresh_cached {
                             if let Some(cache) = last_frame.as_ref() {
-                                if let Some(gpui_frame) =
-                                    frame_from_cache(cache, preprocessor.as_ref())
+                                if let Some(gpui_frame) = frame_from_cache(cache, &preprocessors)
                                 {
                                     let _ = sender.send(gpui_frame);
                                 }
@@ -642,7 +608,7 @@ fn spawn_decoder(
                             &mut pending_seek_frame,
                             &mut seek_timing,
                             &mut open_requested,
-                            &mut preprocessor,
+                            &mut preprocessors,
                             &mut refresh_cached,
                             &info,
                         ) {
@@ -650,8 +616,7 @@ fn spawn_decoder(
                         }
                         if refresh_cached {
                             if let Some(cache) = last_frame.as_ref() {
-                                if let Some(gpui_frame) =
-                                    frame_from_cache(cache, preprocessor.as_ref())
+                                if let Some(gpui_frame) = frame_from_cache(cache, &preprocessors)
                                 {
                                     let _ = sender.send(gpui_frame);
                                 }
@@ -685,7 +650,7 @@ fn spawn_decoder(
                             &mut pending_seek_frame,
                             &mut seek_timing,
                             &mut open_requested,
-                            &mut preprocessor,
+                            &mut preprocessors,
                             &mut refresh_cached,
                             &info,
                         ) {
@@ -693,8 +658,7 @@ fn spawn_decoder(
                         }
                         if refresh_cached {
                             if let Some(cache) = last_frame.as_ref() {
-                                if let Some(gpui_frame) =
-                                    frame_from_cache(cache, preprocessor.as_ref())
+                                if let Some(gpui_frame) = frame_from_cache(cache, &preprocessors)
                                 {
                                     let _ = sender.send(gpui_frame);
                                 }
@@ -781,12 +745,11 @@ fn spawn_decoder(
 
                                 if let Some(cache) = cache_from_video_frame(&frame) {
                                     last_frame = Some(cache.clone());
-                                    if let Some(gpui_frame) =
-                                        frame_from_cache(&cache, preprocessor.as_ref())
+                                    if let Some(gpui_frame) = frame_from_cache(&cache, &preprocessors)
                                     {
-                                    if sender.send(gpui_frame).is_err() {
-                                        break;
-                                    }
+                                        if sender.send(gpui_frame).is_err() {
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -841,11 +804,21 @@ fn cache_from_video_frame(frame: &VideoFrame) -> Option<CachedFrame> {
     })
 }
 
-fn frame_from_cache(
-    cache: &CachedFrame,
-    preprocessor: Option<&FramePreprocessor>,
-) -> Option<Frame> {
-    if let Some(preprocessor) = preprocessor {
+fn frame_from_cache(cache: &CachedFrame, preprocessors: &[PreprocessorEntry]) -> Option<Frame> {
+    if preprocessors.is_empty() {
+        Frame::from_nv12(
+            cache.width,
+            cache.height,
+            cache.y_stride,
+            cache.uv_stride,
+            Arc::clone(&cache.y_plane),
+            Arc::clone(&cache.uv_plane),
+        )
+        .map_err(|err| {
+            eprintln!("failed to build NV12 frame: {err}");
+        })
+        .ok()
+    } else {
         let mut y_plane = cache.y_plane.as_ref().to_vec();
         let mut uv_plane = cache.uv_plane.as_ref().to_vec();
         let info = Nv12FrameInfo {
@@ -854,8 +827,10 @@ fn frame_from_cache(
             y_stride: cache.y_stride,
             uv_stride: cache.uv_stride,
         };
-        if !(preprocessor)(&mut y_plane, &mut uv_plane, info) {
-            return None;
+        for entry in preprocessors {
+            if !(entry.hook)(&mut y_plane, &mut uv_plane, info) {
+                return None;
+            }
         }
 
         Frame::from_nv12_owned(
@@ -870,18 +845,24 @@ fn frame_from_cache(
             eprintln!("failed to build NV12 frame: {err}");
         })
         .ok()
-    } else {
-        Frame::from_nv12(
-            cache.width,
-            cache.height,
-            cache.y_stride,
-            cache.uv_stride,
-            Arc::clone(&cache.y_plane),
-            Arc::clone(&cache.uv_plane),
-        )
-        .map_err(|err| {
-            eprintln!("failed to build NV12 frame: {err}");
-        })
-        .ok()
     }
+}
+
+fn upsert_preprocessor(
+    preprocessors: &mut Vec<PreprocessorEntry>,
+    key: String,
+    hook: FramePreprocessor,
+) -> bool {
+    if let Some(entry) = preprocessors.iter_mut().find(|entry| entry.key == key) {
+        entry.hook = hook;
+        return true;
+    }
+    preprocessors.push(PreprocessorEntry { key, hook });
+    true
+}
+
+fn remove_preprocessor(preprocessors: &mut Vec<PreprocessorEntry>, key: &str) -> bool {
+    let before = preprocessors.len();
+    preprocessors.retain(|entry| entry.key != key);
+    before != preprocessors.len()
 }

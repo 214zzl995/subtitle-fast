@@ -3,14 +3,15 @@ use gpui::*;
 use rust_embed::RustEmbed;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::gui::components::{
-    CollapseDirection, ColorPicker, DragRange, DraggableEdge, Sidebar, SidebarHandle, Titlebar,
-    VideoControls, VideoLumaControls, VideoPlayer, VideoPlayerInfoHandle, VideoRoiHandle,
-    VideoRoiOverlay, VideoToolbar,
+    CollapseDirection, ColorPicker, DragRange, DraggableEdge, FramePreprocessor, Nv12FrameInfo,
+    Sidebar, SidebarHandle, Titlebar, VideoControls, VideoLumaControls, VideoPlayer,
+    VideoPlayerControlHandle, VideoPlayerInfoHandle, VideoRoiHandle, VideoRoiOverlay, VideoToolbar,
 };
-use crate::gui::icons::{Icon, icon_md};
+use crate::gui::icons::{Icon, icon_md, icon_sm};
 
 #[derive(RustEmbed)]
 #[folder = "assets"]
@@ -139,11 +140,15 @@ const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mov", "mkv", "webm", "avi", "m4v", "mpg", "mpeg", "ts",
 ];
 const VIDEO_AREA_HEIGHT_RATIO: f32 = 0.6;
+const REPLAY_PREPROCESSOR_KEY: &str = "replay-blur";
 
 pub struct MainWindow {
     player: Option<Entity<VideoPlayer>>,
+    controls: Option<VideoPlayerControlHandle>,
     video_info: Option<VideoPlayerInfoHandle>,
     video_bounds: Option<Bounds<Pixels>>,
+    replay_visible: bool,
+    replay_dismissed: bool,
     titlebar: Entity<Titlebar>,
     left_panel: Entity<Sidebar>,
     _left_panel_handle: SidebarHandle,
@@ -170,8 +175,11 @@ impl MainWindow {
     ) -> Self {
         Self {
             player,
+            controls: None,
             video_info: None,
             video_bounds: None,
+            replay_visible: false,
+            replay_dismissed: false,
             titlebar,
             left_panel,
             _left_panel_handle: left_panel_handle,
@@ -258,7 +266,10 @@ impl MainWindow {
         let (player, controls, info) = VideoPlayer::new();
         controls.open(path);
         self.player = Some(cx.new(|_| player));
+        self.controls = Some(controls.clone());
         self.video_info = Some(info.clone());
+        self.replay_dismissed = false;
+        self.set_replay_visible(false, cx);
         let _ = self.controls_view.update(cx, |controls_view, cx| {
             controls_view.set_handles(Some(controls.clone()), Some(info.clone()));
             cx.notify();
@@ -273,6 +284,21 @@ impl MainWindow {
         let _ = self.roi_overlay.update(cx, |overlay, cx| {
             overlay.set_info_handle(Some(info), cx);
         });
+        cx.notify();
+    }
+
+    fn set_replay_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.replay_visible == visible {
+            return;
+        }
+        self.replay_visible = visible;
+        if let Some(controls) = self.controls.as_ref() {
+            if visible {
+                controls.set_preprocessor(REPLAY_PREPROCESSOR_KEY, replay_blur_preprocessor());
+            } else {
+                controls.remove_preprocessor(REPLAY_PREPROCESSOR_KEY);
+            }
+        }
         cx.notify();
     }
 
@@ -317,6 +343,18 @@ impl Render for MainWindow {
         let video_content = self.player.as_ref().map(|player| player.clone());
         let video_aspect = self.video_aspect();
         let frame_size = self.video_frame_size(total_height);
+        let ended = self
+            .video_info
+            .as_ref()
+            .map(|info| {
+                let snapshot = info.snapshot();
+                snapshot.ended && snapshot.has_frame && !snapshot.scrubbing
+            })
+            .unwrap_or(false);
+        if !ended {
+            self.replay_dismissed = false;
+        }
+        self.set_replay_visible(ended && !self.replay_dismissed, cx);
 
         div()
             .flex()
@@ -341,9 +379,50 @@ impl Render for MainWindow {
 
                 let frame_content = if let Some(video) = video_content {
                     let roi_overlay = self.roi_overlay.clone();
+                    let replay_overlay = if self.replay_visible {
+                        if let Some(controls) = self.controls.clone() {
+                            let overlay_label = div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .text_xs()
+                                .text_color(hsla(0.0, 0.0, 1.0, 0.85))
+                                .child(icon_sm(Icon::RotateCcw, hsla(0.0, 0.0, 1.0, 0.85)))
+                                .child("Replay");
+                            Some(
+                                div()
+                                    .id(("replay-overlay", cx.entity_id()))
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .size_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .child(overlay_label)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        controls.replay();
+                                        this.replay_dismissed = true;
+                                        this.set_replay_visible(false, cx);
+                                    })),
+                            )
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
                     let mut video_wrapper = div()
                         .relative()
-                        .child(div().relative().size_full().child(video).child(roi_overlay))
+                        .child(
+                            div()
+                                .relative()
+                                .size_full()
+                                .child(video)
+                                .child(roi_overlay)
+                                .children(replay_overlay),
+                        )
                         .id(("video-wrapper", cx.entity_id()));
 
                     if let Some(aspect) = video_aspect {
@@ -464,4 +543,89 @@ fn supported_video_extensions_detail() -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("Supported formats: {list}")
+}
+
+fn replay_blur_preprocessor() -> FramePreprocessor {
+    Arc::new(|y_plane, uv_plane, info| {
+        blur_nv12_plane(y_plane, uv_plane, info, 2);
+        true
+    })
+}
+
+fn blur_nv12_plane(y_plane: &mut [u8], uv_plane: &mut [u8], info: Nv12FrameInfo, passes: usize) {
+    for _ in 0..passes {
+        blur_luma(y_plane, info);
+        blur_chroma(uv_plane, info);
+    }
+}
+
+fn blur_luma(y_plane: &mut [u8], info: Nv12FrameInfo) {
+    let width = info.width as usize;
+    let height = info.height as usize;
+    let stride = info.y_stride;
+    if width == 0 || height == 0 || stride == 0 {
+        return;
+    }
+    if stride.saturating_mul(height) > y_plane.len() {
+        return;
+    }
+
+    let mut out = y_plane.to_vec();
+    for y in 0..height {
+        let y0 = y.saturating_sub(1);
+        let y2 = (y + 1).min(height - 1);
+        for x in 0..width {
+            let x0 = x.saturating_sub(1);
+            let x2 = (x + 1).min(width - 1);
+            let mut sum = 0u32;
+            for yy in [y0, y, y2] {
+                let row = yy * stride;
+                for xx in [x0, x, x2] {
+                    sum += y_plane[row + xx] as u32;
+                }
+            }
+            out[y * stride + x] = (sum / 9) as u8;
+        }
+    }
+    y_plane.copy_from_slice(&out);
+}
+
+fn blur_chroma(uv_plane: &mut [u8], info: Nv12FrameInfo) {
+    let width = info.width as usize;
+    let stride = info.uv_stride;
+    if width == 0 || stride == 0 {
+        return;
+    }
+    let uv_height = uv_plane.len() / stride;
+    if uv_height == 0 {
+        return;
+    }
+    let uv_width = ((width + 1) / 2).min(stride / 2);
+    if uv_width == 0 {
+        return;
+    }
+
+    let mut out = uv_plane.to_vec();
+    for y in 0..uv_height {
+        let y0 = y.saturating_sub(1);
+        let y2 = (y + 1).min(uv_height - 1);
+        for x in 0..uv_width {
+            let x0 = x.saturating_sub(1);
+            let x2 = (x + 1).min(uv_width - 1);
+            let mut sum_u = 0u32;
+            let mut sum_v = 0u32;
+            for yy in [y0, y, y2] {
+                let row = yy * stride;
+                for xx in [x0, x, x2] {
+                    let idx = row + xx * 2;
+                    sum_u += uv_plane[idx] as u32;
+                    sum_v += uv_plane[idx + 1] as u32;
+                }
+            }
+            let out_idx = y * stride + x * 2;
+            out[out_idx] = (sum_u / 9) as u8;
+            out[out_idx + 1] = (sum_v / 9) as u8;
+        }
+    }
+    uv_plane.copy_from_slice(&out);
 }
