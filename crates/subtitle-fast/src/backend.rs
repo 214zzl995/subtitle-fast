@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use subtitle_fast_decoder::{Backend, Configuration};
@@ -97,12 +98,12 @@ pub async fn run(plan: ExecutionPlan) -> Result<(), DecoderError> {
 }
 
 #[allow(dead_code)]
-pub async fn run_with_progress(
+pub(crate) async fn run_with_progress(
     mut plan: ExecutionPlan,
-    handle_id: u64,
+    progress: Arc<stage::progress_gui::GuiProgressInner>,
     pause_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), DecoderError> {
-    plan.pipeline.progress = crate::stage::progress_gui::progress_for_handle(handle_id);
+    plan.pipeline.progress = Some(progress);
     plan.pipeline.pause = Some(pause_rx);
     run(plan).await
 }

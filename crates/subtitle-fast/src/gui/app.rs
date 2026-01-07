@@ -105,6 +105,8 @@ impl SubtitleFastApp {
                     let toolbar_view = cx.new(|_| VideoToolbar::new());
                     let (roi_overlay, roi_handle) = VideoRoiOverlay::new();
                     let roi_overlay_view = cx.new(|_| roi_overlay);
+                    detection_handle.set_luma_handle(Some(luma_handle.clone()));
+                    detection_handle.set_roi_handle(Some(roi_handle.clone()));
                     let _ = toolbar_view.update(cx, |toolbar_view, cx| {
                         toolbar_view.set_luma_controls(
                             Some(luma_handle.clone()),
