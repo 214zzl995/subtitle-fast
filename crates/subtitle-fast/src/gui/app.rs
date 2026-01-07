@@ -547,7 +547,8 @@ fn supported_video_extensions_detail() -> String {
 
 fn replay_blur_preprocessor() -> FramePreprocessor {
     Arc::new(|y_plane, uv_plane, info| {
-        blur_nv12_plane(y_plane, uv_plane, info, 2);
+        blur_nv12_plane(y_plane, uv_plane, info, 6);
+        tint_nv12_plane(y_plane, uv_plane);
         true
     })
 }
@@ -628,4 +629,21 @@ fn blur_chroma(uv_plane: &mut [u8], info: Nv12FrameInfo) {
         }
     }
     uv_plane.copy_from_slice(&out);
+}
+
+fn tint_nv12_plane(y_plane: &mut [u8], uv_plane: &mut [u8]) {
+    for y in y_plane.iter_mut() {
+        *y = ((*y as u16 * 165) / 255) as u8;
+    }
+
+    for pair in uv_plane.chunks_exact_mut(2) {
+        let u = pair[0] as i16;
+        let v = pair[1] as i16;
+        let u_shift = (u - 128) * 80 / 100;
+        let v_shift = (v - 128) * 80 / 100;
+        let tinted_u = 128 + u_shift + 6;
+        let tinted_v = 128 + v_shift - 6;
+        pair[0] = tinted_u.clamp(0, 255) as u8;
+        pair[1] = tinted_v.clamp(0, 255) as u8;
+    }
 }
