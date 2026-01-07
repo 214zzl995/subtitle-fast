@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use futures_channel::mpsc::{
@@ -21,6 +20,7 @@ use tokio::sync::{
 };
 use tokio_stream::StreamExt;
 
+use crate::gui::runtime;
 #[derive(Clone, Copy, Debug)]
 pub struct Nv12FrameInfo {
     pub width: u32,
@@ -509,328 +509,322 @@ fn spawn_decoder(
     mut command_rx: UnboundedReceiver<PlayerCommand>,
     info: VideoPlayerInfoHandle,
 ) {
-    thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_time()
-            .build()
-            .expect("failed to create tokio runtime");
+    let info_fallback = info.clone();
+    let spawned = runtime::spawn(async move {
+        let available = Configuration::available_backends();
+        if available.is_empty() {
+            eprintln!(
+                "no decoder backend is compiled; enable a backend feature such as backend-ffmpeg"
+            );
+            info.update_playback(|state| state.ended = true);
+            return;
+        }
 
-        runtime.block_on(async move {
-            let available = Configuration::available_backends();
-            if available.is_empty() {
-                eprintln!(
-                    "no decoder backend is compiled; enable a backend feature such as backend-ffmpeg"
-                );
-                info.update_playback(|state| state.ended = true);
-                return;
-            }
+        let backend = available[0];
+        let mut input_path: Option<PathBuf> = None;
+        let mut session: Option<DecoderSession> = None;
+        let mut open_requested = false;
+        let mut paused = false;
+        let mut scrubbing = false;
+        let mut pending_seek: Option<SeekInfo> = None;
+        let mut pending_seek_frame: Option<u64> = None;
+        let mut seek_timing: Option<SeekTiming> = None;
+        let mut preprocessors: Vec<PreprocessorEntry> = Vec::new();
+        let mut last_frame: Option<CachedFrame> = None;
 
-            let backend = available[0];
-            let mut input_path: Option<PathBuf> = None;
-            let mut session: Option<DecoderSession> = None;
-            let mut open_requested = false;
-            let mut paused = false;
-            let mut scrubbing = false;
-            let mut pending_seek: Option<SeekInfo> = None;
-            let mut pending_seek_frame: Option<u64> = None;
-            let mut seek_timing: Option<SeekTiming> = None;
-            let mut preprocessors: Vec<PreprocessorEntry> = Vec::new();
-            let mut last_frame: Option<CachedFrame> = None;
+        let mut started = false;
+        let mut start_instant = Instant::now();
+        let mut first_timestamp: Option<Duration> = None;
+        let mut next_deadline = Instant::now();
+        let mut paused_at: Option<Instant> = None;
+        let mut active_serial: Option<u64> = None;
 
-            let mut started = false;
-            let mut start_instant = Instant::now();
-            let mut first_timestamp: Option<Duration> = None;
-            let mut next_deadline = Instant::now();
-            let mut paused_at: Option<Instant> = None;
-            let mut active_serial: Option<u64> = None;
-
-            loop {
-                if session.is_none() {
-                    if open_requested {
-                        let Some(input_path) = input_path.as_ref() else {
-                            open_requested = false;
-                            continue;
-                        };
-                        if !input_path.exists() {
-                            eprintln!("input video not found: {input_path:?}");
-                            info.update_playback(|state| state.ended = true);
-                            open_requested = false;
-                            continue;
-                        }
-                        let new_session = match open_session(backend, input_path, &info) {
-                            Some(session) => session,
-                            None => return,
-                        };
-
-                        if let Some(seek) = pending_seek.take() {
-                            match new_session.controller.seek(seek) {
-                                Ok(serial) => {
-                                    seek_timing = Some(SeekTiming {
-                                        serial,
-                                    });
-                                }
-                                Err(_) => {
-                                    pending_seek = Some(seek);
-                                    seek_timing = None;
-                                    open_requested = true;
-                                    continue;
-                                }
-                            }
-                        }
-
-                        info.update_playback(|state| state.ended = false);
+        loop {
+            if session.is_none() {
+                if open_requested {
+                    let Some(input_path) = input_path.as_ref() else {
                         open_requested = false;
-                        active_serial = None;
-                        started = false;
-                        first_timestamp = None;
-                        start_instant = Instant::now();
-                        next_deadline = start_instant;
-                        paused_at = None;
-                        session = Some(new_session);
-                    } else {
-                        let Some(command) = command_rx.recv().await else {
-                            break;
-                        };
-                        let mut refresh_cached = false;
-                        if !handle_command(
-                            command,
-                            session.as_ref(),
-                            &mut input_path,
-                            &mut paused,
-                            &mut scrubbing,
-                            &mut pending_seek,
-                            &mut pending_seek_frame,
-                            &mut seek_timing,
-                            &mut open_requested,
-                            &mut preprocessors,
-                            &mut refresh_cached,
-                            &info,
-                        ) {
-                            break;
-                        }
-                        if refresh_cached {
-                            if let Some(cache) = last_frame.as_ref() {
-                                if let Some(gpui_frame) = frame_from_cache(cache, &preprocessors)
-                                {
-                                    if sender.send(gpui_frame).is_ok() {
-                                        let _ = frame_ready_tx.unbounded_send(());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                let paused_like = paused || scrubbing;
-                if paused_like {
-                    if paused_at.is_none() {
-                        paused_at = Some(Instant::now());
-                    }
-                } else if let Some(paused_at) = paused_at.take() {
-                    let pause_duration = Instant::now().saturating_duration_since(paused_at);
-                    start_instant += pause_duration;
-                    next_deadline += pause_duration;
-                }
-
-                let allow_seek_frames = seek_timing.is_some();
-                if paused_like && !allow_seek_frames {
-                    let command = tokio::select! {
-                        cmd = command_rx.recv() => cmd,
-                        _ = tokio::time::sleep(Duration::from_millis(30)) => None,
+                        continue;
                     };
-                    if let Some(command) = command {
-                        let mut refresh_cached = false;
-                        if !handle_command(
-                            command,
-                            session.as_ref(),
-                            &mut input_path,
-                            &mut paused,
-                            &mut scrubbing,
-                            &mut pending_seek,
-                            &mut pending_seek_frame,
-                            &mut seek_timing,
-                            &mut open_requested,
-                            &mut preprocessors,
-                            &mut refresh_cached,
-                            &info,
-                        ) {
-                            break;
-                        }
-                        if refresh_cached {
-                            if let Some(cache) = last_frame.as_ref() {
-                                if let Some(gpui_frame) = frame_from_cache(cache, &preprocessors)
-                                {
-                                    if sender.send(gpui_frame).is_ok() {
-                                        let _ = frame_ready_tx.unbounded_send(());
-                                    }
-                                }
-                            }
-                        }
-                        if open_requested {
-                            session = None;
-                        }
+                    if !input_path.exists() {
+                        eprintln!("input video not found: {input_path:?}");
+                        info.update_playback(|state| state.ended = true);
+                        open_requested = false;
+                        continue;
                     }
-                    continue;
-                }
+                    let new_session = match open_session(backend, input_path, &info) {
+                        Some(session) => session,
+                        None => return,
+                    };
 
-                let (frame, frame_duration) = {
-                    let session = session.as_mut().expect("session missing");
-                    (session.stream.next(), session.frame_duration)
-                };
-                let mut restart_requested = false;
-                tokio::select! {
-                    cmd = command_rx.recv() => {
-                        let Some(command) = cmd else {
-                            break;
-                        };
-                        let mut refresh_cached = false;
-                        if !handle_command(
-                            command,
-                            session.as_ref(),
-                            &mut input_path,
-                            &mut paused,
-                            &mut scrubbing,
-                            &mut pending_seek,
-                            &mut pending_seek_frame,
-                            &mut seek_timing,
-                            &mut open_requested,
-                            &mut preprocessors,
-                            &mut refresh_cached,
-                            &info,
-                        ) {
-                            break;
-                        }
-                        if refresh_cached {
-                            if let Some(cache) = last_frame.as_ref() {
-                                if let Some(gpui_frame) = frame_from_cache(cache, &preprocessors)
-                                {
-                                    if sender.send(gpui_frame).is_ok() {
-                                        let _ = frame_ready_tx.unbounded_send(());
-                                    }
-                                }
+                    if let Some(seek) = pending_seek.take() {
+                        match new_session.controller.seek(seek) {
+                            Ok(serial) => {
+                                seek_timing = Some(SeekTiming { serial });
                             }
-                        }
-                        restart_requested = open_requested;
-                    }
-                    frame = frame => {
-                        match frame {
-                            Some(Ok(frame)) => {
-                                if let Some(pending) = seek_timing.as_ref().map(|entry| entry.serial) {
-                                    if frame.serial() != pending {
-                                        continue;
-                                    }
-                                }
-                                if active_serial != Some(frame.serial()) {
-                                    active_serial = Some(frame.serial());
-                                    started = false;
-                                    first_timestamp = None;
-                                    start_instant = Instant::now();
-                                    next_deadline = start_instant;
-                                    paused_at = None;
-                                }
-                                // Avoid a 1-frame UI flicker when the first frame after seek
-                                // lands within +/-1 of the requested target frame.
-                                let mut suppress_seek_frame = false;
-                                let clear_seek_timing = if let Some(timing) = seek_timing.as_ref() {
-                                    if timing.serial == frame.serial() {
-                                        if let (Some(target), Some(actual)) =
-                                            (pending_seek_frame, frame.index())
-                                        {
-                                            if actual.abs_diff(target) <= 1 {
-                                                suppress_seek_frame = true;
-                                            }
-                                        }
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                } else {
-                                    false
-                                };
-
-                                if clear_seek_timing {
-                                    pending_seek_frame = None;
-                                    seek_timing = None;
-                                }
-                                if !started {
-                                    if !paused_like {
-                                        start_instant = Instant::now();
-                                        next_deadline = start_instant;
-                                        started = true;
-                                    }
-                                }
-
-                                if let Some(timestamp) = frame.pts() {
-                                    let first = first_timestamp.get_or_insert(timestamp);
-                                    if !paused_like {
-                                        if let Some(delta) = timestamp.checked_sub(*first) {
-                                            let target = start_instant + delta;
-                                            let now = Instant::now();
-                                            if target > now {
-                                                tokio::time::sleep(target - now).await;
-                                            }
-                                        }
-                                    }
-                                } else if let Some(duration) = frame_duration {
-                                    if !paused_like {
-                                        let now = Instant::now();
-                                        if next_deadline > now {
-                                            tokio::time::sleep(next_deadline - now).await;
-                                        }
-                                        next_deadline += duration;
-                                    }
-                                }
-
-                                info.update_playback(|state| {
-                                    state.last_timestamp = frame.pts();
-                                    if !suppress_seek_frame {
-                                        state.last_frame_index = frame.index();
-                                    }
-                                    state.has_frame = true;
-                                });
-
-                                if let Some(cache) = cache_from_video_frame(&frame) {
-                                    last_frame = Some(cache.clone());
-                                    if let Some(gpui_frame) = frame_from_cache(&cache, &preprocessors)
-                                    {
-                                        if sender.send(gpui_frame).is_err() {
-                                            break;
-                                        }
-                                        let _ = frame_ready_tx.unbounded_send(());
-                                    }
-                                }
-                            }
-                            Some(Err(err)) => {
-                                eprintln!("decoder error: {err}");
-                                info.update_playback(|state| state.ended = true);
-                                session = None;
-                                open_requested = false;
+                            Err(_) => {
+                                pending_seek = Some(seek);
                                 seek_timing = None;
-                                continue;
-                            }
-                            None => {
-                                info.update_playback(|state| state.ended = true);
-                                session = None;
-                                open_requested = false;
-                                seek_timing = None;
+                                open_requested = true;
                                 continue;
                             }
                         }
                     }
-                }
 
-                if restart_requested {
-                    session = None;
-                    seek_timing = None;
+                    info.update_playback(|state| state.ended = false);
+                    open_requested = false;
                     active_serial = None;
                     started = false;
                     first_timestamp = None;
+                    start_instant = Instant::now();
+                    next_deadline = start_instant;
                     paused_at = None;
+                    session = Some(new_session);
+                } else {
+                    let Some(command) = command_rx.recv().await else {
+                        break;
+                    };
+                    let mut refresh_cached = false;
+                    if !handle_command(
+                        command,
+                        session.as_ref(),
+                        &mut input_path,
+                        &mut paused,
+                        &mut scrubbing,
+                        &mut pending_seek,
+                        &mut pending_seek_frame,
+                        &mut seek_timing,
+                        &mut open_requested,
+                        &mut preprocessors,
+                        &mut refresh_cached,
+                        &info,
+                    ) {
+                        break;
+                    }
+                    if refresh_cached {
+                        if let Some(cache) = last_frame.as_ref() {
+                            if let Some(gpui_frame) = frame_from_cache(cache, &preprocessors) {
+                                if sender.send(gpui_frame).is_ok() {
+                                    let _ = frame_ready_tx.unbounded_send(());
+                                }
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            let paused_like = paused || scrubbing;
+            if paused_like {
+                if paused_at.is_none() {
+                    paused_at = Some(Instant::now());
+                }
+            } else if let Some(paused_at) = paused_at.take() {
+                let pause_duration = Instant::now().saturating_duration_since(paused_at);
+                start_instant += pause_duration;
+                next_deadline += pause_duration;
+            }
+
+            let allow_seek_frames = seek_timing.is_some();
+            if paused_like && !allow_seek_frames {
+                let command = tokio::select! {
+                    cmd = command_rx.recv() => cmd,
+                    _ = tokio::time::sleep(Duration::from_millis(30)) => None,
+                };
+                if let Some(command) = command {
+                    let mut refresh_cached = false;
+                    if !handle_command(
+                        command,
+                        session.as_ref(),
+                        &mut input_path,
+                        &mut paused,
+                        &mut scrubbing,
+                        &mut pending_seek,
+                        &mut pending_seek_frame,
+                        &mut seek_timing,
+                        &mut open_requested,
+                        &mut preprocessors,
+                        &mut refresh_cached,
+                        &info,
+                    ) {
+                        break;
+                    }
+                    if refresh_cached {
+                        if let Some(cache) = last_frame.as_ref() {
+                            if let Some(gpui_frame) = frame_from_cache(cache, &preprocessors) {
+                                if sender.send(gpui_frame).is_ok() {
+                                    let _ = frame_ready_tx.unbounded_send(());
+                                }
+                            }
+                        }
+                    }
+                    if open_requested {
+                        session = None;
+                    }
+                }
+                continue;
+            }
+
+            let (frame, frame_duration) = {
+                let session = session.as_mut().expect("session missing");
+                (session.stream.next(), session.frame_duration)
+            };
+            let mut restart_requested = false;
+            tokio::select! {
+                cmd = command_rx.recv() => {
+                    let Some(command) = cmd else {
+                        break;
+                    };
+                    let mut refresh_cached = false;
+                    if !handle_command(
+                        command,
+                        session.as_ref(),
+                        &mut input_path,
+                        &mut paused,
+                        &mut scrubbing,
+                        &mut pending_seek,
+                        &mut pending_seek_frame,
+                        &mut seek_timing,
+                        &mut open_requested,
+                        &mut preprocessors,
+                        &mut refresh_cached,
+                        &info,
+                    ) {
+                        break;
+                    }
+                    if refresh_cached {
+                        if let Some(cache) = last_frame.as_ref() {
+                            if let Some(gpui_frame) = frame_from_cache(cache, &preprocessors)
+                            {
+                                if sender.send(gpui_frame).is_ok() {
+                                    let _ = frame_ready_tx.unbounded_send(());
+                                }
+                            }
+                        }
+                    }
+                    restart_requested = open_requested;
+                }
+                frame = frame => {
+                    match frame {
+                        Some(Ok(frame)) => {
+                            if let Some(pending) = seek_timing.as_ref().map(|entry| entry.serial) {
+                                if frame.serial() != pending {
+                                    continue;
+                                }
+                            }
+                            if active_serial != Some(frame.serial()) {
+                                active_serial = Some(frame.serial());
+                                started = false;
+                                first_timestamp = None;
+                                start_instant = Instant::now();
+                                next_deadline = start_instant;
+                                paused_at = None;
+                            }
+                            // Avoid a 1-frame UI flicker when the first frame after seek
+                            // lands within +/-1 of the requested target frame.
+                            let mut suppress_seek_frame = false;
+                            let clear_seek_timing = if let Some(timing) = seek_timing.as_ref() {
+                                if timing.serial == frame.serial() {
+                                    if let (Some(target), Some(actual)) =
+                                        (pending_seek_frame, frame.index())
+                                    {
+                                        if actual.abs_diff(target) <= 1 {
+                                            suppress_seek_frame = true;
+                                        }
+                                    }
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+
+                            if clear_seek_timing {
+                                pending_seek_frame = None;
+                                seek_timing = None;
+                            }
+                            if !started {
+                                if !paused_like {
+                                    start_instant = Instant::now();
+                                    next_deadline = start_instant;
+                                    started = true;
+                                }
+                            }
+
+                            if let Some(timestamp) = frame.pts() {
+                                let first = first_timestamp.get_or_insert(timestamp);
+                                if !paused_like {
+                                    if let Some(delta) = timestamp.checked_sub(*first) {
+                                        let target = start_instant + delta;
+                                        let now = Instant::now();
+                                        if target > now {
+                                            tokio::time::sleep(target - now).await;
+                                        }
+                                    }
+                                }
+                            } else if let Some(duration) = frame_duration {
+                                if !paused_like {
+                                    let now = Instant::now();
+                                    if next_deadline > now {
+                                        tokio::time::sleep(next_deadline - now).await;
+                                    }
+                                    next_deadline += duration;
+                                }
+                            }
+
+                            info.update_playback(|state| {
+                                state.last_timestamp = frame.pts();
+                                if !suppress_seek_frame {
+                                    state.last_frame_index = frame.index();
+                                }
+                                state.has_frame = true;
+                            });
+
+                            if let Some(cache) = cache_from_video_frame(&frame) {
+                                last_frame = Some(cache.clone());
+                                if let Some(gpui_frame) = frame_from_cache(&cache, &preprocessors)
+                                {
+                                    if sender.send(gpui_frame).is_err() {
+                                        break;
+                                    }
+                                    let _ = frame_ready_tx.unbounded_send(());
+                                }
+                            }
+                        }
+                        Some(Err(err)) => {
+                            eprintln!("decoder error: {err}");
+                            info.update_playback(|state| state.ended = true);
+                            session = None;
+                            open_requested = false;
+                            seek_timing = None;
+                            continue;
+                        }
+                        None => {
+                            info.update_playback(|state| state.ended = true);
+                            session = None;
+                            open_requested = false;
+                            seek_timing = None;
+                            continue;
+                        }
+                    }
                 }
             }
-        });
+
+            if restart_requested {
+                session = None;
+                seek_timing = None;
+                active_serial = None;
+                started = false;
+                first_timestamp = None;
+                paused_at = None;
+            }
+        }
     });
+    if spawned.is_none() {
+        eprintln!("video decoder spawn failed: tokio runtime not initialized");
+        info_fallback.update_playback(|state| state.ended = true);
+    }
 }
 
 fn cache_from_video_frame(frame: &VideoFrame) -> Option<CachedFrame> {

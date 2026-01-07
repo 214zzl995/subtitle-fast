@@ -7,9 +7,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::gui::components::{
-    CollapseDirection, ColorPicker, DetectionControls, DragRange, DraggableEdge, FramePreprocessor,
-    Nv12FrameInfo, Sidebar, SidebarHandle, Titlebar, VideoControls, VideoLumaControls, VideoPlayer,
-    VideoPlayerControlHandle, VideoPlayerInfoHandle, VideoRoiHandle, VideoRoiOverlay, VideoToolbar,
+    CollapseDirection, ColorPicker, DetectionControls, DetectionHandle, DragRange, DraggableEdge,
+    FramePreprocessor, Nv12FrameInfo, Sidebar, SidebarHandle, Titlebar, VideoControls,
+    VideoLumaControls, VideoPlayer, VideoPlayerControlHandle, VideoPlayerInfoHandle,
+    VideoRoiHandle, VideoRoiOverlay, VideoToolbar,
 };
 use crate::gui::icons::{Icon, icon_md, icon_sm};
 
@@ -78,7 +79,9 @@ impl SubtitleFastApp {
                         || sidebar_placeholder_content(DraggableEdge::Right),
                         cx,
                     );
-                    let detection_controls_view = cx.new(|_| DetectionControls::new());
+                    let detection_handle = DetectionHandle::new();
+                    let detection_controls_view =
+                        cx.new(|_| DetectionControls::new(detection_handle.clone()));
                     let (right_panel, _) = Sidebar::create(
                         DraggableEdge::Left,
                         DragRange::new(px(200.0), px(480.0)),
@@ -131,6 +134,7 @@ impl SubtitleFastApp {
                             left_panel,
                             left_panel_handle,
                             right_panel,
+                            detection_handle,
                             toolbar_view,
                             luma_controls_view,
                             controls_view,
@@ -209,6 +213,7 @@ pub struct MainWindow {
     left_panel: Entity<Sidebar>,
     _left_panel_handle: SidebarHandle,
     right_panel: Entity<Sidebar>,
+    detection_handle: DetectionHandle,
     toolbar_view: Entity<VideoToolbar>,
     luma_controls_view: Entity<VideoLumaControls>,
     controls_view: Entity<VideoControls>,
@@ -223,6 +228,7 @@ impl MainWindow {
         left_panel: Entity<Sidebar>,
         left_panel_handle: SidebarHandle,
         right_panel: Entity<Sidebar>,
+        detection_handle: DetectionHandle,
         toolbar_view: Entity<VideoToolbar>,
         luma_controls_view: Entity<VideoLumaControls>,
         controls_view: Entity<VideoControls>,
@@ -240,6 +246,7 @@ impl MainWindow {
             left_panel,
             _left_panel_handle: left_panel_handle,
             right_panel,
+            detection_handle,
             toolbar_view,
             luma_controls_view,
             controls_view,
@@ -320,10 +327,12 @@ impl MainWindow {
 
     fn load_video(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let (player, controls, info) = VideoPlayer::new();
+        let detection_path = path.clone();
         controls.open(path);
         self.player = Some(cx.new(|_| player));
         self.controls = Some(controls.clone());
         self.video_info = Some(info.clone());
+        self.detection_handle.set_video_path(Some(detection_path));
         self.replay_dismissed = false;
         self.set_replay_visible(false, cx);
         let _ = self.controls_view.update(cx, |controls_view, cx| {

@@ -1,11 +1,13 @@
 use gpui::prelude::*;
 use gpui::{
-    Context, Div, FontWeight, Hsla, InteractiveElement, Render, Stateful, Window, div, hsla, px,
+    Context, Div, FontWeight, Hsla, InteractiveElement, Render, Stateful, Task, Window, div, hsla,
+    px,
 };
+use tokio::sync::watch;
 
 use crate::gui::icons::{Icon, icon_sm};
 
-use super::DetectionRunState;
+use super::{DetectionHandle, DetectionRunState};
 
 #[derive(Clone, Copy)]
 struct ControlButtonStyle {
@@ -17,13 +19,21 @@ struct ControlButtonStyle {
 }
 
 pub struct DetectionControls {
+    handle: DetectionHandle,
     run_state: DetectionRunState,
+    state_rx: watch::Receiver<DetectionRunState>,
+    state_task: Option<Task<()>>,
 }
 
 impl DetectionControls {
-    pub fn new() -> Self {
+    pub fn new(handle: DetectionHandle) -> Self {
+        let state_rx = handle.subscribe_state();
+        let run_state = *state_rx.borrow();
         Self {
-            run_state: DetectionRunState::Idle,
+            handle,
+            run_state,
+            state_rx,
+            state_task: None,
         }
     }
 
@@ -31,29 +41,22 @@ impl DetectionControls {
         self.run_state
     }
 
-    pub fn set_run_state(&mut self, state: DetectionRunState, cx: &mut Context<Self>) {
-        if self.run_state == state {
-            return;
-        }
-        self.run_state = state;
+    fn start_detection(&mut self, cx: &mut Context<Self>) {
+        self.handle.start();
+        self.sync_run_state();
         cx.notify();
     }
 
-    fn start_detection(&mut self, cx: &mut Context<Self>) {
-        self.set_run_state(DetectionRunState::Running, cx);
-    }
-
     fn toggle_pause(&mut self, cx: &mut Context<Self>) {
-        let next = match self.run_state {
-            DetectionRunState::Running => DetectionRunState::Paused,
-            DetectionRunState::Paused => DetectionRunState::Running,
-            DetectionRunState::Idle => DetectionRunState::Idle,
-        };
-        self.set_run_state(next, cx);
+        self.handle.toggle_pause();
+        self.sync_run_state();
+        cx.notify();
     }
 
     fn cancel_detection(&mut self, cx: &mut Context<Self>) {
-        self.set_run_state(DetectionRunState::Idle, cx);
+        self.handle.cancel();
+        self.sync_run_state();
+        cx.notify();
     }
 
     fn control_button(
@@ -92,10 +95,41 @@ impl DetectionControls {
             .child(icon_view)
             .child(label)
     }
+
+    fn sync_run_state(&mut self) {
+        let next = *self.state_rx.borrow();
+        if self.run_state != next {
+            self.run_state = next;
+        }
+    }
+
+    fn ensure_state_listener(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state_task.is_some() {
+            return;
+        }
+        let mut state_rx = self.state_rx.clone();
+        let entity_id = cx.entity_id();
+        let task = window.spawn(cx, async move |cx| {
+            loop {
+                if state_rx.changed().await.is_err() {
+                    break;
+                }
+                if cx
+                    .update(|_window, cx| {
+                        cx.notify(entity_id);
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        self.state_task = Some(task);
+    }
 }
 
 impl Render for DetectionControls {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let container_id = ("detection-controls", cx.entity_id());
         let base_bg = hsla(0.0, 0.0, 0.15, 1.0);
         let base_hover = hsla(0.0, 0.0, 0.19, 1.0);
@@ -142,6 +176,9 @@ impl Render for DetectionControls {
             .w_full()
             .min_w(px(0.0))
             .max_w(px(200.0));
+
+        self.ensure_state_listener(window, cx);
+        self.sync_run_state();
 
         if self.run_state == DetectionRunState::Idle {
             let start_button = self

@@ -26,11 +26,12 @@ async fn main() -> Result<(), DecoderError> {
 #[cfg(feature = "gui")]
 fn run_gui() -> Result<(), DecoderError> {
     use gpui::*;
-    use subtitle_fast::gui::{AppAssets, SubtitleFastApp};
+    use subtitle_fast::gui::{AppAssets, SubtitleFastApp, runtime};
 
     Application::new()
         .with_assets(AppAssets)
         .run(|cx: &mut App| {
+            runtime::init(tokio::runtime::Handle::current());
             let app = SubtitleFastApp::new(cx);
             app.open_window(cx);
             cx.activate(true);
