@@ -363,6 +363,14 @@ impl Render for ColorPicker {
                     )
                     .child(option.name);
 
+                if index == 0 {
+                    row = row.rounded_tl(popup_radius).rounded_tr(popup_radius);
+                }
+
+                if index + 1 == options.len() {
+                    row = row.rounded_bl(popup_radius).rounded_br(popup_radius);
+                }
+
                 if index == self.selected {
                     row = row.bg(selected_bg);
                 }

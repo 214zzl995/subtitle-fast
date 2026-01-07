@@ -11,8 +11,8 @@ use crate::gui::components::{ColorPicker, ColorPickerHandle, VideoPlayerInfoHand
 
 const DEFAULT_LEFT_GAP: f32 = 0.20;
 const DEFAULT_RIGHT_GAP: f32 = 0.20;
-const DEFAULT_BOTTOM_GAP: f32 = 0.02;
-const DEFAULT_HEIGHT: f32 = 0.10;
+const DEFAULT_BOTTOM_GAP: f32 = 0.00;
+const DEFAULT_HEIGHT: f32 = 0.20;
 const BORDER_WIDTH: f32 = 1.5;
 const DASH_LENGTH: f32 = 8.0;
 const DASH_GAP: f32 = 3.0;
