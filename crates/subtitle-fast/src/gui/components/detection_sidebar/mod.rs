@@ -93,6 +93,10 @@ impl DetectionHandle {
         self.inner.run_state()
     }
 
+    pub fn has_video(&self) -> bool {
+        self.inner.has_video()
+    }
+
     pub fn start(&self) -> DetectionRunState {
         self.inner.start()
     }
@@ -156,6 +160,11 @@ impl DetectionPipelineInner {
 
     fn run_state(&self) -> DetectionRunState {
         *self.state_rx.borrow()
+    }
+
+    fn has_video(&self) -> bool {
+        let path = self.video_path.lock().ok().and_then(|slot| slot.clone());
+        path.is_some_and(|path| path.exists())
     }
 
     fn start(self: &Arc<Self>) -> DetectionRunState {
@@ -239,6 +248,7 @@ impl DetectionPipelineInner {
             }
         }
 
+        self.progress.reset();
         let _ = self.pause_tx.send(false);
         let _ = self.state_tx.send(DetectionRunState::Idle);
         DetectionRunState::Idle

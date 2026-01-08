@@ -53,7 +53,7 @@ impl Render for DetectionSidebar {
             .flex()
             .flex_col()
             .flex_none()
-            .h(relative(1.0 / 3.0))
+            .h(relative(0.4))
             .min_h(px(0.0))
             .gap(px(12.0))
             .child(self.section_title(

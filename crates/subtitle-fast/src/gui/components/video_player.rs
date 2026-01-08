@@ -188,7 +188,7 @@ impl VideoPlayerInfoHandle {
             state.has_frame = false;
             state.ended = false;
             state.scrubbing = false;
-            state.paused = false;
+            state.paused = true;
         });
     }
 
@@ -410,7 +410,7 @@ fn handle_command(
     match command {
         PlayerCommand::Open(path) => {
             *input_path = Some(path);
-            *paused = false;
+            *paused = true;
             *scrubbing = false;
             *pending_seek = None;
             *pending_seek_frame = None;

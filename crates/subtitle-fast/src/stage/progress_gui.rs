@@ -60,6 +60,10 @@ impl GuiProgressHandle {
         self.progress_rx.borrow().clone()
     }
 
+    pub fn reset(&self) {
+        self.inner.reset(None);
+    }
+
     pub(crate) fn inner(&self) -> Arc<GuiProgressInner> {
         Arc::clone(&self.inner)
     }

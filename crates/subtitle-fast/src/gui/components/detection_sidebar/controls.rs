@@ -143,6 +143,11 @@ impl Render for DetectionControls {
         let start_text = hsla(0.0, 0.0, 0.12, 1.0);
         let start_icon = hsla(0.0, 0.0, 0.18, 1.0);
 
+        let disabled_bg = hsla(0.0, 0.0, 0.2, 1.0);
+        let disabled_border = hsla(0.0, 0.0, 0.28, 1.0);
+        let disabled_text = hsla(0.0, 0.0, 1.0, 0.4);
+        let disabled_icon = hsla(0.0, 0.0, 1.0, 0.45);
+
         let cancel_bg = hsla(0.0, 0.5, 0.28, 1.0);
         let cancel_hover = hsla(0.0, 0.56, 0.34, 1.0);
         let cancel_border = hsla(0.0, 0.5, 0.38, 1.0);
@@ -168,6 +173,13 @@ impl Render for DetectionControls {
             text: base_text,
             icon: base_icon,
         };
+        let disabled_style = ControlButtonStyle {
+            bg: disabled_bg,
+            hover_bg: disabled_bg,
+            border: disabled_border,
+            text: disabled_text,
+            icon: disabled_icon,
+        };
 
         let mut row = div()
             .flex()
@@ -181,20 +193,31 @@ impl Render for DetectionControls {
         self.sync_run_state();
 
         if self.run_state == DetectionRunState::Idle {
+            let can_start = self.handle.has_video();
+            let style = if can_start {
+                start_style
+            } else {
+                disabled_style
+            };
             let start_button = self
                 .control_button(
                     "detection-control-start",
                     "Start Detection",
                     Icon::Scan,
-                    start_style,
+                    style,
                     cx,
                 )
                 .w_full()
-                .min_w(px(0.0))
-                .cursor_pointer()
-                .on_click(cx.listener(|this, _event, _window, cx| {
-                    this.start_detection(cx);
-                }));
+                .min_w(px(0.0));
+            let start_button = if can_start {
+                start_button
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.start_detection(cx);
+                    }))
+            } else {
+                start_button
+            };
             row = row.child(start_button);
         } else {
             let pause_icon = if self.run_state == DetectionRunState::Paused {

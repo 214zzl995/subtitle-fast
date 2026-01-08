@@ -33,8 +33,14 @@ impl DetectionMetrics {
 
     fn sync_progress(&mut self) {
         let next = self.handle.progress_snapshot();
-        if self.progress != next {
-            self.progress = next;
+        let run_state = self.handle.run_state();
+        let effective = if run_state.is_running() || next.completed {
+            next
+        } else {
+            GuiProgressUpdate::default()
+        };
+        if self.progress != effective {
+            self.progress = effective;
         }
     }
 
@@ -172,7 +178,7 @@ impl DetectionMetrics {
             .gap(px(8.0))
             .w_full()
             .min_w(px(0.0))
-            .text_size(px(11.0))
+            .text_size(px(10.0))
             .text_color(label_color)
             .child(left)
             .child(
@@ -250,10 +256,28 @@ impl Render for DetectionMetrics {
                 cx,
             ))
             .child(self.metric_row(
+                "detection-metric-seg",
+                Icon::Crosshair,
+                "Region",
+                Self::format_rate(self.progress.seg_ms, "ms"),
+                label_color,
+                value_color,
+                cx,
+            ))
+            .child(self.metric_row(
                 "detection-metric-ocr",
                 Icon::Sparkles,
                 "OCR",
                 Self::format_rate(self.progress.ocr_ms, "ms"),
+                label_color,
+                value_color,
+                cx,
+            ))
+            .child(self.metric_row(
+                "detection-metric-write",
+                Icon::Gauge,
+                "Write",
+                Self::format_rate(self.progress.writer_ms, "ms"),
                 label_color,
                 value_color,
                 cx,
@@ -266,6 +290,24 @@ impl Render for DetectionMetrics {
                 label_color,
                 value_color,
                 cx,
+            ))
+            .child(self.metric_row(
+                "detection-metric-merged",
+                Icon::Merge,
+                "Merged",
+                self.progress.merged.to_string(),
+                label_color,
+                value_color,
+                cx,
+            ))
+            .child(self.metric_row(
+                "detection-metric-empty-ocr",
+                Icon::ScanText,
+                "Empty OCR",
+                self.progress.ocr_empty.to_string(),
+                label_color,
+                value_color,
+                cx,
             ));
 
         div()
@@ -273,11 +315,6 @@ impl Render for DetectionMetrics {
             .flex()
             .flex_col()
             .gap(px(10.0))
-            .p(px(10.0))
-            .rounded(px(10.0))
-            .bg(rgb(0x151515))
-            .border_1()
-            .border_color(border)
             .child(progress_bar)
             .child(rows)
     }
