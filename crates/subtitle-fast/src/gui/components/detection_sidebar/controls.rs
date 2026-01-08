@@ -69,11 +69,11 @@ impl DetectionControls {
     ) -> Stateful<Div> {
         let icon_view = div()
             .flex_none()
-            .w(px(16.0))
-            .h(px(16.0))
+            .w(px(12.0))
+            .h(px(12.0))
             .items_center()
             .justify_center()
-            .child(icon_sm(icon, style.icon).w(px(14.0)).h(px(14.0)));
+            .child(icon_sm(icon, style.icon).w(px(12.0)).h(px(12.0)));
 
         div()
             .id((id, cx.entity_id()))
@@ -81,14 +81,14 @@ impl DetectionControls {
             .items_center()
             .justify_center()
             .gap(px(4.0))
-            .h(px(30.0))
-            .px(px(12.0))
+            .h(px(26.0))
+            .px(px(10.0))
             .min_w(px(0.0))
-            .rounded(px(8.0))
+            .rounded(px(7.0))
             .bg(style.bg)
             .border_1()
             .border_color(style.border)
-            .text_size(px(12.0))
+            .text_size(px(11.0))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(style.text)
             .hover(move |s| s.bg(style.hover_bg))
@@ -181,13 +181,7 @@ impl Render for DetectionControls {
             icon: disabled_icon,
         };
 
-        let mut row = div()
-            .flex()
-            .items_center()
-            .gap(px(10.0))
-            .w_full()
-            .min_w(px(0.0))
-            .max_w(px(200.0));
+        let mut row = div().flex().items_center().gap(px(10.0)).flex_none();
 
         self.ensure_state_listener(window, cx);
         self.sync_run_state();
@@ -207,7 +201,6 @@ impl Render for DetectionControls {
                     style,
                     cx,
                 )
-                .w_full()
                 .min_w(px(0.0));
             let start_button = if can_start {
                 start_button
@@ -239,7 +232,6 @@ impl Render for DetectionControls {
                     pause_style,
                     cx,
                 )
-                .flex_1()
                 .min_w(px(0.0))
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _event, _window, cx| {
@@ -253,7 +245,6 @@ impl Render for DetectionControls {
                     cancel_style,
                     cx,
                 )
-                .flex_1()
                 .min_w(px(0.0))
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _event, _window, cx| {
