@@ -69,27 +69,27 @@ impl DetectionControls {
     ) -> Stateful<Div> {
         let icon_view = div()
             .flex_none()
-            .w(px(12.0))
-            .h(px(12.0))
+            .w(px(14.0)) // Slightly larger icon area
+            .h(px(14.0))
             .items_center()
             .justify_center()
-            .child(icon_sm(icon, style.icon).w(px(12.0)).h(px(12.0)));
+            .child(icon_sm(icon, style.icon).w(px(14.0)).h(px(14.0)));
 
         div()
             .id((id, cx.entity_id()))
             .flex()
             .items_center()
             .justify_center()
-            .gap(px(4.0))
-            .h(px(26.0))
-            .px(px(10.0))
+            .gap(px(6.0))
+            .h(px(28.0))
+            .px(px(12.0))
             .min_w(px(0.0))
-            .rounded(px(7.0))
+            .rounded(px(6.0))
             .bg(style.bg)
             .border_1()
             .border_color(style.border)
-            .text_size(px(11.0))
-            .font_weight(FontWeight::SEMIBOLD)
+            .text_size(px(12.0))
+            .font_weight(FontWeight::MEDIUM)
             .text_color(style.text)
             .hover(move |s| s.bg(style.hover_bg))
             .child(icon_view)
@@ -131,26 +131,23 @@ impl DetectionControls {
 impl Render for DetectionControls {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let container_id = ("detection-controls", cx.entity_id());
-        let base_bg = hsla(0.0, 0.0, 0.15, 1.0);
-        let base_hover = hsla(0.0, 0.0, 0.19, 1.0);
-        let base_border = hsla(0.0, 0.0, 0.23, 1.0);
-        let base_text = hsla(0.0, 0.0, 1.0, 0.9);
-        let base_icon = hsla(0.0, 0.0, 1.0, 0.85);
 
-        let start_bg = hsla(0.0, 0.0, 0.86, 1.0);
-        let start_hover = hsla(0.0, 0.0, 0.92, 1.0);
-        let start_border = hsla(0.0, 0.0, 0.78, 1.0);
-        let start_text = hsla(0.0, 0.0, 0.12, 1.0);
-        let start_icon = hsla(0.0, 0.0, 0.18, 1.0);
+        let start_bg = hsla(0.0, 0.0, 0.92, 1.0);
+        let start_hover = hsla(0.0, 0.0, 1.0, 1.0);
+        let start_border = hsla(0.0, 0.0, 0.80, 1.0);
+        let start_text = hsla(0.0, 0.0, 0.10, 1.0);
+        let start_icon = hsla(0.0, 0.0, 0.10, 1.0);
 
-        let disabled_bg = hsla(0.0, 0.0, 0.2, 1.0);
-        let disabled_border = hsla(0.0, 0.0, 0.28, 1.0);
-        let disabled_text = hsla(0.0, 0.0, 1.0, 0.4);
-        let disabled_icon = hsla(0.0, 0.0, 1.0, 0.45);
+        let disabled_bg = hsla(0.0, 0.0, 0.25, 1.0);
+        let disabled_border = hsla(0.0, 0.0, 0.30, 1.0);
+        let disabled_text = hsla(0.0, 0.0, 0.6, 1.0);
+        let disabled_icon = hsla(0.0, 0.0, 0.6, 0.8);
 
-        let cancel_bg = hsla(0.0, 0.5, 0.28, 1.0);
-        let cancel_hover = hsla(0.0, 0.56, 0.34, 1.0);
-        let cancel_border = hsla(0.0, 0.5, 0.38, 1.0);
+        let cancel_bg = hsla(0.0, 0.72, 0.51, 1.0);
+        let cancel_hover = hsla(0.0, 0.78, 0.56, 1.0);
+        let cancel_border = hsla(0.0, 0.60, 0.45, 1.0);
+        let cancel_text = hsla(0.0, 0.0, 1.0, 1.0);
+        let cancel_icon = hsla(0.0, 0.0, 1.0, 0.95);
 
         let start_style = ControlButtonStyle {
             bg: start_bg,
@@ -160,18 +157,18 @@ impl Render for DetectionControls {
             icon: start_icon,
         };
         let pause_style = ControlButtonStyle {
-            bg: base_bg,
-            hover_bg: base_hover,
-            border: base_border,
-            text: base_text,
-            icon: base_icon,
+            bg: start_bg,
+            hover_bg: start_hover,
+            border: start_border,
+            text: start_text,
+            icon: start_icon,
         };
         let cancel_style = ControlButtonStyle {
             bg: cancel_bg,
             hover_bg: cancel_hover,
             border: cancel_border,
-            text: base_text,
-            icon: base_icon,
+            text: cancel_text,
+            icon: cancel_icon,
         };
         let disabled_style = ControlButtonStyle {
             bg: disabled_bg,
@@ -181,7 +178,7 @@ impl Render for DetectionControls {
             icon: disabled_icon,
         };
 
-        let mut row = div().flex().items_center().gap(px(10.0)).flex_none();
+        let mut row = div().flex().items_center().gap(px(8.0)).w_full();
 
         self.ensure_state_listener(window, cx);
         self.sync_run_state();
@@ -193,7 +190,7 @@ impl Render for DetectionControls {
             } else {
                 disabled_style
             };
-            let start_button = self
+            let mut start_button = self
                 .control_button(
                     "detection-control-start",
                     "Start Detection",
@@ -201,16 +198,15 @@ impl Render for DetectionControls {
                     style,
                     cx,
                 )
-                .min_w(px(0.0));
-            let start_button = if can_start {
-                start_button
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _event, _window, cx| {
+                .w_full();
+
+            if can_start {
+                start_button = start_button.cursor_pointer().on_click(cx.listener(
+                    |this, _event, _window, cx| {
                         this.start_detection(cx);
-                    }))
-            } else {
-                start_button
-            };
+                    },
+                ));
+            }
             row = row.child(start_button);
         } else {
             let pause_icon = if self.run_state == DetectionRunState::Paused {
@@ -232,7 +228,7 @@ impl Render for DetectionControls {
                     pause_style,
                     cx,
                 )
-                .min_w(px(0.0))
+                .flex_1()
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _event, _window, cx| {
                     this.toggle_pause(cx);
@@ -245,7 +241,7 @@ impl Render for DetectionControls {
                     cancel_style,
                     cx,
                 )
-                .min_w(px(0.0))
+                .flex_1()
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _event, _window, cx| {
                     this.cancel_detection(cx);
