@@ -16,9 +16,11 @@ use subtitle_fast_types::{DecoderError, RoiConfig};
 use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET};
 
 pub mod controls;
+pub mod metrics;
 pub mod panel;
 
 pub use controls::DetectionControls;
+pub use metrics::DetectionMetrics;
 pub use panel::DetectionSidebar;
 
 const DEFAULT_SAMPLES_PER_SECOND: u32 = 7;

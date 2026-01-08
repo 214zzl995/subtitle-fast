@@ -7,10 +7,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::gui::components::{
-    CollapseDirection, ColorPicker, DetectionControls, DetectionHandle, DetectionSidebar,
-    DragRange, DraggableEdge, FramePreprocessor, Nv12FrameInfo, Sidebar, SidebarHandle, Titlebar,
-    VideoControls, VideoLumaControls, VideoPlayer, VideoPlayerControlHandle, VideoPlayerInfoHandle,
-    VideoRoiHandle, VideoRoiOverlay, VideoToolbar,
+    CollapseDirection, ColorPicker, DetectionControls, DetectionHandle, DetectionMetrics,
+    DetectionSidebar, DragRange, DraggableEdge, FramePreprocessor, Nv12FrameInfo, Sidebar,
+    SidebarHandle, Titlebar, VideoControls, VideoLumaControls, VideoPlayer,
+    VideoPlayerControlHandle, VideoPlayerInfoHandle, VideoRoiHandle, VideoRoiOverlay, VideoToolbar,
 };
 use crate::gui::icons::{Icon, icon_md, icon_sm};
 
@@ -82,8 +82,14 @@ impl SubtitleFastApp {
                     let detection_handle = DetectionHandle::new();
                     let detection_controls_view =
                         cx.new(|_| DetectionControls::new(detection_handle.clone()));
-                    let detection_sidebar_view =
-                        cx.new(|_| DetectionSidebar::new(detection_controls_view.clone()));
+                    let detection_metrics_view =
+                        cx.new(|_| DetectionMetrics::new(detection_handle.clone()));
+                    let detection_sidebar_view = cx.new(|_| {
+                        DetectionSidebar::new(
+                            detection_metrics_view.clone(),
+                            detection_controls_view.clone(),
+                        )
+                    });
                     let (right_panel, _) = Sidebar::create(
                         DraggableEdge::Left,
                         DragRange::new(px(200.0), px(480.0)),

@@ -3,15 +3,22 @@ use gpui::{Context, Entity, FontWeight, Render, Window, div, hsla, px, relative}
 
 use crate::gui::icons::{Icon, icon_sm};
 
-use super::DetectionControls;
+use super::{DetectionControls, DetectionMetrics};
 
 pub struct DetectionSidebar {
+    metrics_view: Entity<DetectionMetrics>,
     controls_view: Entity<DetectionControls>,
 }
 
 impl DetectionSidebar {
-    pub fn new(controls_view: Entity<DetectionControls>) -> Self {
-        Self { controls_view }
+    pub fn new(
+        metrics_view: Entity<DetectionMetrics>,
+        controls_view: Entity<DetectionControls>,
+    ) -> Self {
+        Self {
+            metrics_view,
+            controls_view,
+        }
     }
 
     fn section_title(
@@ -56,6 +63,7 @@ impl Render for DetectionSidebar {
                 title_color,
                 cx,
             ))
+            .child(self.metrics_view.clone())
             .child(self.controls_view.clone());
 
         let lower = div()
