@@ -92,7 +92,7 @@ impl SubtitleFastApp {
                     });
                     let (right_panel, _) = Sidebar::create(
                         DraggableEdge::Left,
-                        DragRange::new(px(200.0), px(480.0)),
+                        DragRange::new(px(260.0), px(560.0)),
                         CollapseDirection::Right,
                         px(0.0),
                         Duration::from_millis(160),
