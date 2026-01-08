@@ -1,19 +1,19 @@
-use std::fmt::Write as _;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
+use futures_util::StreamExt;
 use tokio::sync::{broadcast, oneshot, watch};
 
-use crate::backend::{self, ExecutionPlan};
 use crate::gui::components::{VideoLumaHandle, VideoRoiHandle};
 use crate::gui::runtime;
 use crate::settings::{DecoderSettings, DetectionSettings, EffectiveSettings, OutputSettings};
-use crate::stage::PipelineConfig;
-use crate::stage::progress_gui::{GuiProgressHandle, GuiProgressUpdate, GuiSubtitleEvent};
-use subtitle_fast_decoder::Configuration;
+use crate::stage::{
+    self, MergedSubtitle, PipelineConfig, PipelineHandle, PipelineProgress, SubtitleUpdate,
+    SubtitleUpdateKind, TimedSubtitle,
+};
+use subtitle_fast_decoder::{Backend, Configuration};
 use subtitle_fast_types::{DecoderError, RoiConfig};
 use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET};
 
@@ -49,7 +49,8 @@ impl DetectionRunState {
 #[derive(Clone, Debug)]
 pub enum SubtitleMessage {
     Reset,
-    New(GuiSubtitleEvent),
+    New(TimedSubtitle),
+    Updated(TimedSubtitle),
 }
 
 #[derive(Clone)]
@@ -60,13 +61,14 @@ pub struct DetectionHandle {
 impl DetectionHandle {
     pub fn new() -> Self {
         let (state_tx, state_rx) = watch::channel(DetectionRunState::Idle);
-        let (pause_tx, _pause_rx) = watch::channel(false);
+        let (progress_tx, progress_rx) = watch::channel(PipelineProgress::default());
         let (subtitle_tx, _subtitle_rx) = broadcast::channel(128);
         let inner = Arc::new(DetectionPipelineInner {
             state_tx,
             state_rx,
-            pause_tx,
-            progress: GuiProgressHandle::new(),
+            pause_handle: Mutex::new(None),
+            progress_tx,
+            progress_rx,
             video_path: Mutex::new(None),
             luma_handle: Mutex::new(None),
             roi_handle: Mutex::new(None),
@@ -74,7 +76,6 @@ impl DetectionHandle {
             subtitle_tx,
             subtitles: Mutex::new(Vec::new()),
         });
-        DetectionPipelineInner::start_subtitle_listener(Arc::clone(&inner));
         Self { inner }
     }
 
@@ -94,11 +95,11 @@ impl DetectionHandle {
         self.inner.subscribe_state()
     }
 
-    pub fn subscribe_progress(&self) -> watch::Receiver<GuiProgressUpdate> {
+    pub fn subscribe_progress(&self) -> watch::Receiver<PipelineProgress> {
         self.inner.subscribe_progress()
     }
 
-    pub fn progress_snapshot(&self) -> GuiProgressUpdate {
+    pub fn progress_snapshot(&self) -> PipelineProgress {
         self.inner.progress_snapshot()
     }
 
@@ -126,7 +127,7 @@ impl DetectionHandle {
         self.inner.subscribe_subtitles()
     }
 
-    pub fn subtitles_snapshot(&self) -> Vec<GuiSubtitleEvent> {
+    pub fn subtitles_snapshot(&self) -> Vec<TimedSubtitle> {
         self.inner.subtitles_snapshot()
     }
 
@@ -152,14 +153,15 @@ impl Default for DetectionHandle {
 struct DetectionPipelineInner {
     state_tx: watch::Sender<DetectionRunState>,
     state_rx: watch::Receiver<DetectionRunState>,
-    pause_tx: watch::Sender<bool>,
-    progress: GuiProgressHandle,
+    pause_handle: Mutex<Option<PipelineHandle>>,
+    progress_tx: watch::Sender<PipelineProgress>,
+    progress_rx: watch::Receiver<PipelineProgress>,
     video_path: Mutex<Option<PathBuf>>,
     luma_handle: Mutex<Option<VideoLumaHandle>>,
     roi_handle: Mutex<Option<VideoRoiHandle>>,
     cancel_tx: Mutex<Option<oneshot::Sender<()>>>,
     subtitle_tx: broadcast::Sender<SubtitleMessage>,
-    subtitles: Mutex<Vec<GuiSubtitleEvent>>,
+    subtitles: Mutex<Vec<MergedSubtitle>>,
 }
 
 impl DetectionPipelineInner {
@@ -185,12 +187,12 @@ impl DetectionPipelineInner {
         self.state_rx.clone()
     }
 
-    fn subscribe_progress(&self) -> watch::Receiver<GuiProgressUpdate> {
-        self.progress.subscribe()
+    fn subscribe_progress(&self) -> watch::Receiver<PipelineProgress> {
+        self.progress_rx.clone()
     }
 
-    fn progress_snapshot(&self) -> GuiProgressUpdate {
-        self.progress.snapshot()
+    fn progress_snapshot(&self) -> PipelineProgress {
+        self.progress_rx.borrow().clone()
     }
 
     fn run_state(&self) -> DetectionRunState {
@@ -229,7 +231,7 @@ impl DetectionPipelineInner {
             },
             output: OutputSettings { path: None },
         };
-        let plan = match build_execution_plan(&path, &settings) {
+        let plan = match build_detection_plan(&path, &settings) {
             Ok(plan) => plan,
             Err(err) => {
                 eprintln!("detection start failed: {err}");
@@ -237,11 +239,10 @@ impl DetectionPipelineInner {
             }
         };
 
-        let pause_rx = self.pause_tx.subscribe();
         let (cancel_tx, cancel_rx) = oneshot::channel();
 
         let inner = Arc::clone(self);
-        if runtime::spawn(run_detection_task(inner, plan, pause_rx, cancel_rx)).is_none() {
+        if runtime::spawn(run_detection_task(inner, plan, cancel_rx)).is_none() {
             eprintln!("detection start failed: tokio runtime not initialized");
             let _ = self.state_tx.send(DetectionRunState::Idle);
             return self.run_state();
@@ -252,20 +253,24 @@ impl DetectionPipelineInner {
         }
 
         self.reset_subtitles();
-        let _ = self.pause_tx.send(false);
+        self.update_progress(PipelineProgress::default());
         let _ = self.state_tx.send(DetectionRunState::Running);
         DetectionRunState::Running
     }
 
     fn toggle_pause(&self) -> DetectionRunState {
+        let Some(handle) = self.pause_handle.lock().ok().and_then(|slot| slot.clone()) else {
+            return self.run_state();
+        };
+
         match self.run_state() {
             DetectionRunState::Running => {
-                let _ = self.pause_tx.send(true);
+                handle.set_paused(true);
                 let _ = self.state_tx.send(DetectionRunState::Paused);
                 DetectionRunState::Paused
             }
             DetectionRunState::Paused => {
-                let _ = self.pause_tx.send(false);
+                handle.set_paused(false);
                 let _ = self.state_tx.send(DetectionRunState::Running);
                 DetectionRunState::Running
             }
@@ -284,18 +289,79 @@ impl DetectionPipelineInner {
             }
         }
 
-        self.progress.reset();
+        self.clear_pause(false);
+        self.update_progress(PipelineProgress::default());
         self.reset_subtitles();
-        let _ = self.pause_tx.send(false);
+        if let Ok(mut pause_slot) = self.pause_handle.lock() {
+            *pause_slot = None;
+        }
         let _ = self.state_tx.send(DetectionRunState::Idle);
         DetectionRunState::Idle
     }
 
     fn finish(&self) {
-        let _ = self.pause_tx.send(false);
-        let _ = self.state_tx.send(DetectionRunState::Idle);
+        self.clear_pause(false);
+        if let Ok(mut pause_slot) = self.pause_handle.lock() {
+            *pause_slot = None;
+        }
         if let Ok(mut slot) = self.cancel_tx.lock() {
             *slot = None;
+        }
+        let _ = self.state_tx.send(DetectionRunState::Idle);
+    }
+
+    fn set_pause_handle(&self, handle: PipelineHandle) {
+        if let Ok(mut slot) = self.pause_handle.lock() {
+            *slot = Some(handle);
+        }
+    }
+
+    fn clear_pause(&self, paused: bool) {
+        if let Ok(slot) = self.pause_handle.lock() {
+            if let Some(handle) = slot.as_ref() {
+                handle.set_paused(paused);
+            }
+        }
+    }
+
+    fn update_progress(&self, progress: PipelineProgress) {
+        let _ = self.progress_tx.send_if_modified(|current| {
+            if *current == progress {
+                return false;
+            }
+            *current = progress;
+            true
+        });
+    }
+
+    fn apply_updates(&self, updates: &[SubtitleUpdate]) {
+        if updates.is_empty() {
+            return;
+        }
+
+        if let Ok(mut slot) = self.subtitles.lock() {
+            for update in updates {
+                match update.kind {
+                    SubtitleUpdateKind::New => slot.push(update.subtitle.clone()),
+                    SubtitleUpdateKind::Updated => {
+                        if let Some(existing) = slot
+                            .iter_mut()
+                            .find(|subtitle| subtitle.id == update.subtitle.id)
+                        {
+                            *existing = update.subtitle.clone();
+                        } else {
+                            slot.push(update.subtitle.clone());
+                        }
+                    }
+                }
+
+                let timed = update.subtitle.as_timed();
+                let message = match update.kind {
+                    SubtitleUpdateKind::New => SubtitleMessage::New(timed),
+                    SubtitleUpdateKind::Updated => SubtitleMessage::Updated(timed),
+                };
+                let _ = self.subtitle_tx.send(message);
+            }
         }
     }
 
@@ -331,43 +397,6 @@ impl DetectionPipelineInner {
         }
     }
 
-    fn start_subtitle_listener(inner: Arc<Self>) {
-        let task = runtime::spawn(async move {
-            let mut progress_rx = inner.progress.subscribe();
-            let mut state_rx = inner.state_rx.clone();
-            let mut last_subtitle: Option<GuiSubtitleEvent> = None;
-
-            loop {
-                tokio::select! {
-                    changed = progress_rx.changed() => {
-                        if changed.is_err() {
-                            break;
-                        }
-                        let subtitle = progress_rx.borrow().subtitle.clone();
-                        if subtitle != last_subtitle {
-                            last_subtitle = subtitle.clone();
-                            if let Some(event) = subtitle {
-                                inner.push_subtitle(event);
-                            }
-                        }
-                    }
-                    changed = state_rx.changed() => {
-                        if changed.is_err() {
-                            break;
-                        }
-                        if *state_rx.borrow() == DetectionRunState::Running {
-                            last_subtitle = None;
-                        }
-                    }
-                }
-            }
-        });
-
-        if task.is_none() {
-            eprintln!("detection subtitle listener failed: tokio runtime not initialized");
-        }
-    }
-
     fn subscribe_subtitles(&self) -> broadcast::Receiver<SubtitleMessage> {
         self.subtitle_tx.subscribe()
     }
@@ -379,11 +408,17 @@ impl DetectionPipelineInner {
             .unwrap_or(false)
     }
 
-    fn subtitles_snapshot(&self) -> Vec<GuiSubtitleEvent> {
-        self.subtitles
+    fn subtitles_snapshot(&self) -> Vec<TimedSubtitle> {
+        let mut snapshot = self
+            .subtitles
             .lock()
             .map(|slot| slot.clone())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        stage::sort_subtitles(&mut snapshot);
+        snapshot
+            .into_iter()
+            .map(|subtitle| subtitle.as_timed())
+            .collect()
     }
 
     fn reset_subtitles(&self) {
@@ -391,13 +426,6 @@ impl DetectionPipelineInner {
             slot.clear();
         }
         let _ = self.subtitle_tx.send(SubtitleMessage::Reset);
-    }
-
-    fn push_subtitle(&self, subtitle: GuiSubtitleEvent) {
-        if let Ok(mut slot) = self.subtitles.lock() {
-            slot.push(subtitle.clone());
-        }
-        let _ = self.subtitle_tx.send(SubtitleMessage::New(subtitle));
     }
 
     fn export_dialog_seed(&self) -> (PathBuf, Option<String>) {
@@ -420,13 +448,19 @@ impl DetectionPipelineInner {
     }
 
     fn export_subtitles_to(&self, path: PathBuf) {
-        let subtitles = self.subtitles_snapshot();
+        let subtitles = self
+            .subtitles
+            .lock()
+            .map(|slot| slot.clone())
+            .unwrap_or_default();
         if subtitles.is_empty() {
             eprintln!("export ignored: no subtitles detected");
             return;
         }
 
-        let contents = build_gui_srt(&subtitles);
+        let mut ordered = subtitles;
+        stage::sort_subtitles(&mut ordered);
+        let contents = stage::render_srt(&ordered);
         let task = runtime::spawn(async move {
             if let Err(err) = tokio::fs::write(&path, contents).await {
                 eprintln!("subtitle export failed: {err}");
@@ -443,27 +477,155 @@ impl DetectionPipelineInner {
 
 async fn run_detection_task(
     inner: Arc<DetectionPipelineInner>,
-    plan: ExecutionPlan,
-    pause_rx: watch::Receiver<bool>,
-    cancel_rx: oneshot::Receiver<()>,
+    plan: DetectionPlan,
+    mut cancel_rx: oneshot::Receiver<()>,
 ) {
-    let progress = inner.progress.inner();
-    let result = tokio::select! {
-        _ = cancel_rx => Ok(()),
-        result = backend::run_with_progress(plan, progress, pause_rx) => result,
-    };
+    let DetectionPlan {
+        config,
+        backend_locked,
+        pipeline,
+    } = plan;
 
-    if let Err(err) = result {
-        eprintln!("detection pipeline failed: {err}");
+    let available = Configuration::available_backends();
+    if available.is_empty() {
+        eprintln!("detection start failed: no decoding backend available");
+        inner.finish();
+        return;
+    }
+    if !available.contains(&config.backend) {
+        eprintln!(
+            "detection start failed: backend '{}' is unavailable",
+            config.backend.as_str()
+        );
+        inner.finish();
+        return;
     }
 
-    inner.finish();
+    let mut attempt_config = config.clone();
+    let mut tried = Vec::new();
+
+    loop {
+        if !tried.contains(&attempt_config.backend) {
+            tried.push(attempt_config.backend);
+        }
+
+        let provider_started = Instant::now();
+        let provider_result = attempt_config.create_provider();
+        let provider_elapsed = provider_started.elapsed();
+
+        let provider = match provider_result {
+            Ok(provider) => {
+                eprintln!(
+                    "initialized decoder backend '{}' in {:.2?}",
+                    attempt_config.backend.as_str(),
+                    provider_elapsed
+                );
+                provider
+            }
+            Err(err) => {
+                eprintln!(
+                    "decoder backend '{}' failed to initialize in {:.2?}: {err}",
+                    attempt_config.backend.as_str(),
+                    provider_elapsed
+                );
+                if !backend_locked {
+                    if let Some(next_backend) = select_next_backend(&available, &tried) {
+                        let failed_backend = attempt_config.backend;
+                        eprintln!(
+                            "backend {failed} failed to initialize ({reason}); trying {next}",
+                            failed = failed_backend.as_str(),
+                            reason = err,
+                            next = next_backend.as_str()
+                        );
+                        attempt_config.backend = next_backend;
+                        continue;
+                    }
+                }
+                inner.finish();
+                return;
+            }
+        };
+
+        let streams = match stage::build_pipeline(provider, &pipeline) {
+            Ok(streams) => streams,
+            Err(err) => {
+                eprintln!("detection pipeline setup failed: {err}");
+                if !backend_locked {
+                    if let Some(next_backend) = select_next_backend(&available, &tried) {
+                        attempt_config.backend = next_backend;
+                        continue;
+                    }
+                }
+                inner.finish();
+                return;
+            }
+        };
+
+        inner.set_pause_handle(streams.handle.clone());
+
+        let result = drive_gui_pipeline(Arc::clone(&inner), streams, &mut cancel_rx).await;
+
+        match result {
+            Ok(()) => {
+                inner.finish();
+                return;
+            }
+            Err((err, processed)) => {
+                eprintln!("detection pipeline failed: {err}");
+                if processed == 0 && !backend_locked {
+                    if let Some(next_backend) = select_next_backend(&available, &tried) {
+                        let failed_backend = attempt_config.backend;
+                        eprintln!(
+                            "backend {failed} failed to decode ({reason}); trying {next}",
+                            failed = failed_backend.as_str(),
+                            reason = err,
+                            next = next_backend.as_str()
+                        );
+                        attempt_config.backend = next_backend;
+                        continue;
+                    }
+                }
+                inner.finish();
+                return;
+            }
+        }
+    }
 }
 
-fn build_execution_plan(
+async fn drive_gui_pipeline(
+    inner: Arc<DetectionPipelineInner>,
+    streams: stage::PipelineOutputs,
+    cancel_rx: &mut oneshot::Receiver<()>,
+) -> Result<(), (DecoderError, u64)> {
+    let mut processed = 0;
+    let mut stream = streams.stream;
+
+    loop {
+        tokio::select! {
+            _ = &mut *cancel_rx => return Ok(()),
+            maybe_event = stream.next() => {
+                match maybe_event {
+                    Some(Ok(update)) => {
+                        processed = processed.max(update.progress.samples_seen);
+                        inner.update_progress(update.progress);
+                        inner.apply_updates(&update.updates);
+                    }
+                    Some(Err(err)) => {
+                        return Err((stage::pipeline_error_to_frame(err), processed));
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn build_detection_plan(
     input: &Path,
     settings: &EffectiveSettings,
-) -> Result<ExecutionPlan, DecoderError> {
+) -> Result<DetectionPlan, DecoderError> {
     if !input.exists() {
         return Err(DecoderError::configuration(format!(
             "input file '{}' does not exist",
@@ -473,11 +635,13 @@ fn build_execution_plan(
 
     let pipeline = PipelineConfig::from_settings(settings, input)?;
 
-    let mut config = Configuration::default();
+    let env_backend_present = std::env::var("SUBFAST_BACKEND").is_ok();
+    let mut config = Configuration::from_env().unwrap_or_default();
     let backend_override = match settings.decoder.backend.as_deref() {
-        Some(name) => Some(backend::parse_backend(name)?),
+        Some(name) => Some(parse_backend_value(name)?),
         None => None,
     };
+    let backend_locked = backend_override.is_some() || env_backend_present;
     if let Some(backend_value) = backend_override {
         config.backend = backend_value;
     }
@@ -488,9 +652,9 @@ fn build_execution_plan(
         config.channel_capacity = Some(non_zero);
     }
 
-    Ok(ExecutionPlan {
+    Ok(DetectionPlan {
         config,
-        backend_locked: backend_override.is_some(),
+        backend_locked,
         pipeline,
     })
 }
@@ -504,49 +668,20 @@ fn full_frame_roi() -> RoiConfig {
     }
 }
 
-fn build_gui_srt(subtitles: &[GuiSubtitleEvent]) -> String {
-    let mut output = String::new();
-    let mut index = 1usize;
-    for subtitle in subtitles {
-        let text = subtitle.text.trim();
-        if text.is_empty() {
-            continue;
-        }
-        if index > 1 {
-            output.push('\n');
-        }
-        let start = duration_from_ms(subtitle.start_ms);
-        let end = duration_from_ms(subtitle.end_ms);
-        let _ = writeln!(&mut output, "{index}");
-        let _ = writeln!(
-            &mut output,
-            "{} --> {}",
-            format_srt_timestamp(start),
-            format_srt_timestamp(end)
-        );
-        for line in text.lines() {
-            let _ = writeln!(&mut output, "{line}");
-        }
-        index += 1;
-    }
-    output
+fn parse_backend_value(value: &str) -> Result<Backend, DecoderError> {
+    use std::str::FromStr;
+    Backend::from_str(value)
 }
 
-fn duration_from_ms(ms: f64) -> Duration {
-    if !ms.is_finite() || ms <= 0.0 {
-        return Duration::ZERO;
-    }
-    Duration::from_millis(ms.round().max(0.0) as u64)
+fn select_next_backend(available: &[Backend], tried: &[Backend]) -> Option<Backend> {
+    available
+        .iter()
+        .copied()
+        .find(|backend| !tried.contains(backend))
 }
 
-fn format_srt_timestamp(time: Duration) -> String {
-    let millis = time
-        .as_secs()
-        .saturating_mul(1000)
-        .saturating_add(u64::from(time.subsec_millis()));
-    let hours = millis / 3_600_000;
-    let minutes = (millis % 3_600_000) / 60_000;
-    let seconds = (millis % 60_000) / 1000;
-    let remain_ms = millis % 1000;
-    format!("{hours:02}:{minutes:02}:{seconds:02},{remain_ms:03}")
+struct DetectionPlan {
+    config: Configuration,
+    backend_locked: bool,
+    pipeline: PipelineConfig,
 }

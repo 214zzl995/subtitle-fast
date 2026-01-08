@@ -2,7 +2,7 @@ use gpui::prelude::*;
 use gpui::{Context, Render, ScrollHandle, Task, Window, div, hsla, px};
 use tokio::sync::broadcast;
 
-use crate::stage::progress_gui::GuiSubtitleEvent;
+use crate::stage::TimedSubtitle;
 
 use super::{DetectionHandle, SubtitleMessage};
 
@@ -15,20 +15,25 @@ struct DetectedSubtitleEntry {
 }
 
 impl DetectedSubtitleEntry {
-    fn new(id: u64, subtitle: GuiSubtitleEvent) -> Self {
+    fn new(id: u64, subtitle: TimedSubtitle) -> Self {
         Self {
             id,
             start_ms: subtitle.start_ms,
             end_ms: subtitle.end_ms,
-            text: subtitle.text,
+            text: subtitle.text(),
         }
+    }
+
+    fn update(&mut self, subtitle: TimedSubtitle) {
+        self.start_ms = subtitle.start_ms;
+        self.end_ms = subtitle.end_ms;
+        self.text = subtitle.text();
     }
 }
 
 pub struct DetectedSubtitlesList {
     handle: DetectionHandle,
     subtitles: Vec<DetectedSubtitleEntry>,
-    next_id: u64,
     scroll_handle: ScrollHandle,
     subtitle_task: Option<Task<()>>,
 }
@@ -37,16 +42,13 @@ impl DetectedSubtitlesList {
     pub fn new(handle: DetectionHandle) -> Self {
         let snapshot = handle.subtitles_snapshot();
         let mut subtitles = Vec::with_capacity(snapshot.len());
-        let mut next_id = 0;
         for subtitle in snapshot {
-            subtitles.push(DetectedSubtitleEntry::new(next_id, subtitle));
-            next_id = next_id.saturating_add(1);
+            subtitles.push(DetectedSubtitleEntry::new(subtitle.id, subtitle));
         }
 
         Self {
             handle,
             subtitles,
-            next_id,
             scroll_handle: ScrollHandle::new(),
             subtitle_task: None,
         }
@@ -99,19 +101,30 @@ impl DetectedSubtitlesList {
 
     fn reset_list(&mut self) {
         self.subtitles.clear();
-        self.next_id = 0;
     }
 
-    fn push_subtitle(&mut self, subtitle: GuiSubtitleEvent) {
-        let entry = DetectedSubtitleEntry::new(self.next_id, subtitle);
-        self.next_id = self.next_id.saturating_add(1);
+    fn push_subtitle(&mut self, subtitle: TimedSubtitle) {
+        let entry = DetectedSubtitleEntry::new(subtitle.id, subtitle);
         self.subtitles.push(entry);
+    }
+
+    fn update_subtitle(&mut self, subtitle: TimedSubtitle) {
+        if let Some(existing) = self
+            .subtitles
+            .iter_mut()
+            .find(|entry| entry.id == subtitle.id)
+        {
+            existing.update(subtitle);
+        } else {
+            self.push_subtitle(subtitle);
+        }
     }
 
     fn apply_message(&mut self, message: SubtitleMessage) {
         match message {
             SubtitleMessage::Reset => self.reset_list(),
             SubtitleMessage::New(subtitle) => self.push_subtitle(subtitle),
+            SubtitleMessage::Updated(subtitle) => self.update_subtitle(subtitle),
         }
     }
 

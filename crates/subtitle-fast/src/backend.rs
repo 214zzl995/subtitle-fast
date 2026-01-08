@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use std::time::Instant;
 
+use futures_util::StreamExt;
 use subtitle_fast_decoder::{Backend, Configuration};
 use subtitle_fast_types::DecoderError;
 
@@ -74,10 +74,17 @@ pub async fn run(plan: ExecutionPlan) -> Result<(), DecoderError> {
             }
         };
 
-        match stage::run_pipeline(provider, &pipeline).await {
+        let pipeline_result = stage::build_pipeline(provider, &pipeline);
+
+        let outcome = match pipeline_result {
+            Ok(pipeline_streams) => drive_pipeline(pipeline_streams, &pipeline.output.path).await,
+            Err(err) => Err((err, 0)),
+        };
+
+        match outcome {
             Ok(()) => return Ok(()),
-            Err((err, processed)) => {
-                if processed == 0
+            Err((err, seen)) => {
+                if seen == 0
                     && !backend_locked
                     && let Some(next_backend) = select_next_backend(&available, &tried)
                 {
@@ -95,17 +102,6 @@ pub async fn run(plan: ExecutionPlan) -> Result<(), DecoderError> {
             }
         }
     }
-}
-
-#[allow(dead_code)]
-pub(crate) async fn run_with_progress(
-    mut plan: ExecutionPlan,
-    progress: Arc<stage::progress_gui::GuiProgressInner>,
-    pause_rx: tokio::sync::watch::Receiver<bool>,
-) -> Result<(), DecoderError> {
-    plan.pipeline.progress = Some(progress);
-    plan.pipeline.pause = Some(pause_rx);
-    run(plan).await
 }
 
 pub fn display_available_backends() {
@@ -130,4 +126,76 @@ fn select_next_backend(available: &[Backend], tried: &[Backend]) -> Option<Backe
         .iter()
         .copied()
         .find(|backend| !tried.contains(backend))
+}
+
+async fn drive_pipeline(
+    pipeline: stage::PipelineOutputs,
+    output_path: &std::path::Path,
+) -> Result<(), (DecoderError, u64)> {
+    let mut processed = 0;
+    let mut subtitles: Vec<stage::MergedSubtitle> = Vec::new();
+    let mut stream = pipeline.stream;
+
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(update) => {
+                processed = processed.max(update.progress.samples_seen);
+                apply_updates(&mut subtitles, &update.updates);
+            }
+            Err(err) => {
+                return Err((stage::pipeline_error_to_frame(err), processed));
+            }
+        }
+    }
+
+    sort_and_write(output_path, &subtitles)
+        .await
+        .map_err(|err| (err, processed))
+}
+
+fn apply_updates(subtitles: &mut Vec<stage::MergedSubtitle>, updates: &[stage::SubtitleUpdate]) {
+    for update in updates {
+        match update.kind {
+            stage::SubtitleUpdateKind::New => {
+                subtitles.push(update.subtitle.clone());
+            }
+            stage::SubtitleUpdateKind::Updated => {
+                if let Some(existing) = subtitles
+                    .iter_mut()
+                    .find(|subtitle| subtitle.id == update.subtitle.id)
+                {
+                    *existing = update.subtitle.clone();
+                } else {
+                    subtitles.push(update.subtitle.clone());
+                }
+            }
+        }
+    }
+}
+
+async fn sort_and_write(
+    output_path: &std::path::Path,
+    subtitles: &[stage::MergedSubtitle],
+) -> Result<(), DecoderError> {
+    let mut ordered = subtitles.to_vec();
+    stage::sort_subtitles(&mut ordered);
+    let contents = stage::render_srt(&ordered);
+
+    if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty())
+        && let Err(err) = tokio::fs::create_dir_all(parent).await
+    {
+        return Err(DecoderError::configuration(format!(
+            "failed to prepare subtitle directory {}: {err}",
+            parent.display()
+        )));
+    }
+
+    tokio::fs::write(output_path, contents)
+        .await
+        .map_err(|err| {
+            DecoderError::configuration(format!(
+                "failed to write subtitle file {}: {err}",
+                output_path.display()
+            ))
+        })
 }

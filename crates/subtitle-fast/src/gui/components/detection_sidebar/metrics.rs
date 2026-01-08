@@ -8,7 +8,7 @@ use tokio::time::MissedTickBehavior;
 
 use crate::gui::icons::{Icon, icon_sm};
 use crate::gui::runtime;
-use crate::stage::progress_gui::GuiProgressUpdate;
+use crate::stage::PipelineProgress;
 
 use super::DetectionHandle;
 
@@ -16,7 +16,7 @@ const METRICS_THROTTLE: Duration = Duration::from_millis(500);
 const PROGRESS_STEP: f64 = 0.001;
 
 pub struct DetectionMetrics {
-    progress: GuiProgressUpdate,
+    progress: PipelineProgress,
     progress_task: Option<Task<()>>,
     handle: DetectionHandle,
 }
@@ -37,7 +37,7 @@ impl DetectionMetrics {
         let effective = if run_state.is_running() || next.completed {
             next
         } else {
-            GuiProgressUpdate::default()
+            PipelineProgress::default()
         };
         if self.progress != effective {
             self.progress = effective;
@@ -269,15 +269,6 @@ impl Render for DetectionMetrics {
                 Icon::Sparkles,
                 "OCR",
                 Self::format_rate(self.progress.ocr_ms, "ms"),
-                label_color,
-                value_color,
-                cx,
-            ))
-            .child(self.metric_row(
-                "detection-metric-write",
-                Icon::Gauge,
-                "Write",
-                Self::format_rate(self.progress.writer_ms, "ms"),
                 label_color,
                 value_color,
                 cx,
