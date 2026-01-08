@@ -1,6 +1,6 @@
+use futures_util::StreamExt;
 use gpui::prelude::*;
 use gpui::{Context, Render, ScrollHandle, Task, Window, div, hsla, px};
-use tokio::sync::broadcast;
 
 use crate::stage::TimedSubtitle;
 
@@ -63,35 +63,17 @@ impl DetectedSubtitlesList {
         let mut subtitle_rx = self.handle.subscribe_subtitles();
 
         let task = window.spawn(cx, async move |cx| {
-            loop {
-                match subtitle_rx.recv().await {
-                    Ok(message) => {
-                        if cx
-                            .update(|_window, cx| {
-                                let _ = handle.update(cx, |this, cx| {
-                                    this.apply_message(message);
-                                    cx.notify();
-                                });
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        if cx
-                            .update(|_window, cx| {
-                                let _ = handle.update(cx, |this, cx| {
-                                    this.resync_from_handle();
-                                    cx.notify();
-                                });
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Closed) => break,
+            while let Some(message) = subtitle_rx.next().await {
+                if cx
+                    .update(|_window, cx| {
+                        let _ = handle.update(cx, |this, cx| {
+                            this.apply_message(message);
+                            cx.notify();
+                        });
+                    })
+                    .is_err()
+                {
+                    break;
                 }
             }
         });
@@ -125,14 +107,6 @@ impl DetectedSubtitlesList {
             SubtitleMessage::Reset => self.reset_list(),
             SubtitleMessage::New(subtitle) => self.push_subtitle(subtitle),
             SubtitleMessage::Updated(subtitle) => self.update_subtitle(subtitle),
-        }
-    }
-
-    fn resync_from_handle(&mut self) {
-        let snapshot = self.handle.subtitles_snapshot();
-        self.reset_list();
-        for subtitle in snapshot {
-            self.push_subtitle(subtitle);
         }
     }
 

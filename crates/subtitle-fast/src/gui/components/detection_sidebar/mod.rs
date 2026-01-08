@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use futures_util::StreamExt;
-use tokio::sync::{broadcast, oneshot, watch};
+use tokio::sync::{oneshot, watch};
 
 use crate::gui::components::{VideoLumaHandle, VideoRoiHandle};
 use crate::gui::runtime;
@@ -62,7 +63,6 @@ impl DetectionHandle {
     pub fn new() -> Self {
         let (state_tx, state_rx) = watch::channel(DetectionRunState::Idle);
         let (progress_tx, progress_rx) = watch::channel(PipelineProgress::default());
-        let (subtitle_tx, _subtitle_rx) = broadcast::channel(128);
         let inner = Arc::new(DetectionPipelineInner {
             state_tx,
             state_rx,
@@ -73,7 +73,7 @@ impl DetectionHandle {
             luma_handle: Mutex::new(None),
             roi_handle: Mutex::new(None),
             cancel_tx: Mutex::new(None),
-            subtitle_tx,
+            subtitle_subscribers: Mutex::new(Vec::new()),
             subtitles: Mutex::new(Vec::new()),
         });
         Self { inner }
@@ -123,7 +123,7 @@ impl DetectionHandle {
         self.inner.cancel()
     }
 
-    pub fn subscribe_subtitles(&self) -> broadcast::Receiver<SubtitleMessage> {
+    pub fn subscribe_subtitles(&self) -> UnboundedReceiver<SubtitleMessage> {
         self.inner.subscribe_subtitles()
     }
 
@@ -160,7 +160,7 @@ struct DetectionPipelineInner {
     luma_handle: Mutex<Option<VideoLumaHandle>>,
     roi_handle: Mutex<Option<VideoRoiHandle>>,
     cancel_tx: Mutex<Option<oneshot::Sender<()>>>,
-    subtitle_tx: broadcast::Sender<SubtitleMessage>,
+    subtitle_subscribers: Mutex<Vec<UnboundedSender<SubtitleMessage>>>,
     subtitles: Mutex<Vec<MergedSubtitle>>,
 }
 
@@ -360,7 +360,7 @@ impl DetectionPipelineInner {
                     SubtitleUpdateKind::New => SubtitleMessage::New(timed),
                     SubtitleUpdateKind::Updated => SubtitleMessage::Updated(timed),
                 };
-                let _ = self.subtitle_tx.send(message);
+                self.send_subtitle_message(message);
             }
         }
     }
@@ -397,8 +397,12 @@ impl DetectionPipelineInner {
         }
     }
 
-    fn subscribe_subtitles(&self) -> broadcast::Receiver<SubtitleMessage> {
-        self.subtitle_tx.subscribe()
+    fn subscribe_subtitles(&self) -> UnboundedReceiver<SubtitleMessage> {
+        let (tx, rx) = unbounded();
+        if let Ok(mut slots) = self.subtitle_subscribers.lock() {
+            slots.push(tx);
+        }
+        rx
     }
 
     fn has_subtitles(&self) -> bool {
@@ -425,7 +429,13 @@ impl DetectionPipelineInner {
         if let Ok(mut slot) = self.subtitles.lock() {
             slot.clear();
         }
-        let _ = self.subtitle_tx.send(SubtitleMessage::Reset);
+        self.send_subtitle_message(SubtitleMessage::Reset);
+    }
+
+    fn send_subtitle_message(&self, message: SubtitleMessage) {
+        if let Ok(mut slots) = self.subtitle_subscribers.lock() {
+            slots.retain(|sender| sender.unbounded_send(message.clone()).is_ok());
+        }
     }
 
     fn export_dialog_seed(&self) -> (PathBuf, Option<String>) {
