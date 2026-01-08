@@ -1,12 +1,10 @@
-use futures_channel::mpsc::unbounded;
-use futures_util::StreamExt;
 use gpui::prelude::*;
 use gpui::{Context, Render, ScrollHandle, Task, Window, div, hsla, px};
+use tokio::sync::broadcast;
 
-use crate::gui::runtime;
 use crate::stage::progress_gui::GuiSubtitleEvent;
 
-use super::{DetectionHandle, DetectionRunState};
+use super::{DetectionHandle, SubtitleMessage};
 
 #[derive(Clone, Debug)]
 struct DetectedSubtitleEntry {
@@ -29,111 +27,78 @@ impl DetectedSubtitleEntry {
 
 pub struct DetectedSubtitlesList {
     handle: DetectionHandle,
-    run_state: DetectionRunState,
     subtitles: Vec<DetectedSubtitleEntry>,
-    last_subtitle: Option<GuiSubtitleEvent>,
     next_id: u64,
     scroll_handle: ScrollHandle,
-    progress_task: Option<Task<()>>,
+    subtitle_task: Option<Task<()>>,
 }
 
 impl DetectedSubtitlesList {
     pub fn new(handle: DetectionHandle) -> Self {
+        let snapshot = handle.subtitles_snapshot();
+        let mut subtitles = Vec::with_capacity(snapshot.len());
+        let mut next_id = 0;
+        for subtitle in snapshot {
+            subtitles.push(DetectedSubtitleEntry::new(next_id, subtitle));
+            next_id = next_id.saturating_add(1);
+        }
+
         Self {
-            run_state: handle.run_state(),
             handle,
-            subtitles: Vec::new(),
-            last_subtitle: None,
-            next_id: 0,
+            subtitles,
+            next_id,
             scroll_handle: ScrollHandle::new(),
-            progress_task: None,
+            subtitle_task: None,
         }
     }
 
-    fn ensure_progress_listener(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.progress_task.is_some() {
+    fn ensure_subtitle_listener(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.subtitle_task.is_some() {
             return;
         }
 
-        let handle = self.handle.clone();
-        let entity_id = cx.entity_id();
-        let (notify_tx, mut notify_rx) = unbounded::<()>();
+        let handle = cx.entity();
+        let mut subtitle_rx = self.handle.subscribe_subtitles();
 
         let task = window.spawn(cx, async move |cx| {
-            while notify_rx.next().await.is_some() {
-                if cx.update(|_window, cx| cx.notify(entity_id)).is_err() {
-                    break;
-                }
-            }
-        });
-
-        let tokio_task = runtime::spawn(async move {
-            let mut progress_rx = handle.subscribe_progress();
-            let mut state_rx = handle.subscribe_state();
-            let mut last_subtitle = progress_rx.borrow().subtitle.clone();
-            let mut last_state = *state_rx.borrow();
-
             loop {
-                tokio::select! {
-                    changed = progress_rx.changed() => {
-                        if changed.is_err() {
+                match subtitle_rx.recv().await {
+                    Ok(message) => {
+                        if cx
+                            .update(|_window, cx| {
+                                let _ = handle.update(cx, |this, cx| {
+                                    this.apply_message(message);
+                                    cx.notify();
+                                });
+                            })
+                            .is_err()
+                        {
                             break;
                         }
-                        let subtitle = progress_rx.borrow().subtitle.clone();
-                        if subtitle != last_subtitle {
-                            last_subtitle = subtitle;
-                            if notify_tx.unbounded_send(()).is_err() {
-                                break;
-                            }
-                        }
                     }
-                    changed = state_rx.changed() => {
-                        if changed.is_err() {
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        if cx
+                            .update(|_window, cx| {
+                                let _ = handle.update(cx, |this, cx| {
+                                    this.resync_from_handle();
+                                    cx.notify();
+                                });
+                            })
+                            .is_err()
+                        {
                             break;
                         }
-                        let state = *state_rx.borrow();
-                        if state != last_state {
-                            last_state = state;
-                            if notify_tx.unbounded_send(()).is_err() {
-                                break;
-                            }
-                        }
                     }
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
 
-        if tokio_task.is_none() {
-            eprintln!("detection subtitles listener failed: tokio runtime not initialized");
-        }
-
-        self.progress_task = Some(task);
-    }
-
-    fn sync_run_state(&mut self) {
-        let next = self.handle.run_state();
-        if self.run_state == DetectionRunState::Idle && next == DetectionRunState::Running {
-            self.reset_list();
-        }
-        self.run_state = next;
-    }
-
-    fn sync_subtitles(&mut self) {
-        self.sync_run_state();
-
-        let snapshot = self.handle.progress_snapshot();
-        let subtitle = snapshot.subtitle.clone();
-        if subtitle != self.last_subtitle {
-            self.last_subtitle = subtitle.clone();
-            if let Some(event) = subtitle {
-                self.push_subtitle(event);
-            }
-        }
+        self.subtitle_task = Some(task);
     }
 
     fn reset_list(&mut self) {
         self.subtitles.clear();
-        self.last_subtitle = None;
         self.next_id = 0;
     }
 
@@ -141,6 +106,21 @@ impl DetectedSubtitlesList {
         let entry = DetectedSubtitleEntry::new(self.next_id, subtitle);
         self.next_id = self.next_id.saturating_add(1);
         self.subtitles.push(entry);
+    }
+
+    fn apply_message(&mut self, message: SubtitleMessage) {
+        match message {
+            SubtitleMessage::Reset => self.reset_list(),
+            SubtitleMessage::New(subtitle) => self.push_subtitle(subtitle),
+        }
+    }
+
+    fn resync_from_handle(&mut self) {
+        let snapshot = self.handle.subtitles_snapshot();
+        self.reset_list();
+        for subtitle in snapshot {
+            self.push_subtitle(subtitle);
+        }
     }
 
     fn subtitle_row(&self, entry: &DetectedSubtitleEntry) -> impl IntoElement {
@@ -192,8 +172,7 @@ impl DetectedSubtitlesList {
 
 impl Render for DetectedSubtitlesList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.ensure_progress_listener(window, cx);
-        self.sync_subtitles();
+        self.ensure_subtitle_listener(window, cx);
 
         let list_body = if self.subtitles.is_empty() {
             div()

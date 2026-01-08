@@ -88,6 +88,7 @@ impl SubtitleFastApp {
                         cx.new(|_| DetectedSubtitlesList::new(detection_handle.clone()));
                     let detection_sidebar_view = cx.new(|_| {
                         DetectionSidebar::new(
+                            detection_handle.clone(),
                             detection_metrics_view.clone(),
                             detection_controls_view.clone(),
                             detection_subtitles_view.clone(),

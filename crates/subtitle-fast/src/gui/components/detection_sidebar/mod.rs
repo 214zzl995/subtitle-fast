@@ -1,16 +1,18 @@
+use std::fmt::Write as _;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{broadcast, oneshot, watch};
 
 use crate::backend::{self, ExecutionPlan};
 use crate::gui::components::{VideoLumaHandle, VideoRoiHandle};
 use crate::gui::runtime;
 use crate::settings::{DecoderSettings, DetectionSettings, EffectiveSettings, OutputSettings};
 use crate::stage::PipelineConfig;
-use crate::stage::progress_gui::{GuiProgressHandle, GuiProgressUpdate};
+use crate::stage::progress_gui::{GuiProgressHandle, GuiProgressUpdate, GuiSubtitleEvent};
 use subtitle_fast_decoder::Configuration;
 use subtitle_fast_types::{DecoderError, RoiConfig};
 use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET};
@@ -44,6 +46,12 @@ impl DetectionRunState {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum SubtitleMessage {
+    Reset,
+    New(GuiSubtitleEvent),
+}
+
 #[derive(Clone)]
 pub struct DetectionHandle {
     inner: Arc<DetectionPipelineInner>,
@@ -53,18 +61,21 @@ impl DetectionHandle {
     pub fn new() -> Self {
         let (state_tx, state_rx) = watch::channel(DetectionRunState::Idle);
         let (pause_tx, _pause_rx) = watch::channel(false);
-        Self {
-            inner: Arc::new(DetectionPipelineInner {
-                state_tx,
-                state_rx,
-                pause_tx,
-                progress: GuiProgressHandle::new(),
-                video_path: Mutex::new(None),
-                luma_handle: Mutex::new(None),
-                roi_handle: Mutex::new(None),
-                cancel_tx: Mutex::new(None),
-            }),
-        }
+        let (subtitle_tx, _subtitle_rx) = broadcast::channel(128);
+        let inner = Arc::new(DetectionPipelineInner {
+            state_tx,
+            state_rx,
+            pause_tx,
+            progress: GuiProgressHandle::new(),
+            video_path: Mutex::new(None),
+            luma_handle: Mutex::new(None),
+            roi_handle: Mutex::new(None),
+            cancel_tx: Mutex::new(None),
+            subtitle_tx,
+            subtitles: Mutex::new(Vec::new()),
+        });
+        DetectionPipelineInner::start_subtitle_listener(Arc::clone(&inner));
+        Self { inner }
     }
 
     pub fn set_video_path(&self, path: Option<PathBuf>) {
@@ -110,6 +121,26 @@ impl DetectionHandle {
     pub fn cancel(&self) -> DetectionRunState {
         self.inner.cancel()
     }
+
+    pub fn subscribe_subtitles(&self) -> broadcast::Receiver<SubtitleMessage> {
+        self.inner.subscribe_subtitles()
+    }
+
+    pub fn subtitles_snapshot(&self) -> Vec<GuiSubtitleEvent> {
+        self.inner.subtitles_snapshot()
+    }
+
+    pub fn has_subtitles(&self) -> bool {
+        self.inner.has_subtitles()
+    }
+
+    pub fn export_dialog_seed(&self) -> (PathBuf, Option<String>) {
+        self.inner.export_dialog_seed()
+    }
+
+    pub fn export_subtitles_to(&self, path: PathBuf) {
+        self.inner.export_subtitles_to(path);
+    }
 }
 
 impl Default for DetectionHandle {
@@ -127,6 +158,8 @@ struct DetectionPipelineInner {
     luma_handle: Mutex<Option<VideoLumaHandle>>,
     roi_handle: Mutex<Option<VideoRoiHandle>>,
     cancel_tx: Mutex<Option<oneshot::Sender<()>>>,
+    subtitle_tx: broadcast::Sender<SubtitleMessage>,
+    subtitles: Mutex<Vec<GuiSubtitleEvent>>,
 }
 
 impl DetectionPipelineInner {
@@ -218,6 +251,7 @@ impl DetectionPipelineInner {
             *slot = Some(cancel_tx);
         }
 
+        self.reset_subtitles();
         let _ = self.pause_tx.send(false);
         let _ = self.state_tx.send(DetectionRunState::Running);
         DetectionRunState::Running
@@ -251,6 +285,7 @@ impl DetectionPipelineInner {
         }
 
         self.progress.reset();
+        self.reset_subtitles();
         let _ = self.pause_tx.send(false);
         let _ = self.state_tx.send(DetectionRunState::Idle);
         DetectionRunState::Idle
@@ -293,6 +328,115 @@ impl DetectionPipelineInner {
             delta,
             comparator: None,
             roi: Some(roi),
+        }
+    }
+
+    fn start_subtitle_listener(inner: Arc<Self>) {
+        let task = runtime::spawn(async move {
+            let mut progress_rx = inner.progress.subscribe();
+            let mut state_rx = inner.state_rx.clone();
+            let mut last_subtitle: Option<GuiSubtitleEvent> = None;
+
+            loop {
+                tokio::select! {
+                    changed = progress_rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let subtitle = progress_rx.borrow().subtitle.clone();
+                        if subtitle != last_subtitle {
+                            last_subtitle = subtitle.clone();
+                            if let Some(event) = subtitle {
+                                inner.push_subtitle(event);
+                            }
+                        }
+                    }
+                    changed = state_rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        if *state_rx.borrow() == DetectionRunState::Running {
+                            last_subtitle = None;
+                        }
+                    }
+                }
+            }
+        });
+
+        if task.is_none() {
+            eprintln!("detection subtitle listener failed: tokio runtime not initialized");
+        }
+    }
+
+    fn subscribe_subtitles(&self) -> broadcast::Receiver<SubtitleMessage> {
+        self.subtitle_tx.subscribe()
+    }
+
+    fn has_subtitles(&self) -> bool {
+        self.subtitles
+            .lock()
+            .map(|slot| !slot.is_empty())
+            .unwrap_or(false)
+    }
+
+    fn subtitles_snapshot(&self) -> Vec<GuiSubtitleEvent> {
+        self.subtitles
+            .lock()
+            .map(|slot| slot.clone())
+            .unwrap_or_default()
+    }
+
+    fn reset_subtitles(&self) {
+        if let Ok(mut slot) = self.subtitles.lock() {
+            slot.clear();
+        }
+        let _ = self.subtitle_tx.send(SubtitleMessage::Reset);
+    }
+
+    fn push_subtitle(&self, subtitle: GuiSubtitleEvent) {
+        if let Ok(mut slot) = self.subtitles.lock() {
+            slot.push(subtitle.clone());
+        }
+        let _ = self.subtitle_tx.send(SubtitleMessage::New(subtitle));
+    }
+
+    fn export_dialog_seed(&self) -> (PathBuf, Option<String>) {
+        let video_path = self.video_path.lock().ok().and_then(|slot| slot.clone());
+        if let Some(path) = video_path {
+            let directory = path
+                .parent()
+                .map(|parent| parent.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let suggested_name = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|stem| format!("{stem}.srt"))
+                .or_else(|| Some("subtitles.srt".to_string()));
+            return (directory, suggested_name);
+        }
+
+        let directory = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        (directory, Some("subtitles.srt".to_string()))
+    }
+
+    fn export_subtitles_to(&self, path: PathBuf) {
+        let subtitles = self.subtitles_snapshot();
+        if subtitles.is_empty() {
+            eprintln!("export ignored: no subtitles detected");
+            return;
+        }
+
+        let contents = build_gui_srt(&subtitles);
+        let task = runtime::spawn(async move {
+            if let Err(err) = tokio::fs::write(&path, contents).await {
+                eprintln!("subtitle export failed: {err}");
+            } else {
+                eprintln!("exported subtitles to {}", path.display());
+            }
+        });
+
+        if task.is_none() {
+            eprintln!("subtitle export failed: tokio runtime not initialized");
         }
     }
 }
@@ -358,4 +502,51 @@ fn full_frame_roi() -> RoiConfig {
         width: 1.0,
         height: 1.0,
     }
+}
+
+fn build_gui_srt(subtitles: &[GuiSubtitleEvent]) -> String {
+    let mut output = String::new();
+    let mut index = 1usize;
+    for subtitle in subtitles {
+        let text = subtitle.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        if index > 1 {
+            output.push('\n');
+        }
+        let start = duration_from_ms(subtitle.start_ms);
+        let end = duration_from_ms(subtitle.end_ms);
+        let _ = writeln!(&mut output, "{index}");
+        let _ = writeln!(
+            &mut output,
+            "{} --> {}",
+            format_srt_timestamp(start),
+            format_srt_timestamp(end)
+        );
+        for line in text.lines() {
+            let _ = writeln!(&mut output, "{line}");
+        }
+        index += 1;
+    }
+    output
+}
+
+fn duration_from_ms(ms: f64) -> Duration {
+    if !ms.is_finite() || ms <= 0.0 {
+        return Duration::ZERO;
+    }
+    Duration::from_millis(ms.round().max(0.0) as u64)
+}
+
+fn format_srt_timestamp(time: Duration) -> String {
+    let millis = time
+        .as_secs()
+        .saturating_mul(1000)
+        .saturating_add(u64::from(time.subsec_millis()));
+    let hours = millis / 3_600_000;
+    let minutes = (millis % 3_600_000) / 60_000;
+    let seconds = (millis % 60_000) / 1000;
+    let remain_ms = millis % 1000;
+    format!("{hours:02}:{minutes:02}:{seconds:02},{remain_ms:03}")
 }
