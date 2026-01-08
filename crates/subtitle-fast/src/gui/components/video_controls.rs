@@ -95,7 +95,7 @@ impl VideoControls {
         }
         self.controls = controls;
         self.info = info;
-        self.paused = false;
+        self.paused = true;
         self.pending_paused = None;
         self.seek.reset_all();
         self.progress_hovered = false;

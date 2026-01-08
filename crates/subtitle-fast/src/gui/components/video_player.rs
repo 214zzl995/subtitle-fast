@@ -36,13 +36,37 @@ pub struct VideoPlayerControlHandle {
     sender: UnboundedSender<PlayerCommand>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct VideoOpenOptions {
+    pub paused: bool,
+}
+
+impl Default for VideoOpenOptions {
+    fn default() -> Self {
+        Self { paused: false }
+    }
+}
+
+impl VideoOpenOptions {
+    pub fn paused() -> Self {
+        Self { paused: true }
+    }
+}
+
 impl VideoPlayerControlHandle {
     fn new(sender: UnboundedSender<PlayerCommand>) -> Self {
         Self { sender }
     }
 
     pub fn open(&self, path: impl Into<PathBuf>) {
-        let _ = self.sender.send(PlayerCommand::Open(path.into()));
+        let _ = self.sender.send(PlayerCommand::Open(
+            path.into(),
+            VideoOpenOptions::default(),
+        ));
+    }
+
+    pub fn open_with(&self, path: impl Into<PathBuf>, options: VideoOpenOptions) {
+        let _ = self.sender.send(PlayerCommand::Open(path.into(), options));
     }
 
     pub fn pause(&self) {
@@ -99,7 +123,7 @@ impl VideoPlayerControlHandle {
 
 #[derive(Clone)]
 enum PlayerCommand {
-    Open(PathBuf),
+    Open(PathBuf, VideoOpenOptions),
     Play,
     Pause,
     TogglePause,
@@ -181,14 +205,14 @@ impl VideoPlayerInfoHandle {
         });
     }
 
-    fn reset_for_open(&self) {
+    fn reset_for_open(&self, paused: bool) {
         self.update_playback(|state| {
             state.last_timestamp = None;
             state.last_frame_index = None;
             state.has_frame = false;
             state.ended = false;
             state.scrubbing = false;
-            state.paused = true;
+            state.paused = paused;
         });
     }
 
@@ -398,6 +422,8 @@ fn handle_command(
     session: Option<&DecoderSession>,
     input_path: &mut Option<PathBuf>,
     paused: &mut bool,
+    prime_first_frame: &mut bool,
+    has_frame: &mut bool,
     scrubbing: &mut bool,
     pending_seek: &mut Option<SeekInfo>,
     pending_seek_frame: &mut Option<u64>,
@@ -408,16 +434,18 @@ fn handle_command(
     info: &VideoPlayerInfoHandle,
 ) -> bool {
     match command {
-        PlayerCommand::Open(path) => {
+        PlayerCommand::Open(path, options) => {
             *input_path = Some(path);
-            *paused = true;
+            *paused = options.paused;
+            *prime_first_frame = options.paused;
+            *has_frame = false;
             *scrubbing = false;
             *pending_seek = None;
             *pending_seek_frame = None;
             *seek_timing = None;
             *open_requested = true;
             info.set_metadata(VideoMetadata::default());
-            info.reset_for_open();
+            info.reset_for_open(options.paused);
         }
         PlayerCommand::Play => {
             *paused = false;
@@ -525,6 +553,8 @@ fn spawn_decoder(
         let mut session: Option<DecoderSession> = None;
         let mut open_requested = false;
         let mut paused = false;
+        let mut prime_first_frame = false;
+        let mut has_frame = false;
         let mut scrubbing = false;
         let mut pending_seek: Option<SeekInfo> = None;
         let mut pending_seek_frame: Option<u64> = None;
@@ -590,6 +620,8 @@ fn spawn_decoder(
                         session.as_ref(),
                         &mut input_path,
                         &mut paused,
+                        &mut prime_first_frame,
+                        &mut has_frame,
                         &mut scrubbing,
                         &mut pending_seek,
                         &mut pending_seek_frame,
@@ -626,7 +658,8 @@ fn spawn_decoder(
             }
 
             let allow_seek_frames = seek_timing.is_some();
-            if paused_like && !allow_seek_frames {
+            let allow_first_frame = prime_first_frame && !has_frame;
+            if paused_like && !allow_seek_frames && !allow_first_frame {
                 let command = tokio::select! {
                     cmd = command_rx.recv() => cmd,
                     _ = tokio::time::sleep(Duration::from_millis(30)) => None,
@@ -638,6 +671,8 @@ fn spawn_decoder(
                         session.as_ref(),
                         &mut input_path,
                         &mut paused,
+                        &mut prime_first_frame,
+                        &mut has_frame,
                         &mut scrubbing,
                         &mut pending_seek,
                         &mut pending_seek_frame,
@@ -681,6 +716,8 @@ fn spawn_decoder(
                         session.as_ref(),
                         &mut input_path,
                         &mut paused,
+                        &mut prime_first_frame,
+                        &mut has_frame,
                         &mut scrubbing,
                         &mut pending_seek,
                         &mut pending_seek_frame,
@@ -780,6 +817,10 @@ fn spawn_decoder(
                                 }
                                 state.has_frame = true;
                             });
+                            has_frame = true;
+                            if paused_like && prime_first_frame {
+                                prime_first_frame = false;
+                            }
 
                             if let Some(cache) = cache_from_video_frame(&frame) {
                                 last_frame = Some(cache.clone());
@@ -795,6 +836,7 @@ fn spawn_decoder(
                         Some(Err(err)) => {
                             eprintln!("decoder error: {err}");
                             info.update_playback(|state| state.ended = true);
+                            has_frame = false;
                             session = None;
                             open_requested = false;
                             seek_timing = None;
@@ -802,6 +844,7 @@ fn spawn_decoder(
                         }
                         None => {
                             info.update_playback(|state| state.ended = true);
+                            has_frame = false;
                             session = None;
                             open_requested = false;
                             seek_timing = None;
