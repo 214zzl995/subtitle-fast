@@ -10,7 +10,7 @@ pub mod video_toolbar;
 
 pub use color_picker::{ColorPicker, ColorPickerHandle};
 pub use detection_sidebar::{
-    DetectionControls, DetectionHandle, DetectionMetrics, DetectionSidebar,
+    DetectedSubtitlesList, DetectionControls, DetectionHandle, DetectionMetrics, DetectionSidebar,
 };
 pub use sidebar::{CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle};
 pub use titlebar::Titlebar;

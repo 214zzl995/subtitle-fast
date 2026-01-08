@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::gui::components::{
-    CollapseDirection, ColorPicker, DetectionControls, DetectionHandle, DetectionMetrics,
-    DetectionSidebar, DragRange, DraggableEdge, FramePreprocessor, Nv12FrameInfo, Sidebar,
-    SidebarHandle, Titlebar, VideoControls, VideoLumaControls, VideoPlayer,
+    CollapseDirection, ColorPicker, DetectedSubtitlesList, DetectionControls, DetectionHandle,
+    DetectionMetrics, DetectionSidebar, DragRange, DraggableEdge, FramePreprocessor, Nv12FrameInfo,
+    Sidebar, SidebarHandle, Titlebar, VideoControls, VideoLumaControls, VideoPlayer,
     VideoPlayerControlHandle, VideoPlayerInfoHandle, VideoRoiHandle, VideoRoiOverlay, VideoToolbar,
 };
 use crate::gui::icons::{Icon, icon_md, icon_sm};
@@ -84,10 +84,13 @@ impl SubtitleFastApp {
                         cx.new(|_| DetectionControls::new(detection_handle.clone()));
                     let detection_metrics_view =
                         cx.new(|_| DetectionMetrics::new(detection_handle.clone()));
+                    let detection_subtitles_view =
+                        cx.new(|_| DetectedSubtitlesList::new(detection_handle.clone()));
                     let detection_sidebar_view = cx.new(|_| {
                         DetectionSidebar::new(
                             detection_metrics_view.clone(),
                             detection_controls_view.clone(),
+                            detection_subtitles_view.clone(),
                         )
                     });
                     let (right_panel, _) = Sidebar::create(
