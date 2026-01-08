@@ -92,7 +92,7 @@ impl SubtitleFastApp {
                     });
                     let (right_panel, _) = Sidebar::create(
                         DraggableEdge::Left,
-                        DragRange::new(px(260.0), px(560.0)),
+                        DragRange::new(px(240.0), px(520.0)),
                         CollapseDirection::Right,
                         px(0.0),
                         Duration::from_millis(160),
@@ -326,7 +326,10 @@ impl MainWindow {
     fn load_video(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let (player, controls, info) = VideoPlayer::new();
         let detection_path = path.clone();
-        controls.open(path);
+        controls.open_with(
+            path,
+            crate::gui::components::video_player::VideoOpenOptions::paused(),
+        );
         self.player = Some(cx.new(|_| player));
         self.controls = Some(controls.clone());
         self.video_info = Some(info.clone());
