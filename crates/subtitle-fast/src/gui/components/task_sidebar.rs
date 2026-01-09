@@ -152,11 +152,11 @@ impl TaskSidebar {
 
     fn status_text(run_state: DetectionRunState, progress: &PipelineProgress) -> &'static str {
         if progress.completed {
-            "Completed"
+            "Done"
         } else {
             match run_state {
                 DetectionRunState::Idle => "Idle",
-                DetectionRunState::Running => "Running",
+                DetectionRunState::Running => "Processing",
                 DetectionRunState::Paused => "Paused",
             }
         }
@@ -205,15 +205,14 @@ impl Render for TaskSidebar {
         let border_color = rgb(0x2b2b2b);
         let panel_bg = rgb(0x1a1a1a);
         let header_text = hsla(0.0, 0.0, 1.0, 0.8);
-        let hover_bg = hsla(0.0, 0.0, 1.0, 0.06);
+        let _hover_bg = hsla(0.0, 0.0, 1.0, 0.06);
         let item_active_bg = rgb(0x242424);
-        let _item_hover_bg = rgb(0x202020);
         let item_text = hsla(0.0, 0.0, 1.0, 0.9);
-        let item_subtle = hsla(0.0, 0.0, 1.0, 0.55);
-        let progress_bg = rgb(0x2a2a2a);
-        let progress_fill = rgb(0xd6d6d6);
-        let btn_icon_color = hsla(0.0, 0.0, 1.0, 0.7);
-        let btn_hover_bg = hsla(0.0, 0.0, 1.0, 0.08);
+        let item_subtle = hsla(0.0, 0.0, 1.0, 0.5);
+        let progress_bg = rgb(0x333333);
+        let progress_fill = rgb(0xcccccc);
+        let btn_icon_color = hsla(0.0, 0.0, 1.0, 0.6);
+        let btn_hover_bg = hsla(0.0, 0.0, 1.0, 0.1);
 
         let sessions = self.sessions.sessions_snapshot();
         let active_id = self.sessions.active_id();
@@ -225,30 +224,28 @@ impl Render for TaskSidebar {
             .flex()
             .items_center()
             .justify_between()
-            .text_size(px(12.0))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(header_text)
-            .py(px(2.0))
+            .h(px(32.0))
+            .px(px(8.0))
+            .border_b_1()
+            .border_color(border_color)
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(icon_sm(Icon::GalleryThumbnails, header_text))
-                    .child("Task Queue"),
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(header_text)
+                    .child("TASKS"),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(4.0))
-                    .px(px(6.0))
-                    .py(px(2.0))
+                    .justify_center()
+                    .w(px(20.0))
+                    .h(px(20.0))
                     .rounded(px(4.0))
                     .cursor_pointer()
-                    .hover(move |style| style.bg(hover_bg))
+                    .hover(move |style| style.bg(btn_hover_bg))
                     .child(icon_sm(Icon::Upload, header_text).w(px(14.0)).h(px(14.0)))
-                    .child("Add")
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, window, cx| {
@@ -257,15 +254,18 @@ impl Render for TaskSidebar {
                     ),
             );
 
-        let mut list = div().flex().flex_col().gap(px(4.0)).w_full();
+        let mut list = div().flex().flex_col().w_full().gap(px(1.0)).py(px(4.0));
 
         if sessions.is_empty() {
             list = list.child(
                 div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .h(px(60.0))
                     .text_size(px(12.0))
                     .text_color(item_subtle)
-                    .py(px(8.0))
-                    .child("No tasks yet"),
+                    .child("No tasks"),
             );
         } else {
             for session in &sessions {
@@ -273,7 +273,7 @@ impl Render for TaskSidebar {
                 let session_label = session.label.clone();
                 let progress = self.progress_snapshot(session);
                 let run_state = session.detection.run_state();
-                let status = Self::status_text(run_state, &progress);
+                let status_str = Self::status_text(run_state, &progress);
                 let ratio = Self::progress_ratio(&progress);
 
                 let is_active = Some(session.id) == active_id;
@@ -281,11 +281,6 @@ impl Render for TaskSidebar {
                     item_active_bg
                 } else {
                     panel_bg
-                };
-                let border_color = if is_active {
-                    hsla(0.0, 0.0, 1.0, 0.08)
-                } else {
-                    hsla(0.0, 0.0, 0.0, 0.0)
                 };
 
                 let is_idle = run_state == DetectionRunState::Idle;
@@ -297,79 +292,104 @@ impl Render for TaskSidebar {
                 let pause_enabled = is_running || is_paused;
                 let cancel_enabled = run_state.is_running() || run_state == DetectionRunState::Paused;
 
-                let mut start_btn = div()
-                    .flex()
-                    .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .h(px(28.0))
-                    .rounded_bl(px(6.0));
-                if start_enabled {
-                    start_btn = start_btn
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(btn_hover_bg))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.apply_action(session_id, TaskAction::Start, cx);
-                            }),
-                        )
-                        .child(icon_sm(Icon::Play, btn_icon_color));
-                } else {
-                    start_btn = start_btn.child(icon_sm(Icon::Play, btn_icon_color.opacity(0.3)));
-                }
+                let action_btn = |icon: Icon, enabled: bool, action: TaskAction, cx: &mut Context<Self>| {
+                    let mut btn = div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(20.0))
+                        .h(px(20.0))
+                        .rounded(px(3.0));
+                    
+                    if enabled {
+                        btn = btn
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(btn_hover_bg))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.apply_action(session_id, action, cx);
+                                }),
+                            )
+                            .child(icon_sm(icon, btn_icon_color).w(px(12.0)).h(px(12.0)));
+                    } else {
+                        // Invisible placeholder to keep alignment or just don't render?
+                        // Let's render disabled for consistent layout, or just empty if we want to save space?
+                        // "Efficient" usually means consistent locations.
+                         btn = btn.child(icon_sm(icon, btn_icon_color.opacity(0.1)).w(px(12.0)).h(px(12.0)));
+                    }
+                    btn
+                };
 
-                let mut pause_btn = div()
+                let icon_box = div()
                     .flex()
-                    .flex_1()
                     .items_center()
                     .justify_center()
-                    .h(px(28.0));
-                if pause_enabled {
-                    pause_btn = pause_btn
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(btn_hover_bg))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.apply_action(session_id, TaskAction::Pause, cx);
-                            }),
-                        )
-                        .child(icon_sm(Icon::Pause, btn_icon_color));
-                } else {
-                    pause_btn = pause_btn.child(icon_sm(Icon::Pause, btn_icon_color.opacity(0.3)));
-                }
-
-                let mut cancel_btn = div()
-                    .flex()
-                    .flex_1()
-                    .items_center()
-                    .justify_center()
+                    .w(px(28.0))
                     .h(px(28.0))
-                    .rounded_br(px(6.0));
-                if cancel_enabled {
-                    cancel_btn = cancel_btn
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(btn_hover_bg))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.apply_action(session_id, TaskAction::Cancel, cx);
-                            }),
-                        )
-                        .child(icon_sm(Icon::Stop, btn_icon_color));
-                } else {
-                    cancel_btn = cancel_btn.child(icon_sm(Icon::Stop, btn_icon_color.opacity(0.3)));
-                }
+                    .rounded(px(4.0))
+                    .bg(rgb(0x222222))
+                    .child(icon_sm(Icon::Film, item_subtle).w(px(16.0)).h(px(16.0)));
+
+                let info_box = div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(item_text)
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(session_label),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(3.0))
+                                    .rounded_full()
+                                    .bg(progress_bg)
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .rounded_full()
+                                            .w(relative(ratio))
+                                            .bg(progress_fill),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(item_subtle)
+                                    .child(status_str),
+                            ),
+                    );
+
+                let controls_box = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.0))
+                    .child(action_btn(Icon::Play, start_enabled, TaskAction::Start, cx))
+                    .child(action_btn(Icon::Pause, pause_enabled, TaskAction::Pause, cx))
+                    .child(action_btn(Icon::Stop, cancel_enabled, TaskAction::Cancel, cx));
 
                 let row = div()
                     .id(("task-sidebar-entry", session_id))
                     .flex()
-                    .flex_col()
-                    .rounded(px(6.0))
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(8.0))
+                    .py(px(6.0))
                     .bg(bg_color)
-                    .border_1()
-                    .border_color(border_color)
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -377,67 +397,10 @@ impl Render for TaskSidebar {
                             (this.callbacks.on_select)(session_id, window, cx);
                         }),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .px(px(8.0))
-                            .pt(px(8.0))
-                            .pb(px(4.0))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap(px(8.0))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(1.0))
-                                            .min_w(px(0.0))
-                                            .child(
-                                                div()
-                                                    .text_size(px(12.0))
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(item_text)
-                                                    .child(session_label),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(10.0))
-                                                    .text_color(item_subtle)
-                                                    .child(status),
-                                            ),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .relative()
-                                    .h(px(4.0))
-                                    .rounded(px(2.0))
-                                    .bg(progress_bg)
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .top(px(0.0))
-                                            .bottom(px(0.0))
-                                            .left(px(0.0))
-                                            .rounded(px(2.0))
-                                            .w(relative(ratio))
-                                            .bg(progress_fill),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .w_full()
-                            .child(start_btn)
-                            .child(pause_btn)
-                            .child(cancel_btn),
-                    );
+                    .hover(move |s| s.bg(hsla(0.0, 0.0, 1.0, 0.04)))
+                    .child(icon_box)
+                    .child(info_box)
+                    .child(controls_box);
 
                 list = list.child(row);
             }
@@ -447,9 +410,7 @@ impl Render for TaskSidebar {
         let body = div()
             .flex()
             .flex_col()
-            .gap(px(10.0))
-            .px(px(12.0))
-            .py(px(12.0))
+            .size_full()
             .child(header)
             .child(list)
             .on_children_prepainted(move |bounds, _window, cx| {
@@ -465,8 +426,6 @@ impl Render for TaskSidebar {
             .flex_col()
             .size_full()
             .bg(panel_bg)
-            .border_r(px(1.0))
-            .border_color(border_color)
             .child(body)
     }
 }
