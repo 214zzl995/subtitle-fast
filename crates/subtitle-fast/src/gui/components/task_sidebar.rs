@@ -91,7 +91,7 @@ impl TaskSidebar {
             loop {
                 tokio::select! {
                     changed = progress_rx.changed() => {
-                        
+
                         if changed.is_err() {
                             break;
                         }
@@ -126,7 +126,7 @@ impl TaskSidebar {
                         }
                     }
                     _ = ticker.tick() => {
-                        
+
                         if running
                             && !completed
                             && Instant::now().duration_since(last_progress_change_at) >= PROGRESS_THROTTLE
@@ -170,12 +170,7 @@ impl TaskSidebar {
         ratio.clamp(0.0, 1.0) as f32
     }
 
-    fn apply_action(
-        &mut self,
-        session_id: SessionId,
-        action: TaskAction,
-        _cx: &mut Context<Self>,
-    ) {
+    fn apply_action(&mut self, session_id: SessionId, action: TaskAction, _cx: &mut Context<Self>) {
         let Some(session) = self.sessions.session(session_id) else {
             return;
         };
@@ -277,11 +272,7 @@ impl Render for TaskSidebar {
                 let ratio = Self::progress_ratio(&progress);
 
                 let is_active = Some(session.id) == active_id;
-                let bg_color = if is_active {
-                    item_active_bg
-                } else {
-                    panel_bg
-                };
+                let bg_color = if is_active { item_active_bg } else { panel_bg };
 
                 let is_idle = run_state == DetectionRunState::Idle;
                 let is_running = run_state == DetectionRunState::Running;
@@ -290,36 +281,42 @@ impl Render for TaskSidebar {
 
                 let start_enabled = is_idle && !completed;
                 let pause_enabled = is_running || is_paused;
-                let cancel_enabled = run_state.is_running() || run_state == DetectionRunState::Paused;
+                let cancel_enabled =
+                    run_state.is_running() || run_state == DetectionRunState::Paused;
 
-                let action_btn = |icon: Icon, enabled: bool, action: TaskAction, cx: &mut Context<Self>| {
-                    let mut btn = div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w(px(20.0))
-                        .h(px(20.0))
-                        .rounded(px(3.0));
-                    
-                    if enabled {
-                        btn = btn
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(btn_hover_bg))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.apply_action(session_id, action, cx);
-                                }),
-                            )
-                            .child(icon_sm(icon, btn_icon_color).w(px(12.0)).h(px(12.0)));
-                    } else {
-                        // Invisible placeholder to keep alignment or just don't render?
-                        // Let's render disabled for consistent layout, or just empty if we want to save space?
-                        // "Efficient" usually means consistent locations.
-                         btn = btn.child(icon_sm(icon, btn_icon_color.opacity(0.1)).w(px(12.0)).h(px(12.0)));
-                    }
-                    btn
-                };
+                let action_btn =
+                    |icon: Icon, enabled: bool, action: TaskAction, cx: &mut Context<Self>| {
+                        let mut btn = div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(20.0))
+                            .h(px(20.0))
+                            .rounded(px(3.0));
+
+                        if enabled {
+                            btn = btn
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(btn_hover_bg))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.apply_action(session_id, action, cx);
+                                    }),
+                                )
+                                .child(icon_sm(icon, btn_icon_color).w(px(12.0)).h(px(12.0)));
+                        } else {
+                            // Invisible placeholder to keep alignment or just don't render?
+                            // Let's render disabled for consistent layout, or just empty if we want to save space?
+                            // "Efficient" usually means consistent locations.
+                            btn = btn.child(
+                                icon_sm(icon, btn_icon_color.opacity(0.1))
+                                    .w(px(12.0))
+                                    .h(px(12.0)),
+                            );
+                        }
+                        btn
+                    };
 
                 let icon_box = div()
                     .flex()
@@ -379,8 +376,18 @@ impl Render for TaskSidebar {
                     .items_center()
                     .gap(px(2.0))
                     .child(action_btn(Icon::Play, start_enabled, TaskAction::Start, cx))
-                    .child(action_btn(Icon::Pause, pause_enabled, TaskAction::Pause, cx))
-                    .child(action_btn(Icon::Stop, cancel_enabled, TaskAction::Cancel, cx));
+                    .child(action_btn(
+                        Icon::Pause,
+                        pause_enabled,
+                        TaskAction::Pause,
+                        cx,
+                    ))
+                    .child(action_btn(
+                        Icon::Stop,
+                        cancel_enabled,
+                        TaskAction::Cancel,
+                        cx,
+                    ));
 
                 let row = div()
                     .id(("task-sidebar-entry", session_id))
@@ -426,6 +433,8 @@ impl Render for TaskSidebar {
             .flex_col()
             .size_full()
             .bg(panel_bg)
+            .border_r(px(1.1))
+            .border_color(border_color)
             .child(body)
     }
 }

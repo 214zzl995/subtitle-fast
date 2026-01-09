@@ -94,7 +94,7 @@ impl SubtitleFastApp {
                         },
                         cx,
                     );
-                    let detection_sidebar_host = cx.new(|_| DetectionSidebarHost::new());
+                    let detection_sidebar_host = cx.new(|cx| DetectionSidebarHost::new(cx));
                     let (right_panel, _) = Sidebar::create(
                         DraggableEdge::Left,
                         DragRange::new(px(240.0), px(520.0)),
