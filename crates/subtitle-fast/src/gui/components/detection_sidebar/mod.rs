@@ -19,11 +19,13 @@ use subtitle_fast_types::{DecoderError, RoiConfig};
 use subtitle_fast_validator::subtitle_detection::{DEFAULT_DELTA, DEFAULT_TARGET};
 
 pub mod controls;
+pub mod host;
 pub mod metrics;
 pub mod panel;
 pub mod subtitles;
 
 pub use controls::DetectionControls;
+pub use host::DetectionSidebarHost;
 pub use metrics::DetectionMetrics;
 pub use panel::DetectionSidebar;
 pub use subtitles::DetectedSubtitlesList;

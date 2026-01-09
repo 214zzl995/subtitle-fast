@@ -8,11 +8,13 @@ use std::time::Duration;
 
 use crate::gui::components::{
     CollapseDirection, ColorPicker, DetectedSubtitlesList, DetectionControls, DetectionHandle,
-    DetectionMetrics, DetectionSidebar, DragRange, DraggableEdge, FramePreprocessor, Nv12FrameInfo,
-    Sidebar, SidebarHandle, Titlebar, VideoControls, VideoLumaControls, VideoPlayer,
+    DetectionMetrics, DetectionSidebar, DetectionSidebarHost, DragRange, DraggableEdge,
+    FramePreprocessor, Nv12FrameInfo, Sidebar, SidebarHandle, TaskSidebar, TaskSidebarCallbacks,
+    Titlebar, VideoControls, VideoLumaControls, VideoLumaHandle, VideoPlayer,
     VideoPlayerControlHandle, VideoPlayerInfoHandle, VideoRoiHandle, VideoRoiOverlay, VideoToolbar,
 };
 use crate::gui::icons::{Icon, icon_md, icon_sm};
+use crate::gui::session::{SessionHandle, SessionId, VideoSession};
 
 #[derive(RustEmbed)]
 #[folder = "assets"]
@@ -68,7 +70,17 @@ impl SubtitleFastApp {
                     ..Default::default()
                 },
                 move |_, cx| {
+                    let sessions = SessionHandle::new();
                     let titlebar = cx.new(|_| Titlebar::new("main-titlebar", "subtitle-fast"));
+                    let task_sidebar_view = cx.new(|_| {
+                        TaskSidebar::new(
+                            sessions.clone(),
+                            TaskSidebarCallbacks {
+                                on_add: Arc::new(|_, _| {}),
+                                on_select: Arc::new(|_, _, _| {}),
+                            },
+                        )
+                    });
                     let (left_panel, left_panel_handle) = Sidebar::create(
                         DraggableEdge::Right,
                         DragRange::new(px(200.0), px(480.0)),
@@ -76,24 +88,13 @@ impl SubtitleFastApp {
                         px(0.0),
                         Duration::from_millis(160),
                         px(SIDEBAR_DRAG_HIT_THICKNESS),
-                        || sidebar_placeholder_content(DraggableEdge::Right),
+                        {
+                            let task_sidebar_view = task_sidebar_view.clone();
+                            move || task_sidebar_content(task_sidebar_view.clone())
+                        },
                         cx,
                     );
-                    let detection_handle = DetectionHandle::new();
-                    let detection_controls_view =
-                        cx.new(|_| DetectionControls::new(detection_handle.clone()));
-                    let detection_metrics_view =
-                        cx.new(|_| DetectionMetrics::new(detection_handle.clone()));
-                    let detection_subtitles_view =
-                        cx.new(|_| DetectedSubtitlesList::new(detection_handle.clone()));
-                    let detection_sidebar_view = cx.new(|_| {
-                        DetectionSidebar::new(
-                            detection_handle.clone(),
-                            detection_metrics_view.clone(),
-                            detection_controls_view.clone(),
-                            detection_subtitles_view.clone(),
-                        )
-                    });
+                    let detection_sidebar_host = cx.new(|_| DetectionSidebarHost::new());
                     let (right_panel, _) = Sidebar::create(
                         DraggableEdge::Left,
                         DragRange::new(px(240.0), px(520.0)),
@@ -102,8 +103,8 @@ impl SubtitleFastApp {
                         Duration::from_millis(160),
                         px(SIDEBAR_DRAG_HIT_THICKNESS),
                         {
-                            let detection_sidebar_view = detection_sidebar_view.clone();
-                            move || detection_sidebar_content(detection_sidebar_view.clone())
+                            let detection_sidebar_host = detection_sidebar_host.clone();
+                            move || detection_sidebar_content(detection_sidebar_host.clone())
                         },
                         cx,
                     );
@@ -115,8 +116,6 @@ impl SubtitleFastApp {
                     let toolbar_view = cx.new(|_| VideoToolbar::new());
                     let (roi_overlay, roi_handle) = VideoRoiOverlay::new();
                     let roi_overlay_view = cx.new(|_| roi_overlay);
-                    detection_handle.set_luma_handle(Some(luma_handle.clone()));
-                    detection_handle.set_roi_handle(Some(roi_handle.clone()));
                     let _ = toolbar_view.update(cx, |toolbar_view, cx| {
                         toolbar_view.set_luma_controls(
                             Some(luma_handle.clone()),
@@ -139,21 +138,51 @@ impl SubtitleFastApp {
                             cx,
                         );
                     });
-                    cx.new(|_| {
+                    let main_window = cx.new(|_| {
                         MainWindow::new(
                             None,
                             titlebar,
                             left_panel,
                             left_panel_handle,
                             right_panel,
-                            detection_handle,
+                            sessions.clone(),
+                            task_sidebar_view.clone(),
+                            detection_sidebar_host.clone(),
+                            luma_handle.clone(),
                             toolbar_view,
                             luma_controls_view,
                             controls_view,
                             roi_overlay_view,
                             roi_handle,
                         )
-                    })
+                    });
+                    let weak_main = main_window.downgrade();
+                    let add_handle = weak_main.clone();
+                    let select_handle = weak_main.clone();
+                    let _ = task_sidebar_view.update(cx, |sidebar, cx| {
+                        sidebar.set_callbacks(
+                            TaskSidebarCallbacks {
+                                on_add: Arc::new(move |window, cx| {
+                                    let Some(main_window) = add_handle.upgrade() else {
+                                        return;
+                                    };
+                                    let _ = main_window.update(cx, |this, cx| {
+                                        this.prompt_for_video(window, false, cx);
+                                    });
+                                }),
+                                on_select: Arc::new(move |session_id, _window, cx| {
+                                    let Some(main_window) = select_handle.upgrade() else {
+                                        return;
+                                    };
+                                    let _ = main_window.update(cx, |this, cx| {
+                                        this.activate_session(session_id, cx);
+                                    });
+                                }),
+                            },
+                            cx,
+                        );
+                    });
+                    main_window
                 },
             )
             .unwrap();
@@ -171,26 +200,16 @@ const SIDEBAR_DRAG_HIT_THICKNESS: f32 = 6.0;
 const SIDEBAR_BORDER_WIDTH: f32 = 1.1;
 const SIDEBAR_BORDER_COLOR: u32 = 0x2b2b2b;
 
-fn sidebar_placeholder_content(edge: DraggableEdge) -> AnyElement {
-    let border_width = px(SIDEBAR_BORDER_WIDTH);
-    let border_color = rgb(SIDEBAR_BORDER_COLOR);
-    let content = div()
+fn task_sidebar_content(panel_view: Entity<TaskSidebar>) -> AnyElement {
+    div()
         .flex()
-        .items_center()
-        .justify_center()
+        .flex_col()
         .size_full()
-        .bg(rgb(0x1a1a1a))
-        .text_color(rgb(0xf0f0f0))
-        .child("Sidebar");
-    let content = match edge {
-        DraggableEdge::Left => content.border_l(border_width),
-        DraggableEdge::Right => content.border_r(border_width),
-    }
-    .border_color(border_color);
-    content.into_any_element()
+        .child(panel_view)
+        .into_any_element()
 }
 
-fn detection_sidebar_content(panel_view: Entity<DetectionSidebar>) -> AnyElement {
+fn detection_sidebar_content(panel_view: Entity<DetectionSidebarHost>) -> AnyElement {
     let border_width = px(SIDEBAR_BORDER_WIDTH);
     let border_color = rgb(SIDEBAR_BORDER_COLOR);
     div()
@@ -215,12 +234,16 @@ pub struct MainWindow {
     left_panel: Entity<Sidebar>,
     _left_panel_handle: SidebarHandle,
     right_panel: Entity<Sidebar>,
-    detection_handle: DetectionHandle,
+    sessions: SessionHandle,
+    active_session: Option<SessionId>,
+    task_sidebar: Entity<TaskSidebar>,
+    detection_sidebar_host: Entity<DetectionSidebarHost>,
+    luma_handle: VideoLumaHandle,
     toolbar_view: Entity<VideoToolbar>,
     luma_controls_view: Entity<VideoLumaControls>,
     controls_view: Entity<VideoControls>,
     roi_overlay: Entity<VideoRoiOverlay>,
-    _roi_handle: VideoRoiHandle,
+    roi_handle: VideoRoiHandle,
 }
 
 impl MainWindow {
@@ -230,7 +253,10 @@ impl MainWindow {
         left_panel: Entity<Sidebar>,
         left_panel_handle: SidebarHandle,
         right_panel: Entity<Sidebar>,
-        detection_handle: DetectionHandle,
+        sessions: SessionHandle,
+        task_sidebar: Entity<TaskSidebar>,
+        detection_sidebar_host: Entity<DetectionSidebarHost>,
+        luma_handle: VideoLumaHandle,
         toolbar_view: Entity<VideoToolbar>,
         luma_controls_view: Entity<VideoLumaControls>,
         controls_view: Entity<VideoControls>,
@@ -248,16 +274,20 @@ impl MainWindow {
             left_panel,
             _left_panel_handle: left_panel_handle,
             right_panel,
-            detection_handle,
+            sessions,
+            active_session: None,
+            task_sidebar,
+            detection_sidebar_host,
+            luma_handle,
             toolbar_view,
             luma_controls_view,
             controls_view,
             roi_overlay,
-            _roi_handle: roi_handle,
+            roi_handle,
         }
     }
 
-    fn prompt_for_video(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn prompt_for_video(&mut self, window: &mut Window, select_new: bool, cx: &mut Context<Self>) {
         let options = PathPromptOptions {
             files: true,
             directories: false,
@@ -306,7 +336,7 @@ impl MainWindow {
 
                         if is_supported_video_path(&path) {
                             let _ = this.update(&mut cx, move |this, cx| {
-                                this.load_video(path, cx);
+                                this.enqueue_session(path, select_new, cx);
                             });
                             return;
                         }
@@ -327,17 +357,64 @@ impl MainWindow {
         .detach();
     }
 
-    fn load_video(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let (player, controls, info) = VideoPlayer::new();
-        let detection_path = path.clone();
-        controls.open_with(
-            path,
-            crate::gui::components::video_player::VideoOpenOptions::paused(),
+    fn enqueue_session(&mut self, path: PathBuf, select_new: bool, cx: &mut Context<Self>) {
+        let detection_handle = DetectionHandle::new();
+        detection_handle.set_video_path(Some(path.clone()));
+        detection_handle.set_luma_handle(Some(self.luma_handle.clone()));
+        detection_handle.set_roi_handle(Some(self.roi_handle.clone()));
+        let session_id = self.sessions.add_session(path, detection_handle);
+
+        if select_new || self.active_session.is_none() {
+            self.activate_session(session_id, cx);
+        } else {
+            self.notify_task_sidebar(cx);
+        }
+    }
+
+    fn activate_session(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
+        if self.active_session == Some(session_id) {
+            return;
+        }
+
+        self.save_active_playback();
+        self.active_session = Some(session_id);
+        self.sessions.set_active(session_id);
+        self.notify_task_sidebar(cx);
+        self.release_player(cx);
+
+        let Some(session) = self.sessions.session(session_id) else {
+            self.update_detection_sidebar(None, cx);
+            return;
+        };
+        self.load_session(&session, cx);
+        self.update_detection_sidebar(Some(session.detection.clone()), cx);
+    }
+
+    fn save_active_playback(&mut self) {
+        let Some(session_id) = self.active_session else {
+            return;
+        };
+        let Some(info) = self.video_info.as_ref() else {
+            return;
+        };
+        let snapshot = info.snapshot();
+        self.sessions.update_playback(
+            session_id,
+            snapshot.last_timestamp,
+            snapshot.last_frame_index,
         );
+    }
+
+    fn load_session(&mut self, session: &VideoSession, cx: &mut Context<Self>) {
+        let (player, controls, info) = VideoPlayer::new();
+        let options = crate::gui::components::video_player::VideoOpenOptions {
+            paused: true,
+            start_frame: session.last_frame_index,
+        };
+        controls.open_with(session.path.clone(), options);
         self.player = Some(cx.new(|_| player));
         self.controls = Some(controls.clone());
         self.video_info = Some(info.clone());
-        self.detection_handle.set_video_path(Some(detection_path));
         self.replay_dismissed = false;
         self.set_replay_visible(false, cx);
         let _ = self.controls_view.update(cx, |controls_view, cx| {
@@ -355,6 +432,64 @@ impl MainWindow {
             overlay.set_info_handle(Some(info), cx);
         });
         cx.notify();
+    }
+
+    fn release_player(&mut self, cx: &mut Context<Self>) {
+        self.player = None;
+        self.controls = None;
+        self.video_info = None;
+        self.replay_dismissed = false;
+        self.set_replay_visible(false, cx);
+        let _ = self.controls_view.update(cx, |controls_view, cx| {
+            controls_view.set_handles(None, None);
+            cx.notify();
+        });
+        let _ = self.luma_controls_view.update(cx, |luma_controls, cx| {
+            luma_controls.set_enabled(false, cx);
+        });
+        let _ = self.toolbar_view.update(cx, |toolbar_view, cx| {
+            toolbar_view.set_controls(None, cx);
+            cx.notify();
+        });
+        let _ = self.roi_overlay.update(cx, |overlay, cx| {
+            overlay.set_info_handle(None, cx);
+        });
+        cx.notify();
+    }
+
+    fn build_detection_sidebar(
+        &self,
+        handle: DetectionHandle,
+        cx: &mut Context<Self>,
+    ) -> Entity<DetectionSidebar> {
+        let detection_controls_view = cx.new(|_| DetectionControls::new(handle.clone()));
+        let detection_metrics_view = cx.new(|_| DetectionMetrics::new(handle.clone()));
+        let detection_subtitles_view = cx.new(|_| DetectedSubtitlesList::new(handle.clone()));
+        cx.new(|_| {
+            DetectionSidebar::new(
+                handle,
+                detection_metrics_view.clone(),
+                detection_controls_view.clone(),
+                detection_subtitles_view.clone(),
+            )
+        })
+    }
+
+    fn update_detection_sidebar(
+        &mut self,
+        handle: Option<DetectionHandle>,
+        cx: &mut Context<Self>,
+    ) {
+        let sidebar = handle.map(|handle| self.build_detection_sidebar(handle, cx));
+        let _ = self.detection_sidebar_host.update(cx, |host, cx| {
+            host.set_sidebar(sidebar, cx);
+        });
+    }
+
+    fn notify_task_sidebar(&mut self, cx: &mut Context<Self>) {
+        let _ = self.task_sidebar.update(cx, |_, cx| {
+            cx.notify();
+        });
     }
 
     fn set_replay_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -535,7 +670,7 @@ impl Render for MainWindow {
                         )
                         .id(("video-wrapper", cx.entity_id()))
                         .on_click(cx.listener(|this, _event, window, cx| {
-                            this.prompt_for_video(window, cx);
+                            this.prompt_for_video(window, true, cx);
                         }))
                 };
                 let video_wrapper = video_frame.child(frame_content);

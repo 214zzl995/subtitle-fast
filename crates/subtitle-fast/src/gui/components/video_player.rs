@@ -39,17 +39,24 @@ pub struct VideoPlayerControlHandle {
 #[derive(Clone, Copy, Debug)]
 pub struct VideoOpenOptions {
     pub paused: bool,
+    pub start_frame: Option<u64>,
 }
 
 impl Default for VideoOpenOptions {
     fn default() -> Self {
-        Self { paused: false }
+        Self {
+            paused: false,
+            start_frame: None,
+        }
     }
 }
 
 impl VideoOpenOptions {
     pub fn paused() -> Self {
-        Self { paused: true }
+        Self {
+            paused: true,
+            start_frame: None,
+        }
     }
 }
 
@@ -376,6 +383,7 @@ struct SeekTiming {
 fn open_session(
     backend: Backend,
     input_path: &PathBuf,
+    start_frame: Option<u64>,
     info: &VideoPlayerInfoHandle,
 ) -> Option<DecoderSession> {
     let config = Configuration {
@@ -383,7 +391,7 @@ fn open_session(
         input: Some(input_path.clone()),
         channel_capacity: None,
         output_format: OutputFormat::Nv12,
-        start_frame: None,
+        start_frame,
     };
 
     let provider = match config.create_provider() {
@@ -429,6 +437,7 @@ fn handle_command(
     pending_seek_frame: &mut Option<u64>,
     seek_timing: &mut Option<SeekTiming>,
     open_requested: &mut bool,
+    open_start_frame: &mut Option<u64>,
     preprocessors: &mut Vec<PreprocessorEntry>,
     refresh_cached: &mut bool,
     info: &VideoPlayerInfoHandle,
@@ -444,6 +453,7 @@ fn handle_command(
             *pending_seek_frame = None;
             *seek_timing = None;
             *open_requested = true;
+            *open_start_frame = options.start_frame;
             info.set_metadata(VideoMetadata::default());
             info.reset_for_open(options.paused);
         }
@@ -470,6 +480,7 @@ fn handle_command(
         }
         PlayerCommand::Seek(seek) => {
             let metadata = info.metadata();
+            *open_start_frame = None;
             *pending_seek_frame = match seek {
                 SeekInfo::Frame { frame, .. } => Some(frame),
                 SeekInfo::Time { position, .. } => metadata.fps.and_then(|fps| {
@@ -515,6 +526,7 @@ fn handle_command(
             *pending_seek_frame = None;
             *seek_timing = None;
             *open_requested = true;
+            *open_start_frame = None;
             info.reset_for_replay();
         }
         PlayerCommand::SetPreprocessor { key, preprocessor } => {
@@ -552,6 +564,7 @@ fn spawn_decoder(
         let mut input_path: Option<PathBuf> = None;
         let mut session: Option<DecoderSession> = None;
         let mut open_requested = false;
+        let mut open_start_frame: Option<u64> = None;
         let mut paused = false;
         let mut prime_first_frame = false;
         let mut has_frame = false;
@@ -582,10 +595,11 @@ fn spawn_decoder(
                         open_requested = false;
                         continue;
                     }
-                    let new_session = match open_session(backend, input_path, &info) {
-                        Some(session) => session,
-                        None => return,
-                    };
+                    let new_session =
+                        match open_session(backend, input_path, open_start_frame.take(), &info) {
+                            Some(session) => session,
+                            None => return,
+                        };
 
                     if let Some(seek) = pending_seek.take() {
                         match new_session.controller.seek(seek) {
@@ -627,6 +641,7 @@ fn spawn_decoder(
                         &mut pending_seek_frame,
                         &mut seek_timing,
                         &mut open_requested,
+                        &mut open_start_frame,
                         &mut preprocessors,
                         &mut refresh_cached,
                         &info,
@@ -678,6 +693,7 @@ fn spawn_decoder(
                         &mut pending_seek_frame,
                         &mut seek_timing,
                         &mut open_requested,
+                        &mut open_start_frame,
                         &mut preprocessors,
                         &mut refresh_cached,
                         &info,
@@ -723,6 +739,7 @@ fn spawn_decoder(
                         &mut pending_seek_frame,
                         &mut seek_timing,
                         &mut open_requested,
+                        &mut open_start_frame,
                         &mut preprocessors,
                         &mut refresh_cached,
                         &info,
