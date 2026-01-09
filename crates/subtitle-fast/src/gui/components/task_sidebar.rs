@@ -199,15 +199,15 @@ impl Render for TaskSidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let border_color = rgb(0x2b2b2b);
         let panel_bg = rgb(0x1b1b1b);
-        let header_text = hsla(0.0, 0.0, 0.267, 1.0);
-        let item_bg = rgb(0x161616);
-        let item_hover_bg = rgb(0x222222);
-        let item_text = hsla(0.0, 0.0, 0.878, 1.0);
-        let item_subtle = hsla(0.0, 0.0, 0.5, 1.0);
-        let progress_fill = rgb(0x2a2a2a);
-        let btn_icon_color = hsla(0.0, 0.0, 0.333, 1.0);
+        let header_text = hsla(0.0, 0.0, 1.0, 0.72);
+        let item_bg = rgb(0x252525);
+        let item_hover_bg = rgb(0x2f2f2f);
+        let item_text = hsla(0.0, 0.0, 0.9, 1.0);
+        let item_subtle = hsla(0.0, 0.0, 0.6, 1.0);
+        let progress_fill = hsla(0.0, 0.0, 1.0, 0.1);
+        let btn_icon_color = hsla(0.0, 0.0, 0.7, 1.0);
         let btn_hover_bg = hsla(0.0, 0.0, 1.0, 0.1);
-        let btn_stop_hover_bg = hsla(0.0, 0.6, 0.5, 0.2);
+        let btn_stop_hover_bg = hsla(0.0, 0.0, 1.0, 0.15);
 
         let sessions = self.sessions.sessions_snapshot();
         for session in &sessions {
@@ -219,14 +219,22 @@ impl Render for TaskSidebar {
             .items_center()
             .justify_between()
             .px(px(16.0))
-            .pb(px(20.0))
+            .pb(px(12.0))
             .pt(px(8.0))
             .child(
                 div()
-                    .text_size(px(13.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .text_size(px(12.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(header_text)
-                    .child("QUEUE"),
+                    .child(
+                        icon_sm(Icon::GalleryThumbnails, header_text)
+                            .w(px(14.0))
+                            .h(px(14.0)),
+                    )
+                    .child("Task"),
             )
             .child(
                 div()
@@ -278,42 +286,32 @@ impl Render for TaskSidebar {
                 let cancel_enabled =
                     run_state.is_running() || run_state == DetectionRunState::Paused;
 
-                let action_btn = |icon: Icon,
-                                  enabled: bool,
-                                  action: TaskAction,
-                                  is_stop: bool,
-                                  cx: &mut Context<Self>| {
-                    let btn = div()
+                let make_btn = |icon: Icon,
+                                action: TaskAction,
+                                is_stop: bool,
+                                cx: &mut Context<Self>| {
+                    let hover_bg = if is_stop {
+                        btn_stop_hover_bg
+                    } else {
+                        btn_hover_bg
+                    };
+                    let hover_color = hsla(0.0, 0.0, 1.0, 1.0);
+                    div()
                         .flex()
                         .items_center()
                         .justify_center()
                         .rounded(px(6.0))
                         .w(px(24.0))
-                        .h(px(24.0));
-
-                    if enabled {
-                        let hover_bg = if is_stop {
-                            btn_stop_hover_bg
-                        } else {
-                            btn_hover_bg
-                        };
-                        let hover_color = if is_stop {
-                            hsla(0.0, 0.0, 1.0, 1.0)
-                        } else {
-                            hsla(0.0, 0.0, 0.8, 1.0)
-                        };
-                        btn.cursor_pointer()
-                            .hover(move |s| s.bg(hover_bg).text_color(hover_color))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.apply_action(session_id, action, cx);
-                                }),
-                            )
-                            .child(icon_sm(icon, btn_icon_color).w(px(12.0)).h(px(12.0)))
-                    } else {
-                        div()
-                    }
+                        .h(px(24.0))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover_bg).text_color(hover_color))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.apply_action(session_id, action, cx);
+                            }),
+                        )
+                        .child(icon_sm(icon, btn_icon_color).w(px(12.0)).h(px(12.0)))
                 };
 
                 let status_icon = if is_running {
@@ -326,77 +324,26 @@ impl Render for TaskSidebar {
                     icon_sm(Icon::Film, item_subtle)
                 };
 
-                let controls_box = div()
+                let mut controls_box = div()
                     .flex()
                     .items_center()
                     .gap(px(2.0))
-                    .bg(hsla(0.0, 0.0, 0.0, 0.5))
+                    .bg(hsla(0.0, 0.0, 0.0, 0.3))
                     .rounded(px(8.0))
-                    .p(px(2.0))
-                    .child(action_btn(
-                        Icon::Play,
-                        start_enabled,
-                        TaskAction::Start,
-                        false,
-                        cx,
-                    ))
-                    .child(action_btn(
-                        Icon::Pause,
-                        pause_enabled,
-                        TaskAction::Pause,
-                        false,
-                        cx,
-                    ))
-                    .child(action_btn(
-                        Icon::Stop,
-                        cancel_enabled,
-                        TaskAction::Cancel,
-                        true,
-                        cx,
-                    ));
+                    .p(px(2.0));
 
-                let name_row = div().flex().items_center().w_full().child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .w(px(16.0))
-                                .child(status_icon.w(px(14.0)).h(px(14.0))),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(item_text)
-                                .whitespace_nowrap()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .child(session_label.clone()),
-                        ),
-                );
-
-                let status_row = div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .w_full()
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(item_subtle)
-                            .ml(px(24.0))
-                            .child(status_str),
-                    )
-                    .child(controls_box);
+                if start_enabled {
+                    controls_box =
+                        controls_box.child(make_btn(Icon::Play, TaskAction::Start, false, cx));
+                }
+                if pause_enabled {
+                    controls_box =
+                        controls_box.child(make_btn(Icon::Pause, TaskAction::Pause, false, cx));
+                }
+                if cancel_enabled {
+                    controls_box =
+                        controls_box.child(make_btn(Icon::Stop, TaskAction::Cancel, true, cx));
+                }
 
                 let progress_bg_layer = div()
                     .absolute()
@@ -409,12 +356,47 @@ impl Render for TaskSidebar {
 
                 let item_content = div()
                     .flex()
-                    .flex_col()
-                    .gap(px(4.0))
+                    .items_center()
                     .w_full()
-                    .relative()
-                    .child(name_row)
-                    .child(status_row);
+                    .gap(px(4.0))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(24.0))
+                            .child(status_icon.w(px(14.0)).h(px(14.0))),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(item_text)
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(session_label.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(10.0))
+                                            .text_color(item_subtle)
+                                            .child(status_str),
+                                    )
+                                    .child(controls_box),
+                            ),
+                    );
 
                 let row = div()
                     .id(("task-sidebar-entry", session_id))
@@ -422,7 +404,8 @@ impl Render for TaskSidebar {
                     .h(px(56.0))
                     .rounded(px(8.0))
                     .bg(item_bg)
-                    .px(px(16.0))
+                    .pl(px(8.0))
+                    .pr(px(4.0))
                     .flex()
                     .items_center()
                     .overflow_hidden()
@@ -435,7 +418,7 @@ impl Render for TaskSidebar {
                     )
                     .hover(move |s| s.bg(item_hover_bg))
                     .child(progress_bg_layer)
-                    .child(item_content);
+                    .child(item_content.relative());
 
                 list = list.child(row);
             }
