@@ -6,8 +6,8 @@ use futures_channel::mpsc::unbounded;
 use futures_util::StreamExt;
 use gpui::prelude::*;
 use gpui::{
-    Bounds, Context, DispatchPhase, FontWeight, InteractiveElement, MouseButton, MouseDownEvent,
-    Pixels, Point, Render, Task, Window, deferred, div, hsla, point, px, relative, rgb,
+    Bounds, Context, FontWeight, InteractiveElement, MouseButton, Pixels, Render, Task, Window,
+    div, hsla, px, relative, rgb,
 };
 use tokio::time::MissedTickBehavior;
 
@@ -18,8 +18,6 @@ use crate::stage::PipelineProgress;
 
 use super::DetectionRunState;
 
-const MENU_WIDTH: f32 = 160.0;
-const MENU_ITEM_HEIGHT: f32 = 28.0;
 const PROGRESS_STEP: f64 = 0.001;
 const PROGRESS_THROTTLE: Duration = Duration::from_millis(500);
 
@@ -33,8 +31,6 @@ pub struct TaskSidebar {
     sessions: SessionHandle,
     callbacks: TaskSidebarCallbacks,
     container_bounds: Option<Bounds<Pixels>>,
-    menu: Option<TaskMenuState>,
-    menu_bounds: Option<Bounds<Pixels>>,
     progress_tasks: HashMap<SessionId, Task<()>>,
 }
 
@@ -44,8 +40,6 @@ impl TaskSidebar {
             sessions,
             callbacks,
             container_bounds: None,
-            menu: None,
-            menu_bounds: None,
             progress_tasks: HashMap::new(),
         }
     }
@@ -57,41 +51,6 @@ impl TaskSidebar {
 
     fn set_container_bounds(&mut self, bounds: Option<Bounds<Pixels>>) {
         self.container_bounds = bounds;
-    }
-
-    fn close_menu(&mut self, cx: &mut Context<Self>) {
-        if self.menu.is_some() {
-            self.menu = None;
-            self.menu_bounds = None;
-            cx.notify();
-        }
-    }
-
-    fn open_menu(
-        &mut self,
-        session_id: SessionId,
-        position: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        self.menu = Some(TaskMenuState {
-            session_id,
-            position,
-        });
-        self.menu_bounds = None;
-        cx.notify();
-    }
-
-    fn menu_position(&self, menu_width: Pixels, menu_height: Pixels) -> Option<Point<Pixels>> {
-        let bounds = self.container_bounds?;
-        let menu = self.menu.as_ref()?;
-        let mut left = menu.position.x - bounds.origin.x;
-        let mut top = menu.position.y - bounds.origin.y;
-
-        let max_left = (bounds.size.width - menu_width - px(8.0)).max(px(4.0));
-        let max_top = (bounds.size.height - menu_height - px(8.0)).max(px(4.0));
-        left = left.clamp(px(4.0), max_left);
-        top = top.clamp(px(4.0), max_top);
-        Some(point(left, top))
     }
 
     fn ensure_progress_listener(
@@ -211,55 +170,13 @@ impl TaskSidebar {
         ratio.clamp(0.0, 1.0) as f32
     }
 
-    fn menu_item(
-        &self,
-        label: &'static str,
-        icon: Icon,
-        enabled: bool,
-        on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let text_color = if enabled {
-            hsla(0.0, 0.0, 1.0, 0.92)
-        } else {
-            hsla(0.0, 0.0, 1.0, 0.35)
-        };
-        let hover_bg = hsla(0.0, 0.0, 1.0, 0.08);
-
-        let mut row = div()
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .h(px(MENU_ITEM_HEIGHT))
-            .px(px(10.0))
-            .text_size(px(12.0))
-            .text_color(text_color)
-            .child(icon_sm(icon, text_color).w(px(14.0)).h(px(14.0)))
-            .child(label);
-
-        if enabled {
-            row = row
-                .cursor_pointer()
-                .hover(move |style| style.bg(hover_bg))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _event, _window, cx| {
-                        on_click(this, cx);
-                    }),
-                );
-        }
-
-        row
-    }
-
     fn apply_action(
         &mut self,
         session_id: SessionId,
         action: TaskAction,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) {
         let Some(session) = self.sessions.session(session_id) else {
-            self.close_menu(cx);
             return;
         };
         match action {
@@ -273,7 +190,6 @@ impl TaskSidebar {
                 session.detection.cancel();
             }
         }
-        self.close_menu(cx);
     }
 }
 
@@ -284,12 +200,6 @@ enum TaskAction {
     Cancel,
 }
 
-#[derive(Clone)]
-struct TaskMenuState {
-    session_id: SessionId,
-    position: Point<Pixels>,
-}
-
 impl Render for TaskSidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let border_color = rgb(0x2b2b2b);
@@ -297,11 +207,13 @@ impl Render for TaskSidebar {
         let header_text = hsla(0.0, 0.0, 1.0, 0.8);
         let hover_bg = hsla(0.0, 0.0, 1.0, 0.06);
         let item_active_bg = rgb(0x242424);
-        let item_hover_bg = rgb(0x202020);
+        let _item_hover_bg = rgb(0x202020);
         let item_text = hsla(0.0, 0.0, 1.0, 0.9);
         let item_subtle = hsla(0.0, 0.0, 1.0, 0.55);
         let progress_bg = rgb(0x2a2a2a);
         let progress_fill = rgb(0xd6d6d6);
+        let btn_icon_color = hsla(0.0, 0.0, 1.0, 0.7);
+        let btn_hover_bg = hsla(0.0, 0.0, 1.0, 0.08);
 
         let sessions = self.sessions.sessions_snapshot();
         let active_id = self.sessions.active_id();
@@ -376,18 +288,88 @@ impl Render for TaskSidebar {
                     hsla(0.0, 0.0, 0.0, 0.0)
                 };
 
+                let is_idle = run_state == DetectionRunState::Idle;
+                let is_running = run_state == DetectionRunState::Running;
+                let is_paused = run_state == DetectionRunState::Paused;
+                let completed = progress.completed;
+
+                let start_enabled = is_idle && !completed;
+                let pause_enabled = is_running || is_paused;
+                let cancel_enabled = run_state.is_running() || run_state == DetectionRunState::Paused;
+
+                let mut start_btn = div()
+                    .flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .h(px(28.0))
+                    .rounded_bl(px(6.0));
+                if start_enabled {
+                    start_btn = start_btn
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(btn_hover_bg))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.apply_action(session_id, TaskAction::Start, cx);
+                            }),
+                        )
+                        .child(icon_sm(Icon::Play, btn_icon_color));
+                } else {
+                    start_btn = start_btn.child(icon_sm(Icon::Play, btn_icon_color.opacity(0.3)));
+                }
+
+                let mut pause_btn = div()
+                    .flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .h(px(28.0));
+                if pause_enabled {
+                    pause_btn = pause_btn
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(btn_hover_bg))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.apply_action(session_id, TaskAction::Pause, cx);
+                            }),
+                        )
+                        .child(icon_sm(Icon::Pause, btn_icon_color));
+                } else {
+                    pause_btn = pause_btn.child(icon_sm(Icon::Pause, btn_icon_color.opacity(0.3)));
+                }
+
+                let mut cancel_btn = div()
+                    .flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .h(px(28.0))
+                    .rounded_br(px(6.0));
+                if cancel_enabled {
+                    cancel_btn = cancel_btn
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(btn_hover_bg))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.apply_action(session_id, TaskAction::Cancel, cx);
+                            }),
+                        )
+                        .child(icon_sm(Icon::Stop, btn_icon_color));
+                } else {
+                    cancel_btn = cancel_btn.child(icon_sm(Icon::Stop, btn_icon_color.opacity(0.3)));
+                }
+
                 let row = div()
                     .id(("task-sidebar-entry", session_id))
                     .flex()
                     .flex_col()
-                    .gap(px(4.0))
-                    .px(px(8.0))
-                    .py(px(6.0))
                     .rounded(px(6.0))
                     .bg(bg_color)
                     .border_1()
                     .border_color(border_color)
-                    .hover(move |style| style.bg(item_hover_bg))
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -395,55 +377,66 @@ impl Render for TaskSidebar {
                             (this.callbacks.on_select)(session_id, window, cx);
                         }),
                     )
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
-                            this.open_menu(session_id, event.position, cx);
-                        }),
-                    )
                     .child(
                         div()
                             .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(8.0))
+                            .flex_col()
+                            .gap(px(4.0))
+                            .px(px(8.0))
+                            .pt(px(8.0))
+                            .pb(px(4.0))
                             .child(
                                 div()
                                     .flex()
-                                    .flex_col()
-                                    .gap(px(1.0))
-                                    .min_w(px(0.0))
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(8.0))
                                     .child(
                                         div()
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(item_text)
-                                            .child(session_label),
-                                    )
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(1.0))
+                                            .min_w(px(0.0))
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.0))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(item_text)
+                                                    .child(session_label),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(10.0))
+                                                    .text_color(item_subtle)
+                                                    .child(status),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .h(px(4.0))
+                                    .rounded(px(2.0))
+                                    .bg(progress_bg)
                                     .child(
                                         div()
-                                            .text_size(px(10.0))
-                                            .text_color(item_subtle)
-                                            .child(status),
+                                            .absolute()
+                                            .top(px(0.0))
+                                            .bottom(px(0.0))
+                                            .left(px(0.0))
+                                            .rounded(px(2.0))
+                                            .w(relative(ratio))
+                                            .bg(progress_fill),
                                     ),
                             ),
                     )
                     .child(
                         div()
-                            .relative()
-                            .h(px(4.0))
-                            .rounded(px(2.0))
-                            .bg(progress_bg)
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top(px(0.0))
-                                    .bottom(px(0.0))
-                                    .left(px(0.0))
-                                    .rounded(px(2.0))
-                                    .w(relative(ratio))
-                                    .bg(progress_fill),
-                            ),
+                            .flex()
+                            .w_full()
+                            .child(start_btn)
+                            .child(pause_btn)
+                            .child(cancel_btn),
                     );
 
                 list = list.child(row);
@@ -466,7 +459,7 @@ impl Render for TaskSidebar {
                 });
             });
 
-        let mut root = div()
+        div()
             .id(("task-sidebar", cx.entity_id()))
             .flex()
             .flex_col()
@@ -474,114 +467,6 @@ impl Render for TaskSidebar {
             .bg(panel_bg)
             .border_r(px(1.0))
             .border_color(border_color)
-            .child(body);
-
-
-        if self.menu.is_some() {
-            let handle = cx.entity();
-            window.on_mouse_event(move |event: &MouseDownEvent, phase, _window, cx| {
-                if phase != DispatchPhase::Capture {
-                    return;
-                }
-                if event.button != MouseButton::Left {
-                    return;
-                }
-                let position = event.position;
-                let _ = handle.update(cx, |this, cx| {
-                    if let Some(bounds) = this.menu_bounds {
-                        if !bounds.contains(&position) {
-                            this.close_menu(cx);
-                        }
-                    } else {
-                        this.close_menu(cx);
-                    }
-                });
-            });
-        }
-
-        if let Some(menu) = self.menu.clone() {
-            let menu_width = px(MENU_WIDTH);
-            let menu_height = px(MENU_ITEM_HEIGHT * 3.0);
-            let position = self.menu_position(menu_width, menu_height);
-            let Some(position) = position else {
-                return root;
-            };
-
-            let progress = self
-                .sessions
-                .session(menu.session_id)
-                .map(|session| self.progress_snapshot(&session));
-            let run_state = self
-                .sessions
-                .session(menu.session_id)
-                .map(|session| session.detection.run_state())
-                .unwrap_or(DetectionRunState::Idle);
-            let is_idle = run_state == DetectionRunState::Idle;
-            let is_running = run_state == DetectionRunState::Running;
-            let is_paused = run_state == DetectionRunState::Paused;
-            let completed = progress.map(|progress| progress.completed).unwrap_or(false);
-
-            let start_enabled = is_idle && !completed;
-            let pause_enabled = is_running || is_paused;
-            let cancel_enabled = run_state.is_running();
-
-            let menu_panel = div()
-                .absolute()
-                .left(position.x)
-                .top(position.y)
-                .w(menu_width)
-                .bg(rgb(0x2f2f2f))
-                .border_1()
-                .border_color(rgb(0x3a3a3a))
-                .rounded(px(8.0))
-                .shadow(vec![gpui::BoxShadow {
-                    color: hsla(0.0, 0.0, 0.0, 0.35),
-                    offset: point(px(0.0), px(4.0)),
-                    blur_radius: px(8.0),
-                    spread_radius: px(0.0),
-                }])
-                .child(self.menu_item(
-                    "Start",
-                    Icon::Play,
-                    start_enabled,
-                    move |this, cx| {
-                        this.apply_action(menu.session_id, TaskAction::Start, cx);
-                    },
-                    cx,
-                ))
-                .child(self.menu_item(
-                    "Pause",
-                    Icon::Pause,
-                    pause_enabled,
-                    move |this, cx| {
-                        this.apply_action(menu.session_id, TaskAction::Pause, cx);
-                    },
-                    cx,
-                ))
-                .child(self.menu_item(
-                    "Cancel",
-                    Icon::Stop,
-                    cancel_enabled,
-                    move |this, cx| {
-                        this.apply_action(menu.session_id, TaskAction::Cancel, cx);
-                    },
-                    cx,
-                ))
-                .occlude();
-
-            let handle = cx.entity();
-            let menu_host = div()
-                .on_children_prepainted(move |bounds, _window, cx| {
-                    let bounds = bounds.first().copied();
-                    let _ = handle.update(cx, |this, _| {
-                        this.menu_bounds = bounds;
-                    });
-                })
-                .child(menu_panel);
-
-            root = root.child(deferred(menu_host).with_priority(10));
-        }
-
-        root
+            .child(body)
     }
 }
