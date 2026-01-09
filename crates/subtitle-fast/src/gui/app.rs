@@ -487,8 +487,11 @@ impl MainWindow {
     }
 
     fn notify_task_sidebar(&mut self, cx: &mut Context<Self>) {
-        let _ = self.task_sidebar.update(cx, |_, cx| {
-            cx.notify();
+        let task_sidebar = self.task_sidebar.clone();
+        cx.defer(move |cx| {
+            let _ = cx.update_entity(&task_sidebar, |_, cx| {
+                cx.notify();
+            });
         });
     }
 

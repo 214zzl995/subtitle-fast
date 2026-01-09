@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures_channel::mpsc::unbounded;
+use futures_util::StreamExt;
 use gpui::prelude::*;
 use gpui::{
     Bounds, Context, DispatchPhase, FontWeight, InteractiveElement, MouseButton, MouseDownEvent,
@@ -10,6 +12,7 @@ use gpui::{
 use tokio::time::MissedTickBehavior;
 
 use crate::gui::icons::{Icon, icon_sm};
+use crate::gui::runtime;
 use crate::gui::session::{SessionHandle, SessionId, VideoSession};
 use crate::stage::PipelineProgress;
 
@@ -17,8 +20,8 @@ use super::DetectionRunState;
 
 const MENU_WIDTH: f32 = 160.0;
 const MENU_ITEM_HEIGHT: f32 = 28.0;
-const PROGRESS_STEP: f64 = 0.004;
-const PROGRESS_THROTTLE: Duration = Duration::from_millis(350);
+const PROGRESS_STEP: f64 = 0.001;
+const PROGRESS_THROTTLE: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 pub struct TaskSidebarCallbacks {
@@ -103,7 +106,17 @@ impl TaskSidebar {
 
         let handle = session.detection.clone();
         let entity_id = cx.entity_id();
+        let (notify_tx, mut notify_rx) = unbounded::<()>();
+
         let task = window.spawn(cx, async move |cx| {
+            while notify_rx.next().await.is_some() {
+                if cx.update(|_window, cx| cx.notify(entity_id)).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let tokio_task = runtime::spawn(async move {
             let mut progress_rx = handle.subscribe_progress();
             let mut state_rx = handle.subscribe_state();
             let snapshot = progress_rx.borrow().clone();
@@ -119,6 +132,7 @@ impl TaskSidebar {
             loop {
                 tokio::select! {
                     changed = progress_rx.changed() => {
+                        
                         if changed.is_err() {
                             break;
                         }
@@ -133,7 +147,7 @@ impl TaskSidebar {
 
                         if completion_changed || progress_delta >= PROGRESS_STEP {
                             last_progress = snapshot.progress;
-                            if cx.update(|_window, cx| cx.notify(entity_id)).is_err() {
+                            if notify_tx.unbounded_send(()).is_err() {
                                 break;
                             }
                         }
@@ -148,16 +162,17 @@ impl TaskSidebar {
                         last_seen_progress = snapshot.progress;
                         last_progress_change_at = Instant::now();
                         completed = snapshot.completed;
-                        if cx.update(|_window, cx| cx.notify(entity_id)).is_err() {
+                        if notify_tx.unbounded_send(()).is_err() {
                             break;
                         }
                     }
                     _ = ticker.tick() => {
+                        
                         if running
                             && !completed
                             && Instant::now().duration_since(last_progress_change_at) >= PROGRESS_THROTTLE
                         {
-                            if cx.update(|_window, cx| cx.notify(entity_id)).is_err() {
+                            if notify_tx.unbounded_send(()).is_err() {
                                 break;
                             }
                         }
@@ -166,6 +181,9 @@ impl TaskSidebar {
             }
         });
 
+        if tokio_task.is_none() {
+            eprintln!("task sidebar listener failed: tokio runtime not initialized");
+        }
         self.progress_tasks.insert(session.id, task);
     }
 
