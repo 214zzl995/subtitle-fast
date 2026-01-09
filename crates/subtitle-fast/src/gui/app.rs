@@ -395,7 +395,6 @@ impl MainWindow {
             return;
         };
 
-        // Save playback info
         if let Some(info) = self.video_info.as_ref() {
             let snapshot = info.snapshot();
             self.sessions.update_playback(
@@ -405,17 +404,18 @@ impl MainWindow {
             );
         }
 
-        // Save luma settings
         let luma_values = self.luma_handle.latest();
 
-        // Save toolbar settings
         let toolbar_state = self.toolbar_view.read(cx).snapshot();
+
+        let roi = self.roi_handle.latest();
 
         self.sessions.update_settings(
             session_id,
             Some(luma_values.target),
             Some(luma_values.delta),
             Some(toolbar_state),
+            Some(roi),
         );
     }
 
@@ -450,6 +450,9 @@ impl MainWindow {
         });
         let _ = self.roi_overlay.update(cx, |overlay, cx| {
             overlay.set_info_handle(Some(info), cx);
+            if let Some(roi) = session.roi {
+                overlay.set_roi(roi, cx);
+            }
         });
         cx.notify();
     }

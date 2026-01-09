@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::SharedString;
+use subtitle_fast_types::RoiConfig;
 
 use crate::gui::components::{DetectionHandle, VideoToolbarState};
 
@@ -19,6 +20,7 @@ pub struct VideoSession {
     pub luma_target: Option<u8>,
     pub luma_delta: Option<u8>,
     pub toolbar_state: Option<VideoToolbarState>,
+    pub roi: Option<RoiConfig>,
 }
 
 #[derive(Default)]
@@ -53,6 +55,7 @@ impl SessionHandle {
             luma_target: None,
             luma_delta: None,
             toolbar_state: None,
+            roi: None,
         });
         id
     }
@@ -104,6 +107,7 @@ impl SessionHandle {
         luma_target: Option<u8>,
         luma_delta: Option<u8>,
         toolbar_state: Option<VideoToolbarState>,
+        roi: Option<RoiConfig>,
     ) {
         let mut store = self.inner.lock().expect("session store mutex poisoned");
         if let Some(session) = store.sessions.iter_mut().find(|session| session.id == id) {
@@ -115,6 +119,9 @@ impl SessionHandle {
             }
             if let Some(state) = toolbar_state {
                 session.toolbar_state = Some(state);
+            }
+            if let Some(roi) = roi {
+                session.roi = Some(roi);
             }
         }
     }
