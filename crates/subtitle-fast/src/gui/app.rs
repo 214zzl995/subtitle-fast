@@ -449,10 +449,7 @@ impl MainWindow {
             cx.notify();
         });
         let _ = self.roi_overlay.update(cx, |overlay, cx| {
-            overlay.set_info_handle(Some(info), cx);
-            if let Some(roi) = session.roi {
-                overlay.set_roi(roi, cx);
-            }
+            overlay.set_info_handle(Some(info), session.roi, cx);
         });
         cx.notify();
     }
@@ -475,7 +472,7 @@ impl MainWindow {
             cx.notify();
         });
         let _ = self.roi_overlay.update(cx, |overlay, cx| {
-            overlay.set_info_handle(None, cx);
+            overlay.set_info_handle(None, None, cx);
         });
         cx.notify();
     }
