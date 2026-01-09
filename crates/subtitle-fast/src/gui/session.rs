@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use gpui::SharedString;
 
-use crate::gui::components::DetectionHandle;
+use crate::gui::components::{DetectionHandle, VideoToolbarState};
 
 pub type SessionId = u64;
 
@@ -16,6 +16,9 @@ pub struct VideoSession {
     pub detection: DetectionHandle,
     pub last_timestamp: Option<Duration>,
     pub last_frame_index: Option<u64>,
+    pub luma_target: Option<u8>,
+    pub luma_delta: Option<u8>,
+    pub toolbar_state: Option<VideoToolbarState>,
 }
 
 #[derive(Default)]
@@ -47,6 +50,9 @@ impl SessionHandle {
             detection,
             last_timestamp: None,
             last_frame_index: None,
+            luma_target: None,
+            luma_delta: None,
+            toolbar_state: None,
         });
         id
     }
@@ -88,6 +94,27 @@ impl SessionHandle {
             }
             if frame_index.is_some() {
                 session.last_frame_index = frame_index;
+            }
+        }
+    }
+
+    pub fn update_settings(
+        &self,
+        id: SessionId,
+        luma_target: Option<u8>,
+        luma_delta: Option<u8>,
+        toolbar_state: Option<VideoToolbarState>,
+    ) {
+        let mut store = self.inner.lock().expect("session store mutex poisoned");
+        if let Some(session) = store.sessions.iter_mut().find(|session| session.id == id) {
+            if let Some(target) = luma_target {
+                session.luma_target = Some(target);
+            }
+            if let Some(delta) = luma_delta {
+                session.luma_delta = Some(delta);
+            }
+            if let Some(state) = toolbar_state {
+                session.toolbar_state = Some(state);
             }
         }
     }

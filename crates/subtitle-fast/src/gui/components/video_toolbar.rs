@@ -20,9 +20,17 @@ use subtitle_fast_validator::subtitle_detection::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum VideoViewMode {
+pub enum VideoViewMode {
     Yuv,
     Y,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct VideoToolbarState {
+    pub view: VideoViewMode,
+    pub roi_visible: bool,
+    pub highlight_visible: bool,
+    pub validator_overlay_visible: bool,
 }
 
 const VIEW_PREPROCESSOR_KEY: &str = "video-view";
@@ -64,6 +72,22 @@ impl VideoToolbar {
             highlight_visible: false,
             validator_overlay_visible: false,
         }
+    }
+
+    pub fn snapshot(&self) -> VideoToolbarState {
+        VideoToolbarState {
+            view: self.view,
+            roi_visible: self.roi_visible,
+            highlight_visible: self.highlight_visible,
+            validator_overlay_visible: self.validator_overlay_visible,
+        }
+    }
+
+    pub fn restore(&mut self, state: VideoToolbarState, cx: &mut Context<Self>) {
+        self.set_view(state.view, cx);
+        self.set_roi_visible(state.roi_visible, cx);
+        self.set_highlight_visible(state.highlight_visible, cx);
+        self.set_validator_overlay_visible(state.validator_overlay_visible, cx);
     }
 
     pub fn set_controls(

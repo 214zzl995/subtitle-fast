@@ -23,4 +23,4 @@ pub use video_player::{
     FramePreprocessor, Nv12FrameInfo, VideoPlayer, VideoPlayerControlHandle, VideoPlayerInfoHandle,
 };
 pub use video_roi_overlay::{VideoRoiHandle, VideoRoiOverlay};
-pub use video_toolbar::VideoToolbar;
+pub use video_toolbar::{VideoToolbar, VideoToolbarState, VideoViewMode};

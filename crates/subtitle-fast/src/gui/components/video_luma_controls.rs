@@ -111,6 +111,19 @@ impl VideoLumaControls {
         cx.notify();
     }
 
+    pub fn set_values(&mut self, target: u8, delta: u8, cx: &mut Context<Self>) {
+        if self.target == target && self.delta == delta {
+            return;
+        }
+        self.target = target;
+        self.delta = delta;
+        let _ = self.sender.send(VideoLumaValues {
+            target: self.target,
+            delta: self.delta,
+        });
+        cx.notify();
+    }
+
     fn state(&self, field: LumaField) -> &SliderState {
         match field {
             LumaField::Target => &self.target_state,

@@ -376,7 +376,7 @@ impl MainWindow {
             return;
         }
 
-        self.save_active_playback();
+        self.save_active_session_state(cx);
         self.active_session = Some(session_id);
         self.sessions.set_active(session_id);
         self.notify_task_sidebar(cx);
@@ -390,18 +390,32 @@ impl MainWindow {
         self.update_detection_sidebar(Some(session.detection.clone()), cx);
     }
 
-    fn save_active_playback(&mut self) {
+    fn save_active_session_state(&mut self, cx: &App) {
         let Some(session_id) = self.active_session else {
             return;
         };
-        let Some(info) = self.video_info.as_ref() else {
-            return;
-        };
-        let snapshot = info.snapshot();
-        self.sessions.update_playback(
+
+        // Save playback info
+        if let Some(info) = self.video_info.as_ref() {
+            let snapshot = info.snapshot();
+            self.sessions.update_playback(
+                session_id,
+                snapshot.last_timestamp,
+                snapshot.last_frame_index,
+            );
+        }
+
+        // Save luma settings
+        let luma_values = self.luma_handle.latest();
+
+        // Save toolbar settings
+        let toolbar_state = self.toolbar_view.read(cx).snapshot();
+
+        self.sessions.update_settings(
             session_id,
-            snapshot.last_timestamp,
-            snapshot.last_frame_index,
+            Some(luma_values.target),
+            Some(luma_values.delta),
+            Some(toolbar_state),
         );
     }
 
@@ -423,9 +437,15 @@ impl MainWindow {
         });
         let _ = self.luma_controls_view.update(cx, |luma_controls, cx| {
             luma_controls.set_enabled(true, cx);
+            if let (Some(target), Some(delta)) = (session.luma_target, session.luma_delta) {
+                luma_controls.set_values(target, delta, cx);
+            }
         });
         let _ = self.toolbar_view.update(cx, |toolbar_view, cx| {
             toolbar_view.set_controls(Some(controls), cx);
+            if let Some(state) = session.toolbar_state {
+                toolbar_view.restore(state, cx);
+            }
             cx.notify();
         });
         let _ = self.roi_overlay.update(cx, |overlay, cx| {
