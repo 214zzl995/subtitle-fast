@@ -210,6 +210,7 @@ impl Render for TaskSidebar {
         let btn_stop_hover_bg = hsla(0.0, 0.0, 1.0, 0.15);
 
         let sessions = self.sessions.sessions_snapshot();
+        let active_id = self.sessions.active_id();
         for session in &sessions {
             self.ensure_progress_listener(session, window, cx);
         }
@@ -218,7 +219,7 @@ impl Render for TaskSidebar {
             .flex()
             .items_center()
             .justify_between()
-            .px(px(16.0))
+            .px(px(12.0))
             .pb(px(12.0))
             .pt(px(8.0))
             .child(
@@ -238,14 +239,31 @@ impl Render for TaskSidebar {
             )
             .child(
                 div()
+                    .id(("task-sidebar-add", cx.entity_id()))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .w(px(20.0))
-                    .h(px(20.0))
+                    .gap(px(6.0))
+                    .h(px(28.0))
+                    .px(px(10.0))
+                    .rounded(px(6.0))
+                    .bg(hsla(0.0, 0.0, 1.0, 0.06))
+                    .border_1()
+                    .border_color(hsla(0.0, 0.0, 1.0, 0.08))
                     .cursor_pointer()
-                    .child(icon_sm(Icon::Upload, header_text).w(px(14.0)).h(px(14.0)))
-                    .hover(move |style| style.text_color(hsla(0.0, 0.0, 1.0, 1.0)))
+                    .child(
+                        icon_sm(Icon::Upload, hsla(0.0, 0.0, 1.0, 0.9))
+                            .w(px(14.0))
+                            .h(px(14.0)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(hsla(0.0, 0.0, 1.0, 0.9))
+                            .child("Import"),
+                    )
+                    .hover(move |style| style.bg(hsla(0.0, 0.0, 1.0, 0.12)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, window, cx| {
@@ -254,7 +272,7 @@ impl Render for TaskSidebar {
                     ),
             );
 
-        let mut list = div().flex().flex_col().w_full().gap(px(8.0)).px(px(12.0));
+        let mut list = div().flex().flex_col().w_full().gap(px(8.0)).px(px(8.0));
 
         if sessions.is_empty() {
             list = list.child(
@@ -270,6 +288,7 @@ impl Render for TaskSidebar {
         } else {
             for session in &sessions {
                 let session_id = session.id;
+                let is_active = Some(session_id) == active_id;
                 let session_label = session.label.clone();
                 let progress = self.progress_snapshot(session);
                 let run_state = session.detection.run_state();
@@ -285,6 +304,14 @@ impl Render for TaskSidebar {
                 let pause_enabled = is_running || is_paused;
                 let cancel_enabled =
                     run_state.is_running() || run_state == DetectionRunState::Paused;
+
+                let icon_color = if is_active {
+                    hsla(0.0, 0.0, 1.0, 1.0)
+                } else if is_running || completed {
+                    hsla(0.0, 0.0, 1.0, 1.0)
+                } else {
+                    item_subtle
+                };
 
                 let make_btn = |icon: Icon,
                                 action: TaskAction,
@@ -315,34 +342,37 @@ impl Render for TaskSidebar {
                 };
 
                 let status_icon = if is_running {
-                    icon_sm(Icon::Film, hsla(0.0, 0.0, 1.0, 1.0))
+                    icon_sm(Icon::Film, icon_color)
                 } else if completed {
-                    icon_sm(Icon::Check, hsla(0.0, 0.0, 1.0, 1.0))
+                    icon_sm(Icon::Check, icon_color)
                 } else if is_paused {
-                    icon_sm(Icon::Pause, item_subtle)
+                    icon_sm(Icon::Pause, icon_color)
                 } else {
-                    icon_sm(Icon::Film, item_subtle)
+                    icon_sm(Icon::Film, icon_color)
                 };
 
-                let mut controls_box = div()
-                    .flex()
-                    .items_center()
-                    .gap(px(2.0))
-                    .bg(hsla(0.0, 0.0, 0.0, 0.3))
-                    .rounded(px(8.0))
-                    .p(px(2.0));
+                let has_controls = start_enabled || pause_enabled || cancel_enabled;
+                let mut controls_box = div().flex().items_center().gap(px(2.0));
 
-                if start_enabled {
-                    controls_box =
-                        controls_box.child(make_btn(Icon::Play, TaskAction::Start, false, cx));
-                }
-                if pause_enabled {
-                    controls_box =
-                        controls_box.child(make_btn(Icon::Pause, TaskAction::Pause, false, cx));
-                }
-                if cancel_enabled {
-                    controls_box =
-                        controls_box.child(make_btn(Icon::Stop, TaskAction::Cancel, true, cx));
+                if has_controls {
+                    controls_box = controls_box
+                        .bg(hsla(0.0, 0.0, 0.0, 0.3))
+                        .rounded(px(8.0))
+                        .p(px(2.0));
+
+                    if start_enabled {
+                        controls_box =
+                            controls_box.child(make_btn(Icon::Play, TaskAction::Start, false, cx));
+                    }
+                    if pause_enabled {
+                        let icon = if is_paused { Icon::Play } else { Icon::Pause };
+                        controls_box =
+                            controls_box.child(make_btn(icon, TaskAction::Pause, false, cx));
+                    }
+                    if cancel_enabled {
+                        controls_box =
+                            controls_box.child(make_btn(Icon::Stop, TaskAction::Cancel, true, cx));
+                    }
                 }
 
                 let progress_bg_layer = div()
@@ -352,7 +382,11 @@ impl Render for TaskSidebar {
                     .bottom(px(0.0))
                     .w(relative(ratio))
                     .rounded(px(8.0))
-                    .bg(progress_fill);
+                    .bg(if completed {
+                        hsla(0.0, 0.0, 0.0, 0.0)
+                    } else {
+                        progress_fill
+                    });
 
                 let item_content = div()
                     .flex()
@@ -377,7 +411,11 @@ impl Render for TaskSidebar {
                                 div()
                                     .text_size(px(11.0))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(item_text)
+                                    .text_color(if is_active {
+                                        hsla(0.0, 0.0, 1.0, 1.0)
+                                    } else {
+                                        item_text
+                                    })
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .text_ellipsis()
@@ -388,6 +426,7 @@ impl Render for TaskSidebar {
                                     .flex()
                                     .items_center()
                                     .justify_between()
+                                    .h(px(28.0))
                                     .child(
                                         div()
                                             .text_size(px(10.0))
@@ -403,7 +442,11 @@ impl Render for TaskSidebar {
                     .relative()
                     .h(px(56.0))
                     .rounded(px(8.0))
-                    .bg(item_bg)
+                    .bg(if is_active {
+                        rgb(0x323232)
+                    } else {
+                        item_bg
+                    })
                     .pl(px(8.0))
                     .pr(px(4.0))
                     .flex()
@@ -416,7 +459,13 @@ impl Render for TaskSidebar {
                             (this.callbacks.on_select)(session_id, window, cx);
                         }),
                     )
-                    .hover(move |s| s.bg(item_hover_bg))
+                    .hover(move |s| {
+                        if !is_active {
+                            s.bg(item_hover_bg)
+                        } else {
+                            s
+                        }
+                    })
                     .child(progress_bg_layer)
                     .child(item_content.relative());
 
