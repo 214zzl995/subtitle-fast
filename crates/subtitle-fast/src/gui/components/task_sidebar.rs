@@ -211,13 +211,6 @@ impl TaskSidebar {
         ratio.clamp(0.0, 1.0) as f32
     }
 
-    fn progress_label(progress: &PipelineProgress) -> String {
-        match progress.total_frames {
-            Some(total) if total > 0 => format!("{} / {}", progress.samples_seen, total),
-            _ => progress.samples_seen.to_string(),
-        }
-    }
-
     fn menu_item(
         &self,
         label: &'static str,
@@ -302,9 +295,7 @@ impl Render for TaskSidebar {
         let border_color = rgb(0x2b2b2b);
         let panel_bg = rgb(0x1a1a1a);
         let header_text = hsla(0.0, 0.0, 1.0, 0.8);
-        let button_bg = rgb(0x232323);
-        let button_hover = rgb(0x2c2c2c);
-        let button_border = rgb(0x343434);
+        let hover_bg = hsla(0.0, 0.0, 1.0, 0.06);
         let item_active_bg = rgb(0x242424);
         let item_hover_bg = rgb(0x202020);
         let item_text = hsla(0.0, 0.0, 1.0, 0.9);
@@ -325,6 +316,7 @@ impl Render for TaskSidebar {
             .text_size(px(12.0))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(header_text)
+            .py(px(2.0))
             .child(
                 div()
                     .flex()
@@ -337,17 +329,14 @@ impl Render for TaskSidebar {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
-                    .h(px(26.0))
-                    .px(px(8.0))
-                    .rounded(px(6.0))
-                    .bg(button_bg)
-                    .border_1()
-                    .border_color(button_border)
+                    .gap(px(4.0))
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded(px(4.0))
                     .cursor_pointer()
-                    .hover(move |style| style.bg(button_hover))
+                    .hover(move |style| style.bg(hover_bg))
                     .child(icon_sm(Icon::Upload, header_text).w(px(14.0)).h(px(14.0)))
-                    .child("Add File")
+                    .child("Add")
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, window, cx| {
@@ -356,7 +345,7 @@ impl Render for TaskSidebar {
                     ),
             );
 
-        let mut list = div().flex().flex_col().gap(px(6.0)).w_full();
+        let mut list = div().flex().flex_col().gap(px(4.0)).w_full();
 
         if sessions.is_empty() {
             list = list.child(
@@ -374,21 +363,30 @@ impl Render for TaskSidebar {
                 let run_state = session.detection.run_state();
                 let status = Self::status_text(run_state, &progress);
                 let ratio = Self::progress_ratio(&progress);
-                let progress_label = Self::progress_label(&progress);
 
-                let mut row = div()
+                let is_active = Some(session.id) == active_id;
+                let bg_color = if is_active {
+                    item_active_bg
+                } else {
+                    panel_bg
+                };
+                let border_color = if is_active {
+                    hsla(0.0, 0.0, 1.0, 0.08)
+                } else {
+                    hsla(0.0, 0.0, 0.0, 0.0)
+                };
+
+                let row = div()
                     .id(("task-sidebar-entry", session_id))
                     .flex()
                     .flex_col()
                     .gap(px(4.0))
                     .px(px(8.0))
-                    .py(px(8.0))
-                    .rounded(px(8.0))
-                    .bg(if Some(session.id) == active_id {
-                        item_active_bg
-                    } else {
-                        panel_bg
-                    })
+                    .py(px(6.0))
+                    .rounded(px(6.0))
+                    .bg(bg_color)
+                    .border_1()
+                    .border_color(border_color)
                     .hover(move |style| style.bg(item_hover_bg))
                     .cursor_pointer()
                     .on_mouse_down(
@@ -413,7 +411,7 @@ impl Render for TaskSidebar {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(2.0))
+                                    .gap(px(1.0))
                                     .min_w(px(0.0))
                                     .child(
                                         div()
@@ -428,20 +426,13 @@ impl Render for TaskSidebar {
                                             .text_color(item_subtle)
                                             .child(status),
                                     ),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_size(px(10.0))
-                                    .text_color(item_subtle)
-                                    .child(progress_label),
                             ),
                     )
                     .child(
                         div()
                             .relative()
-                            .h(px(6.0))
-                            .rounded(px(6.0))
+                            .h(px(4.0))
+                            .rounded(px(2.0))
                             .bg(progress_bg)
                             .child(
                                 div()
@@ -449,15 +440,11 @@ impl Render for TaskSidebar {
                                     .top(px(0.0))
                                     .bottom(px(0.0))
                                     .left(px(0.0))
-                                    .rounded(px(6.0))
+                                    .rounded(px(2.0))
                                     .w(relative(ratio))
                                     .bg(progress_fill),
                             ),
                     );
-
-                if Some(session.id) == active_id {
-                    row = row.border_1().border_color(hsla(0.0, 0.0, 1.0, 0.08));
-                }
 
                 list = list.child(row);
             }
@@ -467,9 +454,9 @@ impl Render for TaskSidebar {
         let body = div()
             .flex()
             .flex_col()
-            .gap(px(14.0))
+            .gap(px(10.0))
             .px(px(12.0))
-            .py(px(16.0))
+            .py(px(12.0))
             .child(header)
             .child(list)
             .on_children_prepainted(move |bounds, _window, cx| {
@@ -488,6 +475,7 @@ impl Render for TaskSidebar {
             .border_r(px(1.0))
             .border_color(border_color)
             .child(body);
+
 
         if self.menu.is_some() {
             let handle = cx.entity();
