@@ -220,7 +220,8 @@ impl Render for TaskSidebar {
             .flex()
             .items_center()
             .justify_between()
-            .px(px(12.0))
+            .pl(px(12.0))
+            .pr(px(4.0))
             .pb(px(12.0))
             .pt(px(8.0))
             .child(
@@ -244,22 +245,14 @@ impl Render for TaskSidebar {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .gap(px(6.0))
                     .h(px(28.0))
-                    .px(px(10.0))
+                    .w(px(28.0))
                     .rounded(px(6.0))
                     .cursor_pointer()
                     .child(
-                        icon_sm(Icon::Plus, hsla(0.0, 0.0, 1.0, 0.9))
+                        icon_sm(Icon::Upload, header_text)
                             .w(px(14.0))
                             .h(px(14.0)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(hsla(0.0, 0.0, 1.0, 0.9))
-                            .child("Import"),
                     )
                     .hover(move |style| style.bg(hsla(0.0, 0.0, 1.0, 0.12)))
                     .on_mouse_down(
