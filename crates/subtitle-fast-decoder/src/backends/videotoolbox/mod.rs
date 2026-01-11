@@ -1,24 +1,24 @@
 #[cfg(all(target_os = "macos", feature = "backend-videotoolbox"))]
 use crate::core::{
-    DynYPlaneProvider, YPlaneError, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
+    DecoderController, DecoderError, DecoderProvider, DecoderResult, FrameStream, SeekInfo,
+    SeekMode, SeekReceiver,
 };
 
+use crate::config::OutputFormat;
 #[cfg(target_os = "macos")]
-use crate::core::{YPlaneFrame, spawn_stream_from_channel};
+use crate::core::{VideoFrame, spawn_stream_from_channel};
 
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]
 mod platform {
     use super::*;
 
-    use mp4::{Mp4Reader, TrackType};
-    use std::ffi::{CStr, CString, c_char};
-    use std::fs::File;
-    use std::io::BufReader;
-    use std::os::raw::c_void;
+    use std::ffi::{CStr, CString, c_char, c_void};
     use std::path::{Path, PathBuf};
     use std::ptr;
     use std::slice;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
     use tokio::sync::mpsc;
 
@@ -26,21 +26,42 @@ mod platform {
     struct CVTProbeResult {
         has_value: bool,
         value: u64,
+        duration_seconds: f64,
+        fps: f64,
+        width: u32,
+        height: u32,
         error: *mut c_char,
     }
 
     #[repr(C)]
     struct CVTFrame {
-        data: *const u8,
-        data_len: usize,
+        y_data: *const u8,
+        y_len: usize,
+        y_stride: usize,
+        uv_data: *const u8,
+        uv_len: usize,
+        uv_stride: usize,
         width: u32,
         height: u32,
-        stride: usize,
-        timestamp_seconds: f64,
-        frame_index: u64,
+        pts_seconds: f64,
+        dts_seconds: f64,
+        index: u64,
     }
 
     type CVTFrameCallback = unsafe extern "C" fn(*const CVTFrame, *mut c_void) -> bool;
+
+    #[repr(C)]
+    struct CVTHandleFrame {
+        pixel_buffer: *mut c_void,
+        pixel_format: u32,
+        width: u32,
+        height: u32,
+        pts_seconds: f64,
+        dts_seconds: f64,
+        index: u64,
+    }
+
+    type CVTHandleFrameCallback = unsafe extern "C" fn(*const CVTHandleFrame, *mut c_void) -> bool;
 
     #[allow(improper_ctypes)]
     unsafe extern "C" {
@@ -50,7 +71,17 @@ mod platform {
         ) -> bool;
         fn videotoolbox_decode(
             path: *const c_char,
+            has_start_frame: bool,
+            start_frame: u64,
             callback: CVTFrameCallback,
+            context: *mut c_void,
+            out_error: *mut *mut c_char,
+        ) -> bool;
+        fn videotoolbox_decode_handle(
+            path: *const c_char,
+            has_start_frame: bool,
+            start_frame: u64,
+            callback: CVTHandleFrameCallback,
             context: *mut c_void,
             out_error: *mut *mut c_char,
         ) -> bool;
@@ -61,106 +92,66 @@ mod platform {
 
     pub struct VideoToolboxProvider {
         input: PathBuf,
-        total_frames: Option<u64>,
+        metadata: crate::core::VideoMetadata,
         channel_capacity: usize,
+        output_format: OutputFormat,
+        start_frame: Option<u64>,
     }
 
-    impl VideoToolboxProvider {
-        pub fn open<P: AsRef<Path>>(
-            path: P,
-            channel_capacity: Option<usize>,
-        ) -> YPlaneResult<Self> {
-            let path = path.as_ref();
-            if !path.exists() {
-                return Err(YPlaneError::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("input file {} does not exist", path.display()),
-                )));
-            }
-            let total_frames = probe_total_frames(path)?;
-            let capacity = channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY).max(1);
-            Ok(Self {
-                input: path.to_path_buf(),
-                total_frames,
-                channel_capacity: capacity,
-            })
-        }
+    impl VideoToolboxProvider {}
+
+    fn probe_video_metadata(path: &Path) -> DecoderResult<crate::core::VideoMetadata> {
+        probe_metadata_videotoolbox(path)
     }
 
-    fn probe_total_frames(path: &Path) -> YPlaneResult<Option<u64>> {
-        match probe_total_frames_videotoolbox(path) {
-            Ok(result) => Ok(result),
-            Err(vt_err) => match probe_total_frames_mp4(path) {
-                Ok(Some(value)) => Ok(Some(value)),
-                Ok(None) => Err(vt_err),
-                Err(mp4_err) => Err(YPlaneError::backend_failure(
-                    "videotoolbox",
-                    format!("{vt_err}; mp4 fallback failed: {mp4_err}"),
-                )),
-            },
-        }
-    }
+    fn probe_metadata_videotoolbox(path: &Path) -> DecoderResult<crate::core::VideoMetadata> {
+        use crate::core::VideoMetadata;
 
-    fn probe_total_frames_mp4(path: &Path) -> YPlaneResult<Option<u64>> {
-        let file = File::open(path)?;
-        let size = file.metadata()?.len();
-        let reader = BufReader::new(file);
-        let reader = match Mp4Reader::read_header(reader, size) {
-            Ok(reader) => reader,
-            Err(_) => return Ok(None),
-        };
-
-        let track_id = match reader
-            .tracks()
-            .iter()
-            .find(|(_, track)| matches!(track.track_type(), Ok(TrackType::Video)))
-        {
-            Some((&id, _)) => id,
-            None => return Ok(None),
-        };
-
-        let count = reader.sample_count(track_id).map_err(|err| {
-            YPlaneError::backend_failure(
-                "videotoolbox",
-                format!("failed to query MP4 sample count: {err}"),
-            )
-        })?;
-
-        if count == 0 {
-            return Ok(None);
-        }
-
-        Ok(Some(count as u64))
-    }
-
-    fn probe_total_frames_videotoolbox(path: &Path) -> YPlaneResult<Option<u64>> {
         let c_path = cstring_from_path(path)?;
         let mut result = CVTProbeResult {
             has_value: false,
             value: 0,
+            duration_seconds: f64::NAN,
+            fps: f64::NAN,
+            width: 0,
+            height: 0,
             error: ptr::null_mut(),
         };
         let ok = unsafe { videotoolbox_probe_total_frames(c_path.as_ptr(), &mut result) };
         let error = take_bridge_string(result.error);
         if !ok {
             let message = error.unwrap_or_else(|| "videotoolbox probe failed".to_string());
-            return Err(YPlaneError::backend_failure("videotoolbox", message));
+            return Err(DecoderError::backend_failure("videotoolbox", message));
         }
         if let Some(message) = error
             && !message.is_empty()
         {
-            return Err(YPlaneError::backend_failure("videotoolbox", message));
+            return Err(DecoderError::backend_failure("videotoolbox", message));
         }
+
+        let mut metadata = VideoMetadata::new();
         if result.has_value {
-            Ok(Some(result.value))
-        } else {
-            Ok(None)
+            metadata.total_frames = Some(result.value);
         }
+        if result.duration_seconds.is_finite() && result.duration_seconds > 0.0 {
+            metadata.duration = Some(Duration::from_secs_f64(result.duration_seconds));
+        }
+        if result.fps.is_finite() && result.fps > 0.0 {
+            metadata.fps = Some(result.fps);
+        }
+        if result.width > 0 {
+            metadata.width = Some(result.width);
+        }
+        if result.height > 0 {
+            metadata.height = Some(result.height);
+        }
+
+        Ok(metadata)
     }
 
-    fn cstring_from_path(path: &Path) -> YPlaneResult<CString> {
+    fn cstring_from_path(path: &Path) -> DecoderResult<CString> {
         CString::new(path.to_string_lossy().as_bytes()).map_err(|err| {
-            YPlaneError::backend_failure("videotoolbox", format!("invalid path encoding: {err}"))
+            DecoderError::backend_failure("videotoolbox", format!("invalid path encoding: {err}"))
         })
     }
 
@@ -173,98 +164,345 @@ mod platform {
         Some(message)
     }
 
-    impl YPlaneStreamProvider for VideoToolboxProvider {
-        fn total_frames(&self) -> Option<u64> {
-            self.total_frames
-        }
+    unsafe extern "C" {
+        fn CFRelease(cf: *const c_void);
+    }
 
-        fn into_stream(self: Box<Self>) -> YPlaneStream {
-            let path = self.input.clone();
-            let capacity = self.channel_capacity;
-            spawn_stream_from_channel(capacity, move |tx| {
-                if let Err(err) = decode_videotoolbox(path.clone(), tx.clone()) {
-                    let _ = tx.blocking_send(Err(err));
-                }
-            })
+    unsafe extern "C" fn release_native_handle(handle: *mut c_void) {
+        if !handle.is_null() {
+            unsafe { CFRelease(handle as *const c_void) };
         }
     }
 
-    fn decode_videotoolbox(
-        path: PathBuf,
-        tx: mpsc::Sender<YPlaneResult<YPlaneFrame>>,
-    ) -> YPlaneResult<()> {
-        let c_path = cstring_from_path(&path)?;
-        let mut context = Box::new(DecodeContext::new(tx));
-        let mut error_ptr: *mut c_char = ptr::null_mut();
-        let ok = unsafe {
-            videotoolbox_decode(
-                c_path.as_ptr(),
-                frame_callback,
-                (&mut *context) as *mut DecodeContext as *mut c_void,
-                &mut error_ptr,
-            )
-        };
-        drop(context);
+    impl DecoderProvider for VideoToolboxProvider {
+        fn new(config: &crate::config::Configuration) -> DecoderResult<Self> {
+            let path = config.input.as_ref().ok_or_else(|| {
+                DecoderError::configuration("VideoToolbox backend requires SUBFAST_INPUT to be set")
+            })?;
+            if !path.exists() {
+                return Err(DecoderError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("input file {} does not exist", path.display()),
+                )));
+            }
+            let metadata = probe_video_metadata(path)?;
+            let capacity = config
+                .channel_capacity
+                .map(|n| n.get())
+                .unwrap_or(DEFAULT_CHANNEL_CAPACITY)
+                .max(1);
+            Ok(Self {
+                input: path.to_path_buf(),
+                metadata,
+                channel_capacity: capacity,
+                output_format: config.output_format,
+                start_frame: config.start_frame,
+            })
+        }
 
-        let error = take_bridge_string(error_ptr);
-        if !ok {
-            let message = error.unwrap_or_else(|| "videotoolbox decode failed".to_string());
-            return Err(YPlaneError::backend_failure("videotoolbox", message));
+        fn metadata(&self) -> crate::core::VideoMetadata {
+            self.metadata
         }
-        if let Some(message) = error
-            && !message.is_empty()
-        {
-            return Err(YPlaneError::backend_failure("videotoolbox", message));
+
+        fn open(self: Box<Self>) -> DecoderResult<(DecoderController, FrameStream)> {
+            let path = self.input.clone();
+            let capacity = self.channel_capacity;
+            let output_format = self.output_format;
+            let start_frame = self.start_frame;
+            let fps = self.metadata.fps;
+            let controller = DecoderController::new();
+            let seek_rx = controller.seek_receiver();
+            let serial = controller.serial_handle();
+            let stream = spawn_stream_from_channel(capacity, move |tx| {
+                let result = match output_format {
+                    OutputFormat::Nv12 => decode_videotoolbox_nv12(
+                        path.clone(),
+                        tx.clone(),
+                        start_frame,
+                        seek_rx,
+                        serial.clone(),
+                        fps,
+                    ),
+                    OutputFormat::CVPixelBuffer => decode_videotoolbox_handle(
+                        path.clone(),
+                        tx.clone(),
+                        start_frame,
+                        seek_rx,
+                        serial.clone(),
+                        fps,
+                    ),
+                };
+                if let Err(err) = result {
+                    let _ = tx.blocking_send(Err(err));
+                }
+            });
+            Ok((controller, stream))
         }
-        Ok(())
+    }
+
+    fn decode_videotoolbox_nv12(
+        path: PathBuf,
+        tx: mpsc::Sender<DecoderResult<VideoFrame>>,
+        start_frame: Option<u64>,
+        seek_rx: SeekReceiver,
+        serial: Arc<AtomicU64>,
+        fps: Option<f64>,
+    ) -> DecoderResult<()> {
+        let c_path = cstring_from_path(&path)?;
+        let mut context = Box::new(DecodeContext::new(tx, seek_rx, serial, fps));
+        let mut next_start_frame = start_frame;
+
+        loop {
+            if context.is_closed() {
+                return Ok(());
+            }
+            let mut error_ptr: *mut c_char = ptr::null_mut();
+            let (has_start_frame, start_frame) = match next_start_frame {
+                Some(value) => (true, value),
+                None => (false, 0),
+            };
+            let ok = unsafe {
+                videotoolbox_decode(
+                    c_path.as_ptr(),
+                    has_start_frame,
+                    start_frame,
+                    frame_callback_nv12,
+                    (&mut *context) as *mut DecodeContext as *mut c_void,
+                    &mut error_ptr,
+                )
+            };
+
+            let error = take_bridge_string(error_ptr);
+            if let Some(err) = context.take_seek_error() {
+                return Err(err);
+            }
+            if context.is_closed() {
+                return Ok(());
+            }
+            if let Some(plan) = context.take_pending_seek() {
+                context.apply_drop(plan.drop_until);
+                next_start_frame = Some(plan.start_frame);
+                continue;
+            }
+
+            if !ok {
+                let message = error.unwrap_or_else(|| "videotoolbox decode failed".to_string());
+                return Err(DecoderError::backend_failure("videotoolbox", message));
+            }
+            if let Some(message) = error
+                && !message.is_empty()
+            {
+                return Err(DecoderError::backend_failure("videotoolbox", message));
+            }
+            return Ok(());
+        }
+    }
+
+    fn decode_videotoolbox_handle(
+        path: PathBuf,
+        tx: mpsc::Sender<DecoderResult<VideoFrame>>,
+        start_frame: Option<u64>,
+        seek_rx: SeekReceiver,
+        serial: Arc<AtomicU64>,
+        fps: Option<f64>,
+    ) -> DecoderResult<()> {
+        let c_path = cstring_from_path(&path)?;
+        let mut context = Box::new(DecodeContext::new(tx, seek_rx, serial, fps));
+        let mut next_start_frame = start_frame;
+
+        loop {
+            if context.is_closed() {
+                return Ok(());
+            }
+            let mut error_ptr: *mut c_char = ptr::null_mut();
+            let (has_start_frame, start_frame) = match next_start_frame {
+                Some(value) => (true, value),
+                None => (false, 0),
+            };
+            let ok = unsafe {
+                videotoolbox_decode_handle(
+                    c_path.as_ptr(),
+                    has_start_frame,
+                    start_frame,
+                    frame_callback_handle,
+                    (&mut *context) as *mut DecodeContext as *mut c_void,
+                    &mut error_ptr,
+                )
+            };
+
+            let error = take_bridge_string(error_ptr);
+            if let Some(err) = context.take_seek_error() {
+                return Err(err);
+            }
+            if context.is_closed() {
+                return Ok(());
+            }
+            if let Some(plan) = context.take_pending_seek() {
+                context.apply_drop(plan.drop_until);
+                next_start_frame = Some(plan.start_frame);
+                continue;
+            }
+
+            if !ok {
+                let message =
+                    error.unwrap_or_else(|| "videotoolbox handle decode failed".to_string());
+                return Err(DecoderError::backend_failure("videotoolbox", message));
+            }
+            if let Some(message) = error
+                && !message.is_empty()
+            {
+                return Err(DecoderError::backend_failure("videotoolbox", message));
+            }
+            return Ok(());
+        }
     }
 
     struct DecodeContext {
-        sender: mpsc::Sender<YPlaneResult<YPlaneFrame>>,
+        sender: mpsc::Sender<DecoderResult<VideoFrame>>,
+        seek_rx: SeekReceiver,
+        serial: Arc<AtomicU64>,
+        current_serial: u64,
+        pending_seek: Option<SeekPlan>,
+        pending_drop: Option<DropUntil>,
+        seek_error: Option<DecoderError>,
+        closed: bool,
+        fps: Option<f64>,
     }
 
     impl DecodeContext {
-        fn new(sender: mpsc::Sender<YPlaneResult<YPlaneFrame>>) -> Self {
-            Self { sender }
+        fn new(
+            sender: mpsc::Sender<DecoderResult<VideoFrame>>,
+            seek_rx: SeekReceiver,
+            serial: Arc<AtomicU64>,
+            fps: Option<f64>,
+        ) -> Self {
+            let current_serial = serial.load(Ordering::SeqCst);
+            Self {
+                sender,
+                seek_rx,
+                serial,
+                current_serial,
+                pending_seek: None,
+                pending_drop: None,
+                seek_error: None,
+                closed: false,
+                fps,
+            }
         }
 
-        fn send(&self, message: YPlaneResult<YPlaneFrame>) -> bool {
-            self.sender.blocking_send(message).is_ok()
+        fn is_closed(&self) -> bool {
+            self.closed || self.sender.is_closed()
+        }
+
+        fn apply_drop(&mut self, drop_until: Option<DropUntil>) {
+            self.pending_drop = drop_until;
+        }
+
+        fn take_pending_seek(&mut self) -> Option<SeekPlan> {
+            self.pending_seek.take()
+        }
+
+        fn take_seek_error(&mut self) -> Option<DecoderError> {
+            self.seek_error.take()
+        }
+
+        fn send(&mut self, message: DecoderResult<VideoFrame>) -> bool {
+            if self.sender.blocking_send(message).is_ok() {
+                true
+            } else {
+                self.closed = true;
+                false
+            }
+        }
+
+        fn drain_seek_requests(&mut self) -> bool {
+            if !self.seek_rx.has_changed().unwrap_or(false) {
+                return false;
+            }
+            if let Some(info) = *self.seek_rx.borrow_and_update() {
+                self.current_serial = self.serial.load(Ordering::SeqCst);
+                match compute_seek_plan(info, self.fps) {
+                    Ok(plan) => {
+                        self.pending_seek = Some(plan);
+                    }
+                    Err(err) => {
+                        self.seek_error = Some(err);
+                    }
+                }
+                return true;
+            }
+            false
+        }
+
+        fn should_skip_frame(&mut self, index: u64, pts: Option<Duration>) -> bool {
+            let Some(drop_until) = self.pending_drop else {
+                return false;
+            };
+            let keep = match drop_until {
+                DropUntil::Frame(target) => index >= target,
+                DropUntil::Timestamp(target) => pts.map(|value| value >= target).unwrap_or(true),
+            };
+            if keep {
+                self.pending_drop = None;
+                false
+            } else {
+                true
+            }
         }
     }
 
-    unsafe extern "C" fn frame_callback(frame: *const CVTFrame, ctx: *mut c_void) -> bool {
+    unsafe extern "C" fn frame_callback_nv12(frame: *const CVTFrame, ctx: *mut c_void) -> bool {
         if frame.is_null() || ctx.is_null() {
             return false;
         }
         let frame = unsafe { &*frame };
-        let context = unsafe { &*(ctx as *const DecodeContext) };
+        let context = unsafe { &mut *(ctx as *mut DecodeContext) };
+        if context.is_closed() {
+            return false;
+        }
+        if context.drain_seek_requests() {
+            return false;
+        }
 
-        if frame.data.is_null() {
-            let _ = context.send(Err(YPlaneError::backend_failure(
+        if frame.y_data.is_null() || frame.uv_data.is_null() {
+            let _ = context.send(Err(DecoderError::backend_failure(
                 "videotoolbox",
                 "frame missing pixel data",
             )));
             return false;
         }
 
-        let data = unsafe { slice::from_raw_parts(frame.data, frame.data_len) };
-        let buffer = data.to_vec();
+        let y_data = unsafe { slice::from_raw_parts(frame.y_data, frame.y_len) };
+        let uv_data = unsafe { slice::from_raw_parts(frame.uv_data, frame.uv_len) };
 
-        let timestamp = if frame.timestamp_seconds.is_finite() && frame.timestamp_seconds >= 0.0 {
-            Some(Duration::from_secs_f64(frame.timestamp_seconds))
+        let pts = if frame.pts_seconds.is_finite() && frame.pts_seconds >= 0.0 {
+            Some(Duration::from_secs_f64(frame.pts_seconds))
         } else {
             None
         };
+        let dts = if frame.dts_seconds.is_finite() && frame.dts_seconds >= 0.0 {
+            Some(Duration::from_secs_f64(frame.dts_seconds))
+        } else {
+            None
+        };
+        let index = pts
+            .and_then(|pts| index_from_pts(pts, context.fps))
+            .or(Some(frame.index));
+        if context.should_skip_frame(index.unwrap_or(frame.index), pts) {
+            return true;
+        }
 
-        let y_frame = match YPlaneFrame::from_owned(
+        let y_frame = match VideoFrame::from_nv12_owned(
             frame.width,
             frame.height,
-            frame.stride,
-            timestamp,
-            buffer,
+            frame.y_stride,
+            frame.uv_stride,
+            pts,
+            dts,
+            y_data.to_vec(),
+            uv_data.to_vec(),
         ) {
-            Ok(value) => value.with_frame_index(Some(frame.frame_index)),
+            Ok(value) => value.with_index(index).with_serial(context.current_serial),
             Err(err) => {
                 let _ = context.send(Err(err));
                 return false;
@@ -277,12 +515,154 @@ mod platform {
         true
     }
 
-    pub fn boxed_videotoolbox<P: AsRef<Path>>(
-        path: P,
-        channel_capacity: Option<usize>,
-    ) -> YPlaneResult<DynYPlaneProvider> {
-        VideoToolboxProvider::open(path, channel_capacity)
-            .map(|provider| Box::new(provider) as DynYPlaneProvider)
+    unsafe extern "C" fn frame_callback_handle(
+        frame: *const CVTHandleFrame,
+        ctx: *mut c_void,
+    ) -> bool {
+        if frame.is_null() {
+            return false;
+        }
+        let frame = unsafe { &*frame };
+        if ctx.is_null() {
+            if !frame.pixel_buffer.is_null() {
+                unsafe { release_native_handle(frame.pixel_buffer) };
+            }
+            return false;
+        }
+        let context = unsafe { &mut *(ctx as *mut DecodeContext) };
+        if context.is_closed() {
+            unsafe { release_native_handle(frame.pixel_buffer) };
+            return false;
+        }
+        if context.drain_seek_requests() {
+            unsafe { release_native_handle(frame.pixel_buffer) };
+            return false;
+        }
+
+        if frame.pixel_buffer.is_null() {
+            let _ = context.send(Err(DecoderError::backend_failure(
+                "videotoolbox",
+                "native frame missing pixel buffer handle",
+            )));
+            return false;
+        }
+
+        let pts = if frame.pts_seconds.is_finite() && frame.pts_seconds >= 0.0 {
+            Some(Duration::from_secs_f64(frame.pts_seconds))
+        } else {
+            None
+        };
+        let dts = if frame.dts_seconds.is_finite() && frame.dts_seconds >= 0.0 {
+            Some(Duration::from_secs_f64(frame.dts_seconds))
+        } else {
+            None
+        };
+        let index = pts
+            .and_then(|pts| index_from_pts(pts, context.fps))
+            .or(Some(frame.index));
+        if context.should_skip_frame(index.unwrap_or(frame.index), pts) {
+            unsafe { release_native_handle(frame.pixel_buffer) };
+            return true;
+        }
+
+        let native_frame = match VideoFrame::from_native_handle(
+            frame.width,
+            frame.height,
+            pts,
+            dts,
+            index,
+            "videotoolbox",
+            frame.pixel_format,
+            frame.pixel_buffer,
+            release_native_handle,
+        ) {
+            Ok(value) => value.with_serial(context.current_serial),
+            Err(err) => {
+                unsafe { release_native_handle(frame.pixel_buffer) };
+                let _ = context.send(Err(err));
+                return false;
+            }
+        };
+
+        if !context.send(Ok(native_frame)) {
+            return false;
+        }
+        true
+    }
+
+    #[derive(Clone, Copy)]
+    enum DropUntil {
+        Frame(u64),
+        Timestamp(Duration),
+    }
+
+    #[derive(Clone, Copy)]
+    struct SeekPlan {
+        start_frame: u64,
+        drop_until: Option<DropUntil>,
+    }
+
+    fn compute_seek_plan(info: SeekInfo, fps: Option<f64>) -> DecoderResult<SeekPlan> {
+        match info {
+            SeekInfo::Frame { frame, mode } => Ok(SeekPlan {
+                start_frame: frame,
+                drop_until: match mode {
+                    SeekMode::Fast => None,
+                    SeekMode::Accurate => Some(DropUntil::Frame(frame)),
+                },
+            }),
+            SeekInfo::Time { position, mode } => {
+                let fps = fps.ok_or_else(|| {
+                    DecoderError::configuration(
+                        "videotoolbox backend requires frame rate metadata to seek by time",
+                    )
+                })?;
+                if !(fps.is_finite() && fps > 0.0) {
+                    return Err(DecoderError::configuration(
+                        "videotoolbox backend requires frame rate metadata to seek by time",
+                    ));
+                }
+                let seconds = position.as_secs_f64();
+                if !seconds.is_finite() || seconds.is_sign_negative() {
+                    return Err(DecoderError::configuration("invalid seek timestamp"));
+                }
+                let raw_frame = seconds * fps;
+                if !raw_frame.is_finite() || raw_frame.is_sign_negative() {
+                    return Err(DecoderError::configuration("invalid seek timestamp"));
+                }
+                let frame = match mode {
+                    SeekMode::Fast => raw_frame.round(),
+                    SeekMode::Accurate => raw_frame.floor(),
+                };
+                if frame < 0.0 || frame > u64::MAX as f64 {
+                    return Err(DecoderError::configuration("seek frame is out of range"));
+                }
+                Ok(SeekPlan {
+                    start_frame: frame as u64,
+                    drop_until: match mode {
+                        SeekMode::Fast => None,
+                        SeekMode::Accurate => Some(DropUntil::Timestamp(position)),
+                    },
+                })
+            }
+        }
+    }
+
+    fn index_from_pts(pts: Duration, fps: Option<f64>) -> Option<u64> {
+        let fps = fps?;
+        if !(fps.is_finite() && fps > 0.0) {
+            return None;
+        }
+        let seconds = pts.as_secs_f64();
+        if !seconds.is_finite() || seconds.is_sign_negative() {
+            return None;
+        }
+        let index = (seconds * fps).round();
+        if index.is_finite() && index >= 0.0 && index <= u64::MAX as f64 {
+            Some(index as u64)
+        } else {
+            None
+        }
     }
 }
 
@@ -294,23 +674,21 @@ mod platform {
     pub struct VideoToolboxProvider;
 
     impl VideoToolboxProvider {
-        pub fn open<P: AsRef<Path>>(_path: P) -> YPlaneResult<Self> {
-            Err(YPlaneError::unsupported("videotoolbox"))
+        pub fn open<P: AsRef<Path>>(
+            _path: P,
+            _channel_capacity: Option<usize>,
+            _output_format: OutputFormat,
+            _start_frame: Option<u64>,
+        ) -> DecoderResult<Self> {
+            Err(DecoderError::unsupported("videotoolbox"))
         }
     }
 
-    impl YPlaneStreamProvider for VideoToolboxProvider {
-        fn into_stream(self: Box<Self>) -> YPlaneStream {
-            panic!("VideoToolbox backend is only available on macOS builds");
+    impl DecoderProvider for VideoToolboxProvider {
+        fn open(self: Box<Self>) -> DecoderResult<(DecoderController, FrameStream)> {
+            Err(DecoderError::unsupported("videotoolbox"))
         }
-    }
-
-    pub fn boxed_videotoolbox<P: AsRef<Path>>(
-        _path: P,
-        _channel_capacity: Option<usize>,
-    ) -> YPlaneResult<DynYPlaneProvider> {
-        Err(YPlaneError::unsupported("videotoolbox"))
     }
 }
 
-pub use platform::{VideoToolboxProvider, boxed_videotoolbox};
+pub use platform::VideoToolboxProvider;

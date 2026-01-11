@@ -17,7 +17,7 @@ async fn ffmpeg_backend_requires_asset() {
     };
 
     let config = Configuration {
-        backend: Backend::Ffmpeg,
+        backend: Backend::FFmpeg,
         input: Some(asset),
         ..Configuration::default()
     };
@@ -28,8 +28,9 @@ async fn ffmpeg_backend_requires_asset() {
         }
     };
 
-    let total_frames = provider.total_frames();
-    let mut stream = provider.into_stream();
+    let metadata = provider.metadata();
+    let total_frames = metadata.total_frames;
+    let (_controller, mut stream) = provider.open().expect("failed to open ffmpeg stream");
     let frame = stream
         .next()
         .await

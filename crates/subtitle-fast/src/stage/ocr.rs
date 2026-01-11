@@ -10,7 +10,7 @@ use super::lifecycle::{
     CompletedRegion, LifecycleEvent, LifecycleResult, RegionLifecycleError, RegionTimings,
 };
 use subtitle_fast_ocr::{LumaPlane, OcrEngine, OcrError, OcrRequest};
-use subtitle_fast_types::{OcrRegion, OcrResponse, RoiConfig, YPlaneFrame};
+use subtitle_fast_types::{OcrRegion, OcrResponse, RoiConfig, VideoFrame};
 
 const OCR_CHANNEL_CAPACITY: usize = 4;
 
@@ -163,7 +163,7 @@ impl OcrWorker {
     }
 }
 
-fn roi_to_region(roi: &RoiConfig, frame: &YPlaneFrame) -> OcrRegion {
+fn roi_to_region(roi: &RoiConfig, frame: &VideoFrame) -> OcrRegion {
     let width = frame.width().max(1) as f32;
     let height = frame.height().max(1) as f32;
     let left = (roi.x * width).clamp(0.0, width);
@@ -185,7 +185,7 @@ fn roi_to_region(roi: &RoiConfig, frame: &YPlaneFrame) -> OcrRegion {
     }
 }
 
-pub(crate) fn region_bounds(region: &OcrRegion, frame: &YPlaneFrame) -> Option<RegionBounds> {
+pub(crate) fn region_bounds(region: &OcrRegion, frame: &VideoFrame) -> Option<RegionBounds> {
     let frame_w = frame.width() as usize;
     let frame_h = frame.height() as usize;
     if frame_w == 0 || frame_h == 0 {
@@ -213,11 +213,21 @@ pub(crate) fn region_bounds(region: &OcrRegion, frame: &YPlaneFrame) -> Option<R
 #[cfg(test)]
 mod tests {
     use super::roi_to_region;
-    use subtitle_fast_types::{RoiConfig, YPlaneFrame};
+    use subtitle_fast_types::{RoiConfig, VideoFrame};
 
     #[test]
     fn roi_to_region_clamps_to_bounds() {
-        let frame = YPlaneFrame::from_owned(100, 50, 100, None, vec![0; 5000]).unwrap();
+        let frame = VideoFrame::from_nv12_owned(
+            100,
+            50,
+            100,
+            100,
+            None,
+            None,
+            vec![0; 5000],
+            vec![128; 2500],
+        )
+        .unwrap();
         let roi = RoiConfig {
             x: -0.2,
             y: 0.5,

@@ -7,13 +7,13 @@ use std::str::FromStr;
 #[cfg(feature = "backend-ffmpeg")]
 use std::sync::OnceLock;
 
-use crate::core::{DynYPlaneProvider, YPlaneError, YPlaneResult};
+use crate::core::{DecoderError, DecoderProvider, DecoderResult, DynDecoderProvider};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Mock,
     #[cfg(feature = "backend-ffmpeg")]
-    Ffmpeg,
+    FFmpeg,
     #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
     VideoToolbox,
     #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
@@ -22,21 +22,37 @@ pub enum Backend {
     Mft,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputFormat {
+    #[default]
+    Nv12,
+    CVPixelBuffer,
+}
+
+impl OutputFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OutputFormat::Nv12 => "nv12",
+            OutputFormat::CVPixelBuffer => "cvpixelbuffer",
+        }
+    }
+}
+
 impl FromStr for Backend {
-    type Err = YPlaneError;
+    type Err = DecoderError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "mock" => Ok(Backend::Mock),
             #[cfg(feature = "backend-ffmpeg")]
-            "ffmpeg" => Ok(Backend::Ffmpeg),
+            "ffmpeg" => Ok(Backend::FFmpeg),
             #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
             "videotoolbox" => Ok(Backend::VideoToolbox),
             #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
             "dxva" => Ok(Backend::Dxva),
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]
             "mft" => Ok(Backend::Mft),
-            other => Err(YPlaneError::configuration(format!(
+            other => Err(DecoderError::configuration(format!(
                 "unknown backend '{other}'"
             ))),
         }
@@ -48,7 +64,7 @@ impl Backend {
         match self {
             Backend::Mock => "mock",
             #[cfg(feature = "backend-ffmpeg")]
-            Backend::Ffmpeg => "ffmpeg",
+            Backend::FFmpeg => "ffmpeg",
             #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
             Backend::VideoToolbox => "videotoolbox",
             #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
@@ -85,25 +101,25 @@ fn append_platform_backends(_backends: &mut Vec<Backend>) {
     #[cfg(feature = "backend-ffmpeg")]
     {
         if ffmpeg_runtime_available() {
-            _backends.push(Backend::Ffmpeg);
+            _backends.push(Backend::FFmpeg);
         }
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 fn append_platform_backends(backends: &mut Vec<Backend>) {
-    #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
-    {
-        backends.push(Backend::Dxva);
-    }
     #[cfg(all(feature = "backend-mft", target_os = "windows"))]
     {
         backends.push(Backend::Mft);
     }
+    #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
+    {
+        backends.push(Backend::Dxva);
+    }
     #[cfg(feature = "backend-ffmpeg")]
     {
         if ffmpeg_runtime_available() {
-            backends.push(Backend::Ffmpeg);
+            backends.push(Backend::FFmpeg);
         }
     }
 }
@@ -125,6 +141,8 @@ pub struct Configuration {
     pub backend: Backend,
     pub input: Option<PathBuf>,
     pub channel_capacity: Option<NonZeroUsize>,
+    pub output_format: OutputFormat,
+    pub start_frame: Option<u64>,
 }
 
 impl Default for Configuration {
@@ -137,12 +155,14 @@ impl Default for Configuration {
             backend,
             input: None,
             channel_capacity: None,
+            output_format: OutputFormat::Nv12,
+            start_frame: None,
         }
     }
 }
 
 impl Configuration {
-    pub fn from_env() -> YPlaneResult<Self> {
+    pub fn from_env() -> DecoderResult<Self> {
         let mut config = Configuration::default();
         if let Ok(backend) = env::var("SUBFAST_BACKEND") {
             config.backend = Backend::from_str(&backend)?;
@@ -152,16 +172,24 @@ impl Configuration {
         }
         if let Ok(capacity) = env::var("SUBFAST_CHANNEL_CAPACITY") {
             let parsed: usize = capacity.parse().map_err(|_| {
-                YPlaneError::configuration(format!(
+                DecoderError::configuration(format!(
                     "failed to parse SUBFAST_CHANNEL_CAPACITY='{capacity}' as a positive integer"
                 ))
             })?;
             let Some(value) = NonZeroUsize::new(parsed) else {
-                return Err(YPlaneError::configuration(
+                return Err(DecoderError::configuration(
                     "SUBFAST_CHANNEL_CAPACITY must be greater than zero",
                 ));
             };
             config.channel_capacity = Some(value);
+        }
+        if let Ok(start_frame) = env::var("SUBFAST_START_FRAME") {
+            let parsed: u64 = start_frame.parse().map_err(|_| {
+                DecoderError::configuration(format!(
+                    "failed to parse SUBFAST_START_FRAME='{start_frame}' as a non-negative integer"
+                ))
+            })?;
+            config.start_frame = Some(parsed);
         }
         Ok(config)
     }
@@ -170,49 +198,53 @@ impl Configuration {
         compiled_backends()
     }
 
-    pub fn create_provider(&self) -> YPlaneResult<DynYPlaneProvider> {
-        let channel_capacity = self.channel_capacity.map(NonZeroUsize::get);
+    pub fn create_provider(&self) -> DecoderResult<DynDecoderProvider> {
+        self.validate_output_format()?;
 
         match self.backend {
             Backend::Mock => {
                 if !github_ci_active() {
-                    Err(YPlaneError::unsupported("mock"))
+                    Err(DecoderError::unsupported("mock"))
                 } else {
-                    crate::backends::mock::boxed_mock(self.input.clone(), channel_capacity)
+                    Ok(Box::new(crate::backends::mock::MockProvider::new(self)?))
                 }
             }
             #[cfg(feature = "backend-ffmpeg")]
-            Backend::Ffmpeg => {
-                let path = self.input.clone().ok_or_else(|| {
-                    YPlaneError::configuration("FFmpeg backend requires SUBFAST_INPUT")
-                })?;
-                crate::backends::ffmpeg::boxed_ffmpeg(path, channel_capacity)
-            }
+            Backend::FFmpeg => Ok(Box::new(crate::backends::ffmpeg::FFmpegProvider::new(
+                self,
+            )?)),
             #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
-            Backend::VideoToolbox => {
-                let path = self.input.clone().ok_or_else(|| {
-                    YPlaneError::configuration(
-                        "VideoToolbox backend requires SUBFAST_INPUT to be set",
-                    )
-                })?;
-                crate::backends::videotoolbox::boxed_videotoolbox(path, channel_capacity)
-            }
+            Backend::VideoToolbox => Ok(Box::new(
+                crate::backends::videotoolbox::VideoToolboxProvider::new(self)?,
+            )),
             #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
-            Backend::Dxva => {
-                let path = self.input.clone().ok_or_else(|| {
-                    YPlaneError::configuration("DXVA backend requires SUBFAST_INPUT to be set")
-                })?;
-                crate::backends::dxva::boxed_dxva(path, channel_capacity)
-            }
+            Backend::Dxva => Ok(Box::new(crate::backends::dxva::DxvaProvider::new(self)?)),
             #[cfg(all(feature = "backend-mft", target_os = "windows"))]
-            Backend::Mft => {
-                let path = self.input.clone().ok_or_else(|| {
-                    YPlaneError::configuration("MFT backend requires SUBFAST_INPUT to be set")
-                })?;
-                crate::backends::mft::boxed_mft(path, channel_capacity)
-            }
+            Backend::Mft => Ok(Box::new(crate::backends::mft::MftProvider::new(self)?)),
             #[allow(unreachable_patterns)]
-            other => Err(YPlaneError::unsupported(other.as_str())),
+            other => Err(DecoderError::unsupported(other.as_str())),
+        }
+    }
+}
+
+impl Configuration {
+    fn validate_output_format(&self) -> DecoderResult<()> {
+        match self.output_format {
+            OutputFormat::Nv12 => Ok(()),
+            OutputFormat::CVPixelBuffer => {
+                #[cfg(all(feature = "backend-videotoolbox", target_os = "macos"))]
+                {
+                    if self.backend == Backend::VideoToolbox {
+                        return Ok(());
+                    }
+                }
+
+                Err(DecoderError::configuration(format!(
+                    "output format '{}' is only supported by videotoolbox backend (selected: {})",
+                    self.output_format.as_str(),
+                    self.backend.as_str()
+                )))
+            }
         }
     }
 }
@@ -222,7 +254,7 @@ fn default_backend() -> Backend {
         return Backend::Mock;
     }
     #[cfg(feature = "backend-ffmpeg")]
-    return Backend::Ffmpeg;
+    return Backend::FFmpeg;
 
     #[allow(unreachable_code)]
     Backend::Mock

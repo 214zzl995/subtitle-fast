@@ -2,23 +2,21 @@
 name = "subtitle-fast"
 version = "0.1.0"
 edition = "2024"
-default-run = "subtitle-fast-cli"
-
-[lib]
-crate-type = ["cdylib", "staticlib", "rlib"]
 
 [[bin]]
-name = "subtitle-fast-cli"
+name = "subtitle-fast"
 path = "src/main.rs"
 
 [features]
-default = ["detector-vision", "ocr-vision"]
+default = ["gui", "detector-vision", "ocr-vision"]
+gui = ["dep:gpui", "dep:anyhow", "dep:rust-embed"]
 detector-vision = ["subtitle-fast-validator/detector-vision"]
 ocr-vision = ["subtitle-fast-ocr/engine-vision"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 directories = "5"
+futures-channel = "0.3"
 futures-util = "0.3"
 indicatif = "0.18"
 subtitle-fast-comparator = { path = "../subtitle-fast-comparator" }
@@ -37,6 +35,11 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 toml = "0.8"
 parking_lot = "0.12"
 png = "0.18"
+
+# GUI dependencies (optional)
+gpui = { version = "0.2", optional = true }
+anyhow = { version = "1", optional = true }
+rust-embed = { version = "8.7.2", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

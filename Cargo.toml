@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/gpui",
     "crates/subtitle-fast-types",
     "crates/subtitle-fast",
     "crates/subtitle-fast-comparator",
@@ -8,6 +9,9 @@ members = [
     "crates/subtitle-fast-validator",
 ]
 resolver = "2"
+
+[patch.crates-io]
+gpui = { path = "crates/gpui" }
 
 [profile.release]
 opt-level = 3

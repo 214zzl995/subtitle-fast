@@ -1,6 +1,4 @@
 [env]
-# Align with Homebrew FFmpeg builds to avoid macOS 14→15 linker warnings.
-MACOSX_DEPLOYMENT_TARGET = "15.0"
 # Use paths relative to the workspace root; Cargo will expand them to absolute before passing to build scripts.
 FFMPEG_DIR = { value = "target/ffmpeg-min", relative = true }
 PKG_CONFIG_PATH = { value = "target/ffmpeg-min/lib/pkgconfig", relative = true }

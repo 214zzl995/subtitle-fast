@@ -12,7 +12,7 @@ default = [
     "backend-dxva",
 ]
 backend-ffmpeg = ["dep:ffmpeg-next"]
-backend-videotoolbox = ["dep:mp4", "dep:rayon"]
+backend-videotoolbox = ["dep:rayon"]
 backend-mft = []
 backend-dxva = []
 
@@ -36,8 +36,8 @@ ffmpeg-next = { version = "8", optional = true, default-features = false, featur
     "software-resampling",
     "static",
 ] }
-mp4 = { version = "0.14", optional = true }
 rayon = { version = "1.10", optional = true }
+parking_lot = "0.12"
 
 [build-dependencies]
 cc = "1"

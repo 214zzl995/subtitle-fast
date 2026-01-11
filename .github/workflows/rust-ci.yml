@@ -71,7 +71,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             nasm \
-            pkg-config
+            pkg-config \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libssl-dev
 
       - name: Prepare apt cache for saving
         run: sudo chown -R $USER:$USER /var/cache/apt/archives
@@ -79,7 +85,8 @@ jobs:
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.92.0
+          components: rustfmt, clippy
 
       - name: Build trimmed FFmpeg bundle
         run: ./scripts/build-ffmpeg-min.sh

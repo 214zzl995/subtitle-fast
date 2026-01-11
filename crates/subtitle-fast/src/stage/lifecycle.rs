@@ -15,7 +15,7 @@ use crate::settings::DetectionSettings;
 use subtitle_fast_comparator::{
     ComparatorFactory, ComparatorKind, ComparatorSettings, FeatureBlob, SubtitleComparator,
 };
-use subtitle_fast_types::{RoiConfig, YPlaneFrame};
+use subtitle_fast_types::{RoiConfig, VideoFrame};
 
 const REGION_TRACKER_CHANNEL_CAPACITY: usize = 4;
 const MIN_REGION_AREA_FRACTION: f32 = 0.001;
@@ -30,7 +30,7 @@ pub struct CompletedRegion {
     pub start_frame: u64,
     pub end_frame: u64,
     pub roi: RoiConfig,
-    pub frame: Arc<YPlaneFrame>,
+    pub frame: Arc<VideoFrame>,
 }
 
 pub struct LifecycleEvent {
@@ -151,7 +151,7 @@ struct ActiveRegion {
     start_frame: u64,
     last_time: Duration,
     last_frame: u64,
-    frame: Arc<YPlaneFrame>,
+    frame: Arc<VideoFrame>,
 }
 
 struct RegionLifecycleWorker {
@@ -325,7 +325,7 @@ impl RegionLifecycleWorker {
 struct FrameContext {
     time: Duration,
     frame_index: u64,
-    frame: Arc<YPlaneFrame>,
+    frame: Arc<VideoFrame>,
     history: FrameHistory,
     sampler_context: SamplerContext,
 }
@@ -387,7 +387,7 @@ fn refine_end(
     active: &ActiveRegion,
     history: &FrameHistory,
     timings: &mut RegionTimings,
-) -> (Duration, u64, Arc<YPlaneFrame>) {
+) -> (Duration, u64, Arc<VideoFrame>) {
     let mut best_frame = active.last_frame;
     let mut best_time = active.last_time;
     let mut best_frame_handle = Arc::clone(&active.frame);
@@ -406,7 +406,7 @@ fn refine_end(
         if report.same_segment {
             anchor = Some(candidate.clone());
             best_frame = record.frame_index;
-            best_time = record.frame().timestamp().unwrap_or(best_time);
+            best_time = record.frame().pts().unwrap_or(best_time);
             best_frame_handle = record.frame_handle();
         }
     }
@@ -437,7 +437,7 @@ fn comparison_anchor<'a>(
 fn timed_extract(
     timings: &mut RegionTimings,
     comparator: &dyn SubtitleComparator,
-    frame: &YPlaneFrame,
+    frame: &VideoFrame,
     roi: &RoiConfig,
 ) -> Option<FeatureBlob> {
     let started = Instant::now();
@@ -461,7 +461,7 @@ fn timed_compare(
 }
 
 fn sample_time(sample: &SampledFrame) -> Duration {
-    if let Some(ts) = sample.frame().timestamp() {
+    if let Some(ts) = sample.frame().pts() {
         return ts;
     }
     if let Some(fps) = sample.sampler_context().estimated_fps()
@@ -473,8 +473,8 @@ fn sample_time(sample: &SampledFrame) -> Duration {
     Duration::from_secs(0)
 }
 
-fn frame_time(frame: &YPlaneFrame, frame_index: u64, context: &SamplerContext) -> Option<Duration> {
-    if let Some(ts) = frame.timestamp() {
+fn frame_time(frame: &VideoFrame, frame_index: u64, context: &SamplerContext) -> Option<Duration> {
+    if let Some(ts) = frame.pts() {
         return Some(ts);
     }
     let fps = context.estimated_fps()?;

@@ -9,5 +9,5 @@ openspec
 AGENTS.md
 demo
 **/.DS_Store
-ui-macos/DerivedData
-ui-macos/dist
+.venv
+

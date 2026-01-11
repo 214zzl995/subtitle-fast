@@ -6,14 +6,14 @@ use futures_util::{StreamExt, stream::unfold};
 use tokio::sync::mpsc;
 
 use super::StreamBundle;
-use subtitle_fast_types::{YPlaneError, YPlaneFrame, YPlaneResult};
+use subtitle_fast_types::{DecoderError, DecoderResult, VideoFrame};
 
 const SAMPLER_CHANNEL_CAPACITY: usize = 1;
 const DEFAULT_POOL_CAPACITY: usize = 24;
 const MAX_POOL_CAPACITY: usize = 240;
 const EPSILON: f64 = 1e-6;
 
-pub type SamplerResult = Result<SampledFrame, YPlaneError>;
+pub type SamplerResult = Result<SampledFrame, DecoderError>;
 
 #[derive(Debug, Clone, Copy)]
 pub enum FrameType {
@@ -46,7 +46,7 @@ impl SamplerContext {
 
 pub struct SampledFrame {
     frame_index: u64,
-    frame: Arc<YPlaneFrame>,
+    frame: Arc<VideoFrame>,
     history: FrameHistory,
     context: Arc<SamplerContext>,
 }
@@ -54,7 +54,7 @@ pub struct SampledFrame {
 impl SampledFrame {
     fn new(
         frame_index: u64,
-        frame: Arc<YPlaneFrame>,
+        frame: Arc<VideoFrame>,
         history: FrameHistory,
         context: Arc<SamplerContext>,
     ) -> Self {
@@ -66,11 +66,11 @@ impl SampledFrame {
         }
     }
 
-    pub fn frame(&self) -> &YPlaneFrame {
+    pub fn frame(&self) -> &VideoFrame {
         self.frame.as_ref()
     }
 
-    pub fn frame_handle(&self) -> Arc<YPlaneFrame> {
+    pub fn frame_handle(&self) -> Arc<VideoFrame> {
         Arc::clone(&self.frame)
     }
 
@@ -100,7 +100,7 @@ impl FrameSampler {
 impl FrameSampler {
     pub fn attach(
         self,
-        input: StreamBundle<YPlaneResult<YPlaneFrame>>,
+        input: StreamBundle<DecoderResult<VideoFrame>>,
     ) -> StreamBundle<SamplerResult> {
         let StreamBundle {
             stream,
@@ -162,16 +162,16 @@ impl SamplerWorker {
 
     async fn handle_frame(
         &mut self,
-        frame: YPlaneFrame,
+        frame: VideoFrame,
         tx: &mpsc::Sender<SamplerResult>,
     ) -> Result<(), ()> {
         self.processed = self.processed.saturating_add(1);
         let processed_index = self.processed;
 
         let frame_index = frame
-            .frame_index()
+            .index()
             .unwrap_or_else(|| processed_index.saturating_sub(1));
-        let timestamp = frame.timestamp();
+        let timestamp = frame.pts();
 
         let frame_type = if self.schedule.should_sample(timestamp, processed_index) {
             FrameType::Sampled
@@ -411,11 +411,11 @@ struct FpsObservation {
 struct PoolEntry {
     frame_index: u64,
     frame_type: FrameType,
-    frame: Arc<YPlaneFrame>,
+    frame: Arc<VideoFrame>,
 }
 
 impl PoolEntry {
-    fn new(frame_index: u64, frame_type: FrameType, frame: Arc<YPlaneFrame>) -> Self {
+    fn new(frame_index: u64, frame_type: FrameType, frame: Arc<VideoFrame>) -> Self {
         Self {
             frame_index,
             frame_type,
@@ -423,7 +423,7 @@ impl PoolEntry {
         }
     }
 
-    fn frame_handle(&self) -> Arc<YPlaneFrame> {
+    fn frame_handle(&self) -> Arc<VideoFrame> {
         Arc::clone(&self.frame)
     }
 }
@@ -449,15 +449,15 @@ impl FrameHistory {
 pub struct HistoryRecord {
     pub frame_index: u64,
     pub frame_type: FrameType,
-    frame: Arc<YPlaneFrame>,
+    frame: Arc<VideoFrame>,
 }
 
 impl HistoryRecord {
-    pub fn frame(&self) -> &YPlaneFrame {
+    pub fn frame(&self) -> &VideoFrame {
         &self.frame
     }
 
-    pub fn frame_handle(&self) -> Arc<YPlaneFrame> {
+    pub fn frame_handle(&self) -> Arc<VideoFrame> {
         Arc::clone(&self.frame)
     }
 }
@@ -470,8 +470,17 @@ mod tests {
     async fn sampled_history_includes_current_frame() {
         let mut worker = SamplerWorker::new(1);
         let (tx, mut rx) = mpsc::channel(1);
-        let frame = YPlaneFrame::from_owned(2, 2, 2, Some(Duration::from_millis(0)), vec![0; 4])
-            .expect("frame");
+        let frame = VideoFrame::from_nv12_owned(
+            2,
+            2,
+            2,
+            2,
+            Some(Duration::from_millis(0)),
+            None,
+            vec![0; 4],
+            vec![128; 2],
+        )
+        .expect("frame");
 
         worker
             .handle_frame(frame, &tx)
@@ -498,10 +507,28 @@ mod tests {
         let mut worker = SamplerWorker::new(1);
         let (tx, mut rx) = mpsc::channel(4);
 
-        let frame_a =
-            YPlaneFrame::from_owned(2, 2, 2, Some(Duration::from_millis(0)), vec![1; 4]).unwrap();
-        let frame_b =
-            YPlaneFrame::from_owned(2, 2, 2, Some(Duration::from_millis(10)), vec![2; 4]).unwrap();
+        let frame_a = VideoFrame::from_nv12_owned(
+            2,
+            2,
+            2,
+            2,
+            Some(Duration::from_millis(0)),
+            None,
+            vec![1; 4],
+            vec![128; 2],
+        )
+        .unwrap();
+        let frame_b = VideoFrame::from_nv12_owned(
+            2,
+            2,
+            2,
+            2,
+            Some(Duration::from_millis(10)),
+            None,
+            vec![2; 4],
+            vec![128; 2],
+        )
+        .unwrap();
 
         worker
             .handle_frame(frame_a, &tx)

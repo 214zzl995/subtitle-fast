@@ -1,6 +1,6 @@
 # subtitle-fast-decoder
 
-`subtitle-fast-decoder` provides interchangeable H.264 decoders that output monochrome Y-plane frames. Pipelines request a
+`subtitle-fast-decoder` provides interchangeable H.264 decoders that output NV12 frames by default. Pipelines request a
 decoder, receive an async stream of frames, and can switch backends when the preferred option is unavailable.
 
 ## How decoding is orchestrated
@@ -9,8 +9,9 @@ decoder, receive an async stream of frames, and can switch backends when the pre
    backend to try, which input to open, and how many frames to buffer.
 2. **Instantiate a backend** – the crate exposes factory helpers that negotiate with FFmpeg, VideoToolbox, D3D11/DXVA on
    Windows, Windows Media Foundation, or a lightweight mock backend compiled for CI.
-3. **Stream frames** – once a backend is active it produces `YPlaneFrame` values containing luma data, dimensions, stride,
-   timestamps, and (when available) frame indices. Frames are delivered through an async stream that respects backpressure.
+3. **Stream frames** – once a backend is active it produces `VideoFrame` values containing NV12 planes (Y + UV) or, when
+   explicitly requested on macOS VideoToolbox, a native CVPixelBuffer handle plus metadata. Frames are delivered through
+   an async stream that respects backpressure.
 
 If a backend fails to initialise (for example because the platform libraries are missing), callers can fall back to another
 compiled backend before surfacing the error.
@@ -36,19 +37,58 @@ so tests can exercise downstream logic without native dependencies.
 
 ## Configuration knobs
 
-- Env vars: `SUBFAST_BACKEND`, `SUBFAST_INPUT`, and `SUBFAST_CHANNEL_CAPACITY` feed into `Configuration::from_env`.
+- Env vars: `SUBFAST_BACKEND`, `SUBFAST_INPUT`, `SUBFAST_CHANNEL_CAPACITY`, and `SUBFAST_START_FRAME` feed into
+  `Configuration::from_env`.
+- Output format: `Configuration::output_format` defaults to NV12; `OutputFormat::CVPixelBuffer` is only supported
+  by the VideoToolbox backend and must be set in code (no env override).
 - Default backend: the first compiled backend is chosen in priority order (mock on CI; VideoToolbox then FFmpeg on macOS;
   DXVA then MFT then FFmpeg on Windows; FFmpeg elsewhere).
 - Channel capacity: `channel_capacity` limits the internal frame queue and governs backpressure.
 
+## VideoToolbox CVPixelBuffer output (macOS)
+
+When you need access to the native `CVPixelBuffer` handle from VideoToolbox, request handle output in code and wrap the
+pointer into gpui's CoreVideo type yourself:
+
+```rust
+use subtitle_fast_decoder::{Backend, Configuration, OutputFormat};
+
+let config = Configuration {
+    backend: Backend::VideoToolbox,
+    input: Some(input_path),
+    output_format: OutputFormat::CVPixelBuffer,
+    start_frame: None,
+    ..Configuration::default()
+};
+
+let (_controller, mut stream) = config.create_provider()?.open()?;
+while let Some(frame) = stream.next().await {
+    let frame = frame?;
+    let native = frame.native().expect("native handle output requested");
+    let handle = native.handle();
+
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use core_foundation::base::TCFType;
+        use core_video::pixel_buffer::{CVPixelBuffer, CVPixelBufferRef};
+
+        let buffer = CVPixelBuffer::wrap_under_get_rule(handle as CVPixelBufferRef);
+        // Example gpui usage:
+        // window.paint_surface(bounds, buffer);
+    }
+}
+```
+
+`wrap_under_get_rule` retains the buffer, so the gpui `CVPixelBuffer` stays valid even after the `VideoFrame` is dropped.
+
 ## Error handling
 
-All failures map to `YPlaneError` variants:
+All failures map to `DecoderError` variants:
 
 - `Unsupported` – the chosen backend was not compiled into this build.
 - `BackendFailure` – the native backend returned an error string.
 - `Configuration` – invalid environment variable or configuration input.
-- `InvalidFrame` – safety checks on the decoded buffer failed (e.g., insufficient bytes for the stride/height).
+- `InvalidFrame` – safety checks on the decoded buffer failed (e.g., insufficient bytes for NV12 Y/UV planes).
 - `Io` – filesystem-related issues while reading from disk-backed inputs.
 
 Callers are expected to surface these errors to users and optionally try a different backend before aborting.

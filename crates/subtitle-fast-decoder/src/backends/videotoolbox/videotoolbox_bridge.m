@@ -18,20 +18,40 @@
 typedef struct {
     bool has_value;
     uint64_t value;
+    double duration_seconds;
+    double fps;
+    uint32_t width;
+    uint32_t height;
     char *error;
 } VideoToolboxProbeResult;
 
 typedef struct {
-    const uint8_t *data;
-    size_t data_len;
+    const uint8_t *y_data;
+    size_t y_len;
+    size_t y_stride;
+    const uint8_t *uv_data;
+    size_t uv_len;
+    size_t uv_stride;
     uint32_t width;
     uint32_t height;
-    size_t stride;
-    double timestamp_seconds;
-    uint64_t frame_index;
+    double pts_seconds;
+    double dts_seconds;
+    uint64_t index;
 } VideoToolboxFrame;
 
 typedef bool (*VideoToolboxFrameCallback)(const VideoToolboxFrame *frame, void *context);
+
+typedef struct {
+    void *pixel_buffer;
+    uint32_t pixel_format;
+    uint32_t width;
+    uint32_t height;
+    double pts_seconds;
+    double dts_seconds;
+    uint64_t index;
+} VideoToolboxHandleFrame;
+
+typedef bool (*VideoToolboxHandleFrameCallback)(const VideoToolboxHandleFrame *frame, void *context);
 
 static char *vt_copy_c_string(const char *message) {
     if (message == NULL) {
@@ -247,6 +267,10 @@ bool videotoolbox_probe_total_frames(const char *path, VideoToolboxProbeResult *
     }
     out_result->has_value = false;
     out_result->value = 0;
+    out_result->duration_seconds = NAN;
+    out_result->fps = NAN;
+    out_result->width = 0;
+    out_result->height = 0;
     out_result->error = NULL;
 
     @autoreleasepool {
@@ -271,8 +295,10 @@ bool videotoolbox_probe_total_frames(const char *path, VideoToolboxProbeResult *
 
         CMTimeRange time_range = track.timeRange;
         Float64 duration_seconds = CMTimeGetSeconds(time_range.duration);
-        if (!isfinite(duration_seconds) || duration_seconds <= 0.0) {
-            return true;
+        if (isfinite(duration_seconds) && duration_seconds > 0.0) {
+            out_result->duration_seconds = duration_seconds;
+        } else {
+            duration_seconds = NAN;
         }
 
         Float64 fps = track.nominalFrameRate;
@@ -284,17 +310,29 @@ bool videotoolbox_probe_total_frames(const char *path, VideoToolboxProbeResult *
             }
         }
 
-        if (!isfinite(fps) || fps <= 0.0) {
-            return true;
+        if (isfinite(fps) && fps > 0.0) {
+            out_result->fps = fps;
+        } else {
+            fps = NAN;
         }
 
-        Float64 total = round(duration_seconds * fps);
-        if (!isfinite(total) || total <= 0.0) {
-            return true;
+        CGSize size = track.naturalSize;
+        CGFloat width = fabs(size.width);
+        CGFloat height = fabs(size.height);
+        if (isfinite(width) && width > 0.0) {
+            out_result->width = (uint32_t)llround(width);
+        }
+        if (isfinite(height) && height > 0.0) {
+            out_result->height = (uint32_t)llround(height);
         }
 
-        out_result->has_value = true;
-        out_result->value = (uint64_t)total;
+        if (isfinite(duration_seconds) && duration_seconds > 0.0 && isfinite(fps) && fps > 0.0) {
+            Float64 total = round(duration_seconds * fps);
+            if (isfinite(total) && total > 0.0) {
+                out_result->has_value = true;
+                out_result->value = (uint64_t)total;
+            }
+        }
     }
 
     return true;
@@ -302,6 +340,8 @@ bool videotoolbox_probe_total_frames(const char *path, VideoToolboxProbeResult *
 
 bool videotoolbox_decode(
     const char *path,
+    bool has_start_frame,
+    uint64_t start_frame,
     VideoToolboxFrameCallback callback,
     void *context,
     char **out_error
@@ -342,6 +382,49 @@ bool videotoolbox_decode(
             return false;
         }
 
+        if (has_start_frame) {
+            NSArray<AVAssetTrack *> *tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+            if (tracks == nil || tracks.count == 0) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("asset contains no video tracks");
+                }
+                return false;
+            }
+            AVAssetTrack *track = tracks.firstObject;
+            if (track == nil) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("asset contains no primary video track");
+                }
+                return false;
+            }
+
+            Float64 fps = track.nominalFrameRate;
+            if (!isfinite(fps) || fps <= 0.0) {
+                CMTime min_frame_duration = track.minFrameDuration;
+                Float64 frame_duration_seconds = CMTimeGetSeconds(min_frame_duration);
+                if (frame_duration_seconds > 0.0 && isfinite(frame_duration_seconds)) {
+                    fps = 1.0 / frame_duration_seconds;
+                }
+            }
+            if (!isfinite(fps) || fps <= 0.0) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("videotoolbox requires frame rate metadata to seek");
+                }
+                return false;
+            }
+
+            Float64 start_seconds = (Float64)start_frame / fps;
+            if (!isfinite(start_seconds) || start_seconds < 0.0) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("videotoolbox failed to compute seek time");
+                }
+                return false;
+            }
+
+            CMTime start_time = CMTimeMakeWithSeconds(start_seconds, 600);
+            reader.timeRange = CMTimeRangeMake(start_time, kCMTimePositiveInfinity);
+        }
+
         if (![reader startReading]) {
             if (out_error != NULL) {
                 *out_error = vt_copy_error_message(reader.error, "failed to start AVAssetReader");
@@ -349,7 +432,7 @@ bool videotoolbox_decode(
             return false;
         }
 
-        uint64_t frame_index = 0;
+        uint64_t frame_index = has_start_frame ? start_frame : 0;
 
         while (true) {
             CMSampleBufferRef sample = [output copyNextSampleBuffer];
@@ -373,9 +456,9 @@ bool videotoolbox_decode(
             }
 
             size_t plane_count = CVPixelBufferGetPlaneCount(pixel_buffer);
-            if (plane_count == 0) {
+            if (plane_count < 2) {
                 if (out_error != NULL) {
-                    *out_error = vt_copy_c_string("expected planar pixel buffer for Y plane extraction");
+                    *out_error = vt_copy_c_string("expected NV12 pixel buffer with Y and UV planes");
                 }
                 CFRelease(sample);
                 return false;
@@ -390,12 +473,24 @@ bool videotoolbox_decode(
                 return false;
             }
 
-            const uint8_t *base = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 0);
-            size_t stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 0);
+            const uint8_t *y_base = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 0);
+            const uint8_t *uv_base = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 1);
+            size_t y_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 0);
+            size_t uv_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 1);
             size_t width = CVPixelBufferGetWidthOfPlane(pixel_buffer, 0);
             size_t height = CVPixelBufferGetHeightOfPlane(pixel_buffer, 0);
+            size_t uv_height = CVPixelBufferGetHeightOfPlane(pixel_buffer, 1);
 
-            if (height != 0 && stride > SIZE_MAX / height) {
+            if (y_base == NULL || uv_base == NULL) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("failed to access NV12 plane data");
+                }
+                CVPixelBufferUnlockBaseAddress(pixel_buffer, kCVPixelBufferLock_ReadOnly);
+                CFRelease(sample);
+                return false;
+            }
+
+            if (height != 0 && y_stride > SIZE_MAX / height) {
                 if (out_error != NULL) {
                     *out_error = vt_copy_c_string("calculated stride overflow for Y plane");
                 }
@@ -403,26 +498,202 @@ bool videotoolbox_decode(
                 CFRelease(sample);
                 return false;
             }
+            if (uv_height != 0 && uv_stride > SIZE_MAX / uv_height) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("calculated stride overflow for UV plane");
+                }
+                CVPixelBufferUnlockBaseAddress(pixel_buffer, kCVPixelBufferLock_ReadOnly);
+                CFRelease(sample);
+                return false;
+            }
 
-            size_t data_len = stride * height;
+            size_t y_len = y_stride * height;
+            size_t uv_len = uv_stride * uv_height;
             CMTime pts = CMSampleBufferGetPresentationTimeStamp(sample);
-            Float64 timestamp_seconds = NAN;
+            CMTime dts = CMSampleBufferGetDecodeTimeStamp(sample);
+            Float64 pts_seconds = NAN;
+            Float64 dts_seconds = NAN;
             if (pts.timescale != 0) {
-                timestamp_seconds = (Float64)pts.value / (Float64)pts.timescale;
+                pts_seconds = (Float64)pts.value / (Float64)pts.timescale;
+            }
+            if (dts.timescale != 0) {
+                dts_seconds = (Float64)dts.value / (Float64)dts.timescale;
             }
 
             VideoToolboxFrame frame;
-            frame.data = base;
-            frame.data_len = data_len;
+            frame.y_data = y_base;
+            frame.y_len = y_len;
+            frame.y_stride = y_stride;
+            frame.uv_data = uv_base;
+            frame.uv_len = uv_len;
+            frame.uv_stride = uv_stride;
             frame.width = (uint32_t)width;
             frame.height = (uint32_t)height;
-            frame.stride = stride;
-            frame.timestamp_seconds = timestamp_seconds;
-            frame.frame_index = frame_index;
+            frame.pts_seconds = pts_seconds;
+            frame.dts_seconds = dts_seconds;
+            frame.index = frame_index;
 
             bool should_continue = callback(&frame, context);
 
             CVPixelBufferUnlockBaseAddress(pixel_buffer, kCVPixelBufferLock_ReadOnly);
+            CFRelease(sample);
+
+            if (!should_continue) {
+                break;
+            }
+
+            frame_index += 1;
+        }
+    }
+
+    return true;
+}
+
+bool videotoolbox_decode_handle(
+    const char *path,
+    bool has_start_frame,
+    uint64_t start_frame,
+    VideoToolboxHandleFrameCallback callback,
+    void *context,
+    char **out_error
+) {
+    if (out_error != NULL) {
+        *out_error = NULL;
+    }
+    if (callback == NULL) {
+        if (out_error != NULL) {
+            *out_error = vt_copy_c_string("videotoolbox handle callback is null");
+        }
+        return false;
+    }
+
+    @autoreleasepool {
+        NSString *ns_path = vt_string_from_utf8(path);
+        NSURL *url = nil;
+        AVURLAsset *asset = nil;
+        char *asset_error = NULL;
+        if (!vt_populate_asset(ns_path, &url, &asset, &asset_error)) {
+            if (out_error != NULL) {
+                *out_error = asset_error;
+            } else {
+                free(asset_error);
+            }
+            return false;
+        }
+
+        AVAssetReader *reader = nil;
+        AVAssetReaderTrackOutput *output = nil;
+        char *reader_error = NULL;
+        if (!vt_prepare_reader(asset, &reader, &output, &reader_error)) {
+            if (out_error != NULL) {
+                *out_error = reader_error;
+            } else {
+                free(reader_error);
+            }
+            return false;
+        }
+
+        if (has_start_frame) {
+            NSArray<AVAssetTrack *> *tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+            if (tracks == nil || tracks.count == 0) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("asset contains no video tracks");
+                }
+                return false;
+            }
+            AVAssetTrack *track = tracks.firstObject;
+            if (track == nil) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("asset contains no primary video track");
+                }
+                return false;
+            }
+
+            Float64 fps = track.nominalFrameRate;
+            if (!isfinite(fps) || fps <= 0.0) {
+                CMTime min_frame_duration = track.minFrameDuration;
+                Float64 frame_duration_seconds = CMTimeGetSeconds(min_frame_duration);
+                if (frame_duration_seconds > 0.0 && isfinite(frame_duration_seconds)) {
+                    fps = 1.0 / frame_duration_seconds;
+                }
+            }
+            if (!isfinite(fps) || fps <= 0.0) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("videotoolbox requires frame rate metadata to seek");
+                }
+                return false;
+            }
+
+            Float64 start_seconds = (Float64)start_frame / fps;
+            if (!isfinite(start_seconds) || start_seconds < 0.0) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("videotoolbox failed to compute seek time");
+                }
+                return false;
+            }
+
+            CMTime start_time = CMTimeMakeWithSeconds(start_seconds, 600);
+            reader.timeRange = CMTimeRangeMake(start_time, kCMTimePositiveInfinity);
+        }
+
+        if (![reader startReading]) {
+            if (out_error != NULL) {
+                *out_error = vt_copy_error_message(reader.error, "failed to start AVAssetReader");
+            }
+            return false;
+        }
+
+        uint64_t frame_index = has_start_frame ? start_frame : 0;
+
+        while (true) {
+            CMSampleBufferRef sample = [output copyNextSampleBuffer];
+            if (sample == NULL) {
+                if (!vt_reader_handle_status(reader, out_error)) {
+                    return false;
+                }
+                if (reader.status == AVAssetReaderStatusCompleted) {
+                    break;
+                }
+                continue;
+            }
+
+            CVImageBufferRef pixel_buffer = CMSampleBufferGetImageBuffer(sample);
+            if (pixel_buffer == NULL) {
+                if (out_error != NULL) {
+                    *out_error = vt_copy_c_string("sample buffer missing pixel buffer");
+                }
+                CFRelease(sample);
+                return false;
+            }
+
+            CVPixelBufferRetain(pixel_buffer);
+
+            OSType pixel_format = CVPixelBufferGetPixelFormatType(pixel_buffer);
+            size_t width = CVPixelBufferGetWidth(pixel_buffer);
+            size_t height = CVPixelBufferGetHeight(pixel_buffer);
+
+            CMTime pts = CMSampleBufferGetPresentationTimeStamp(sample);
+            CMTime dts = CMSampleBufferGetDecodeTimeStamp(sample);
+            Float64 pts_seconds = NAN;
+            Float64 dts_seconds = NAN;
+            if (pts.timescale != 0) {
+                pts_seconds = (Float64)pts.value / (Float64)pts.timescale;
+            }
+            if (dts.timescale != 0) {
+                dts_seconds = (Float64)dts.value / (Float64)dts.timescale;
+            }
+
+            VideoToolboxHandleFrame frame;
+            frame.pixel_buffer = (void *)pixel_buffer;
+            frame.pixel_format = (uint32_t)pixel_format;
+            frame.width = (uint32_t)width;
+            frame.height = (uint32_t)height;
+            frame.pts_seconds = pts_seconds;
+            frame.dts_seconds = dts_seconds;
+            frame.index = frame_index;
+
+            bool should_continue = callback(&frame, context);
+
             CFRelease(sample);
 
             if (!should_continue) {

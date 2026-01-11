@@ -1,10 +1,22 @@
-use subtitle_fast_types::{RoiConfig, YPlaneFrame};
+use subtitle_fast_types::{RoiConfig, VideoFrame};
 
 use crate::pipeline::PreprocessSettings;
 use crate::{BitsetCoverComparator, SparseChamferComparator, SubtitleComparator};
 
-fn frame_from_pixels(width: usize, height: usize, data: &[u8]) -> YPlaneFrame {
-    YPlaneFrame::from_owned(width as u32, height as u32, width, None, data.to_vec()).unwrap()
+fn frame_from_pixels(width: usize, height: usize, data: &[u8]) -> VideoFrame {
+    let uv_rows = height.div_ceil(2);
+    let uv_plane = vec![128u8; width * uv_rows];
+    VideoFrame::from_nv12_owned(
+        width as u32,
+        height as u32,
+        width,
+        width,
+        None,
+        None,
+        data.to_vec(),
+        uv_plane,
+    )
+    .unwrap()
 }
 
 fn full_roi() -> RoiConfig {

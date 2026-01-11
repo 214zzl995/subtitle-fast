@@ -5,11 +5,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use png::{BitDepth, ColorType, Encoder};
-use subtitle_fast_decoder::{Backend, Configuration, YPlaneFrame};
+use subtitle_fast_decoder::{Backend, Configuration, OutputFormat, VideoFrame};
 use tokio_stream::StreamExt;
 
 const SAMPLE_FREQUENCY: usize = 7; // frames per second
-const DECODER_BACKEND: Backend = Backend::Ffmpeg;
+const DECODER_BACKEND: Backend = Backend::FFmpeg;
 const YUV_DIR: &str = "./demo/decoder/yuv";
 const PNG_DIR: &str = "./demo/decoder/png";
 const INPUT_VIDEO: &str = "./demo/video1_30s.mp4";
@@ -49,9 +49,12 @@ async fn main() -> io::Result<()> {
         backend,
         input: Some(input_path.clone()),
         channel_capacity: None,
+        output_format: OutputFormat::Nv12,
+        start_frame: None,
     };
     let provider = config.create_provider().map_err(io::Error::other)?;
-    let total_frames = provider.total_frames();
+    let metadata = provider.metadata();
+    let total_frames = metadata.total_frames;
 
     write_metadata(&input_path, backend)?;
     println!("Decoding frames from {:?}", input_path);
@@ -71,14 +74,14 @@ async fn main() -> io::Result<()> {
         bar
     });
 
-    let mut stream = provider.into_stream();
+    let (_controller, mut stream) = provider.open().map_err(io::Error::other)?;
     let mut processed = 0u64;
     let mut current_second: Option<u64> = None;
     let mut emitted_in_second = 0usize;
     while let Some(frame) = stream.next().await {
         match frame {
             Ok(frame) => {
-                let ordinal = frame.frame_index().unwrap_or(processed);
+                let ordinal = frame.index().unwrap_or(processed);
                 processed += 1;
                 if let Some(ref bar) = progress {
                     bar.inc(1);
@@ -130,13 +133,13 @@ fn timestamp() -> u64 {
         .unwrap_or(0)
 }
 
-fn write_frame_yuv(frame: &YPlaneFrame, dir: &Path, index: u64) -> Result<(), io::Error> {
+fn write_frame_yuv(frame: &VideoFrame, dir: &Path, index: u64) -> Result<(), io::Error> {
     let file = dir.join(format!("{index:05}.yuv"));
-    let data = flatten_y(frame);
+    let data = flatten_nv12(frame);
     fs::write(file, data)
 }
 
-fn write_frame_png(frame: &YPlaneFrame, dir: &Path, index: u64) -> Result<(), io::Error> {
+fn write_frame_png(frame: &VideoFrame, dir: &Path, index: u64) -> Result<(), io::Error> {
     let width = frame.width();
     let height = frame.height();
     let file = File::create(dir.join(format!("{index:05}.png")))?;
@@ -150,11 +153,11 @@ fn write_frame_png(frame: &YPlaneFrame, dir: &Path, index: u64) -> Result<(), io
     Ok(())
 }
 
-fn flatten_y(frame: &YPlaneFrame) -> Vec<u8> {
+fn flatten_y(frame: &VideoFrame) -> Vec<u8> {
     let width = frame.width() as usize;
     let height = frame.height() as usize;
     let stride = frame.stride();
-    let data = frame.data();
+    let data = frame.y_plane();
     let mut out = Vec::with_capacity(width * height);
     for row in 0..height {
         let start = row * stride;
@@ -171,8 +174,42 @@ fn flatten_y(frame: &YPlaneFrame) -> Vec<u8> {
     out
 }
 
+fn flatten_nv12(frame: &VideoFrame) -> Vec<u8> {
+    let width = frame.width() as usize;
+    let height = frame.height() as usize;
+    let y_stride = frame.y_stride();
+    let uv_stride = frame.uv_stride();
+    let y_data = frame.y_plane();
+    let uv_data = frame.uv_plane();
+    let uv_rows = height.div_ceil(2);
+    let mut out = Vec::with_capacity(width * height + width * uv_rows);
+    for row in 0..height {
+        let start = row * y_stride;
+        let end = (start + width).min(y_data.len());
+        if end <= start {
+            break;
+        }
+        out.extend_from_slice(&y_data[start..end]);
+        if end - start < width {
+            break;
+        }
+    }
+    for row in 0..uv_rows {
+        let start = row * uv_stride;
+        let end = (start + width).min(uv_data.len());
+        if end <= start {
+            break;
+        }
+        out.extend_from_slice(&uv_data[start..end]);
+        if end - start < width {
+            break;
+        }
+    }
+    out
+}
+
 fn should_emit_frame(
-    frame: &YPlaneFrame,
+    frame: &VideoFrame,
     processed: u64,
     current_second: &mut Option<u64>,
     emitted_in_second: &mut usize,
@@ -193,13 +230,13 @@ fn should_emit_frame(
     }
 }
 
-fn frame_second_bucket(frame: &YPlaneFrame, processed: u64) -> u64 {
+fn frame_second_bucket(frame: &VideoFrame, processed: u64) -> u64 {
     let seconds = frame
-        .timestamp()
+        .pts()
         .map(|ts| ts.as_secs_f64())
         .or_else(|| {
             frame
-                .frame_index()
+                .index()
                 .or(Some(processed))
                 .map(|idx| idx as f64 / SAMPLE_FREQUENCY.max(1) as f64)
         })

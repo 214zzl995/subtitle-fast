@@ -1,21 +1,53 @@
-use backend::ExecutionPlan;
-use clap::CommandFactory;
-use cli::{CliArgs, CliSources, parse_cli};
-use settings::{ConfigError, resolve_settings};
-use stage::PipelineConfig;
+use std::env;
 use std::num::NonZeroUsize;
-use subtitle_fast::{backend, cli, settings, stage};
-use subtitle_fast_types::YPlaneError;
+
+use clap::CommandFactory;
+use subtitle_fast::backend::{self, ExecutionPlan};
+use subtitle_fast::cli::{CliArgs, CliSources, parse_cli};
+use subtitle_fast::settings::{ConfigError, resolve_settings};
+use subtitle_fast::stage::PipelineConfig;
+use subtitle_fast_types::DecoderError;
 
 #[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<(), YPlaneError> {
+async fn main() -> Result<(), DecoderError> {
+    #[allow(unused_variables)]
+    let args: Vec<String> = env::args().collect();
+
+    #[cfg(feature = "gui")]
+    {
+        if args.len() == 1 {
+            return run_gui();
+        }
+    }
+
+    run_cli().await
+}
+
+#[cfg(feature = "gui")]
+fn run_gui() -> Result<(), DecoderError> {
+    use gpui::*;
+    use subtitle_fast::gui::{AppAssets, SubtitleFastApp, runtime};
+
+    Application::new()
+        .with_assets(AppAssets)
+        .run(|cx: &mut App| {
+            runtime::init(tokio::runtime::Handle::current());
+            let app = SubtitleFastApp::new(cx);
+            app.open_window(cx);
+            cx.activate(true);
+        });
+
+    Ok(())
+}
+
+async fn run_cli() -> Result<(), DecoderError> {
     match prepare_execution_plan().await? {
         Some(plan) => backend::run(plan).await,
         None => Ok(()),
     }
 }
 
-async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, YPlaneError> {
+async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, DecoderError> {
     let (cli_args, cli_sources): (CliArgs, CliSources) = parse_cli();
 
     if cli_args.list_backends {
@@ -32,7 +64,7 @@ async fn prepare_execution_plan() -> Result<Option<ExecutionPlan>, YPlaneError> 
     };
 
     if !input.exists() {
-        return Err(YPlaneError::configuration(format!(
+        return Err(DecoderError::configuration(format!(
             "input file '{}' does not exist",
             input.display()
         )));
@@ -74,6 +106,6 @@ fn usage() {
     backend::display_available_backends();
 }
 
-fn map_config_error(err: ConfigError) -> YPlaneError {
-    YPlaneError::configuration(err.to_string())
+fn map_config_error(err: ConfigError) -> DecoderError {
+    DecoderError::configuration(err.to_string())
 }

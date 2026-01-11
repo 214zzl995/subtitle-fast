@@ -2,7 +2,9 @@ pub mod backends;
 pub mod config;
 pub mod core;
 
-pub use config::{Backend, Configuration};
+pub use config::{Backend, Configuration, OutputFormat};
 pub use core::{
-    DynYPlaneProvider, YPlaneError, YPlaneFrame, YPlaneResult, YPlaneStream, YPlaneStreamProvider,
+    DecoderController, DecoderError, DecoderProvider, DecoderResult, DynDecoderProvider,
+    FrameBuffer, FrameStream, NativeBuffer, Nv12Buffer, SeekInfo, SeekMode, VideoFrame,
+    VideoMetadata,
 };

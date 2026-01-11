@@ -8,7 +8,7 @@ use subtitle_fast_comparator::pipeline::{
     ops::percentile, ops::percentile_in_place, ops::sobel_magnitude,
     preprocess::extract_masked_patch,
 };
-use subtitle_fast_types::{RoiConfig, YPlaneFrame};
+use subtitle_fast_types::{RoiConfig, VideoFrame};
 
 pub const DEFAULT_TARGET: u8 = 235;
 pub const DEFAULT_DELTA: u8 = 12;
@@ -83,28 +83,39 @@ pub struct FeatureDiag {
     pub sampled_points: usize,
 }
 
-pub fn load_frame(path: &Path, width: usize, height: usize) -> Result<YPlaneFrame, Box<dyn Error>> {
+pub fn load_frame(path: &Path, width: usize, height: usize) -> Result<VideoFrame, Box<dyn Error>> {
     let data = fs::read(path)?;
-    let expected = width
+    let y_len = width
         .checked_mul(height)
         .ok_or("frame dimensions overflowed when computing length")?;
-    if data.len() != expected {
+    if data.len() < y_len {
         return Err(format!(
-            "unexpected Y plane length for {:?}: got {} bytes expected {} ({}x{})",
+            "unexpected NV12 length for {:?}: got {} bytes expected at least {} ({}x{})",
             path,
             data.len(),
-            expected,
+            y_len,
             width,
             height
         )
         .into());
     }
-    Ok(YPlaneFrame::from_owned(
+    let uv_rows = height.div_ceil(2);
+    let uv_len = width * uv_rows;
+    let y_plane = data[..y_len].to_vec();
+    let uv_plane = if data.len() >= y_len + uv_len {
+        data[y_len..y_len + uv_len].to_vec()
+    } else {
+        vec![128u8; uv_len]
+    };
+    Ok(VideoFrame::from_nv12_owned(
         width as u32,
         height as u32,
         width,
+        width,
         None,
-        data,
+        None,
+        y_plane,
+        uv_plane,
     )?)
 }
 
@@ -172,7 +183,7 @@ fn normalize_region(region: &Region, frame: &FrameInfo, already_normalized: bool
 
 #[allow(dead_code)]
 pub fn mask_stats(
-    frame: &YPlaneFrame,
+    frame: &VideoFrame,
     roi: &RoiConfig,
     settings: PreprocessSettings,
 ) -> Option<(usize, usize, f32, f32)> {
@@ -226,7 +237,7 @@ pub fn mask_stats(
 
 #[allow(dead_code)]
 pub fn debug_features(
-    frame: &YPlaneFrame,
+    frame: &VideoFrame,
     roi: &RoiConfig,
     settings: PreprocessSettings,
 ) -> Option<FeatureDiag> {

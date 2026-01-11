@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <cstring>
 #include <string>
 
@@ -30,6 +31,70 @@ namespace
         char buffer[80];
         std::snprintf(buffer, sizeof(buffer), "%s failed: 0x%08lx", label, static_cast<unsigned long>(hr));
         return buffer;
+    }
+
+    bool compute_seek_timestamp(
+        uint64_t start_frame,
+        UINT32 frame_rate_num,
+        UINT32 frame_rate_den,
+        LONGLONG &out_value,
+        std::string &error)
+    {
+        if (frame_rate_num == 0 || frame_rate_den == 0)
+        {
+            error = "MFT requires frame rate metadata to seek";
+            return false;
+        }
+
+        long double frames = static_cast<long double>(start_frame);
+        long double fps_num = static_cast<long double>(frame_rate_num);
+        long double fps_den = static_cast<long double>(frame_rate_den);
+        long double seconds = frames * fps_den / fps_num;
+        long double ticks = seconds * 10000000.0L;
+        if (!std::isfinite(ticks) || ticks < 0.0L)
+        {
+            error = "start frame timestamp overflow";
+            return false;
+        }
+
+        long double max_value = static_cast<long double>((std::numeric_limits<LONGLONG>::max)());
+        if (ticks > max_value)
+        {
+            error = "start frame timestamp overflow";
+            return false;
+        }
+
+        out_value = static_cast<LONGLONG>(std::llround(ticks));
+        return true;
+    }
+
+    bool compute_seek_seconds(
+        double seconds,
+        LONGLONG &out_value,
+        std::string &error)
+    {
+        if (!std::isfinite(seconds) || seconds < 0.0)
+        {
+            error = "seek timestamp is invalid";
+            return false;
+        }
+
+        long double ticks = static_cast<long double>(seconds) * 10000000.0L;
+        if (!std::isfinite(ticks) || ticks < 0.0L)
+        {
+            error = "seek timestamp overflow";
+            return false;
+        }
+
+        long double max_value = static_cast<long double>((std::numeric_limits<LONGLONG>::max)());
+        if (ticks > max_value)
+        {
+            error = "seek timestamp overflow";
+            return false;
+        }
+
+        out_value = static_cast<LONGLONG>(std::llround(ticks));
+        return true;
     }
 
     struct ScopedCoInitialize
@@ -86,7 +151,15 @@ namespace
             buffer = source_buffer;
             if (!buffer) { return E_POINTER; }
             HRESULT hr = buffer.As(&buffer2d);
-            if (SUCCEEDED(hr) && buffer2d && SUCCEEDED(buffer2d->Lock2D(&data, &stride))) { return S_OK; }
+            if (SUCCEEDED(hr) && buffer2d && SUCCEEDED(buffer2d->Lock2D(&data, &stride)))
+            {
+                DWORD current_length = 0;
+                if (SUCCEEDED(buffer->GetCurrentLength(&current_length)))
+                {
+                    contiguous_length = current_length;
+                }
+                return S_OK;
+            }
             buffer2d.Reset();
             BYTE *raw = nullptr; DWORD max_length = 0;
             hr = buffer->Lock(&raw, &max_length, &contiguous_length);
@@ -149,8 +222,7 @@ namespace
         if (FAILED(hr)) { error = hresult("SetStreamSelection(video)", hr); return {}; }
 
         std::string format_error;
-        if (FAILED(set_format(reader.Get(), MFVideoFormat_L8, out_width, out_height, format_error)) &&
-            FAILED(set_format(reader.Get(), MFVideoFormat_NV12, out_width, out_height, format_error)))
+        if (FAILED(set_format(reader.Get(), MFVideoFormat_NV12, out_width, out_height, format_error)))
         {
             error = std::move(format_error);
             reader.Reset();
@@ -173,26 +245,47 @@ extern "C"
     {
         bool has_value;
         uint64_t value;
+        double duration_seconds;
+        double fps;
+        uint32_t width;
+        uint32_t height;
         char *error;
     };
 
     struct CMftFrame
     {
-        const uint8_t *data;
-        size_t data_len;
+        const uint8_t *y_data;
+        size_t y_len;
+        size_t y_stride;
+        const uint8_t *uv_data;
+        size_t uv_len;
+        size_t uv_stride;
         uint32_t width;
         uint32_t height;
-        size_t stride;
-        double timestamp_seconds;
-        uint64_t frame_index;
+        double pts_seconds;
+        double dts_seconds;
+        uint64_t index;
     };
 
     typedef bool(__cdecl *CMftFrameCallback)(const CMftFrame *, void *);
+    struct CMftSeekRequest
+    {
+        double position_seconds;
+        uint64_t start_frame;
+    };
+
+    typedef int(__cdecl *CMftSeekCallback)(void *, CMftSeekRequest *);
 
     bool mft_probe_total_frames(const char *path, CMftProbeResult *result)
     {
         if (!result) { return false; }
-        *result = {false, 0, nullptr};
+        result->has_value = false;
+        result->value = 0;
+        result->duration_seconds = std::numeric_limits<double>::quiet_NaN();
+        result->fps = std::numeric_limits<double>::quiet_NaN();
+        result->width = 0;
+        result->height = 0;
+        result->error = nullptr;
 
         std::string conversion_error;
         std::wstring wide_path = utf8_to_wide(path, conversion_error);
@@ -217,7 +310,9 @@ extern "C"
         }
 
         std::string reader_error;
-        ComPtr<IMFSourceReader> reader = open_best(wide_path, nullptr, nullptr, reader_error);
+        UINT32 width = 0;
+        UINT32 height = 0;
+        ComPtr<IMFSourceReader> reader = open_best(wide_path, &width, &height, reader_error);
         if (!reader)
         {
             set_error(&result->error, reader_error);
@@ -247,19 +342,50 @@ extern "C"
 
         UINT32 frame_rate_num = 0;
         UINT32 frame_rate_den = 0;
-        hr = MFGetAttributeRatio(
+        HRESULT fr_hr = MFGetAttributeRatio(
             media_type.Get(),
             MF_MT_FRAME_RATE,
             &frame_rate_num,
             &frame_rate_den);
+        
 
-        if (duration > 0 && SUCCEEDED(hr) && frame_rate_den != 0)
+
+        if (width > 0) { result->width = width; }
+        if (height > 0) { result->height = height; }
+
+        double seconds = std::numeric_limits<double>::quiet_NaN();
+        if (duration > 0)
         {
-            double seconds = static_cast<double>(duration) / 10000000.0;
-            double fps = static_cast<double>(frame_rate_num) / static_cast<double>(frame_rate_den);
-            if (fps > 0.0)
+            seconds = static_cast<double>(duration) / 10000000.0;
+            if (std::isfinite(seconds) && seconds > 0.0)
             {
-                uint64_t estimated = static_cast<uint64_t>(std::llround(seconds * fps));
+                result->duration_seconds = seconds;
+            }
+            else
+            {
+                seconds = std::numeric_limits<double>::quiet_NaN();
+            }
+        }
+
+        double fps = std::numeric_limits<double>::quiet_NaN();
+        if (SUCCEEDED(fr_hr) && frame_rate_den != 0)
+        {
+            fps = static_cast<double>(frame_rate_num) / static_cast<double>(frame_rate_den);
+            if (std::isfinite(fps) && fps > 0.0)
+            {
+                result->fps = fps;
+            }
+            else
+            {
+                fps = std::numeric_limits<double>::quiet_NaN();
+            }
+        }
+
+        if (std::isfinite(seconds) && seconds > 0.0 && std::isfinite(fps) && fps > 0.0)
+        {
+            uint64_t estimated = static_cast<uint64_t>(std::llround(seconds * fps));
+            if (estimated > 0)
+            {
                 result->has_value = true;
                 result->value = estimated;
             }
@@ -269,14 +395,22 @@ extern "C"
 
     bool mft_decode(
         const char *path,
+        bool has_start_frame,
+        uint64_t start_frame,
         CMftFrameCallback callback,
         void *context,
+        CMftSeekCallback seek_callback,
         char **out_error)
     {
         if (out_error) { *out_error = nullptr; }
         if (!callback)
         {
             set_error(out_error, "callback is null");
+            return false;
+        }
+        if (!seek_callback)
+        {
+            set_error(out_error, "seek callback is null");
             return false;
         }
 
@@ -311,8 +445,88 @@ extern "C"
             return false;
         }
 
-        for (uint64_t frame_index = 0;; frame_index++)
+        if (has_start_frame)
         {
+            ComPtr<IMFMediaType> media_type;
+            HRESULT mt_hr = reader->GetCurrentMediaType(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), &media_type);
+            if (FAILED(mt_hr))
+            {
+                set_error(out_error, hresult("GetCurrentMediaType", mt_hr));
+                return false;
+            }
+
+            UINT32 frame_rate_num = 0;
+            UINT32 frame_rate_den = 0;
+            HRESULT fr_hr = MFGetAttributeRatio(media_type.Get(), MF_MT_FRAME_RATE, &frame_rate_num, &frame_rate_den);
+            if (FAILED(fr_hr))
+            {
+                set_error(out_error, hresult("MFGetAttributeRatio", fr_hr));
+                return false;
+            }
+
+            LONGLONG position_value = 0;
+            std::string position_error;
+            if (!compute_seek_timestamp(start_frame, frame_rate_num, frame_rate_den, position_value, position_error))
+            {
+                set_error(out_error, position_error);
+                return false;
+            }
+
+            PROPVARIANT position;
+            PropVariantInit(&position);
+            position.vt = VT_I8;
+            position.hVal.QuadPart = position_value;
+            HRESULT seek_hr = reader->SetCurrentPosition(GUID_NULL, position);
+            PropVariantClear(&position);
+            if (FAILED(seek_hr))
+            {
+                set_error(out_error, hresult("SetCurrentPosition", seek_hr));
+                return false;
+            }
+        }
+
+        uint64_t frame_index = has_start_frame ? start_frame : 0;
+        for (;;)
+        {
+            CMftSeekRequest seek_request{};
+            int seek_action = seek_callback(context, &seek_request);
+            if (seek_action == 1)
+            {
+                break;
+            }
+            if (seek_action == 2)
+            {
+                HRESULT flush_hr = reader->Flush(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM));
+                if (FAILED(flush_hr))
+                {
+                    set_error(out_error, hresult("Flush", flush_hr));
+                    return false;
+                }
+
+                LONGLONG position_value = 0;
+                std::string position_error;
+                if (!compute_seek_seconds(seek_request.position_seconds, position_value, position_error))
+                {
+                    set_error(out_error, position_error);
+                    return false;
+                }
+
+                PROPVARIANT position;
+                PropVariantInit(&position);
+                position.vt = VT_I8;
+                position.hVal.QuadPart = position_value;
+                HRESULT seek_hr = reader->SetCurrentPosition(GUID_NULL, position);
+                PropVariantClear(&position);
+                if (FAILED(seek_hr))
+                {
+                    set_error(out_error, hresult("SetCurrentPosition", seek_hr));
+                    return false;
+                }
+
+                frame_index = seek_request.start_frame;
+                continue;
+            }
+
             DWORD stream_index = 0;
             DWORD flags = 0;
             LONGLONG timestamp = 0;
@@ -328,6 +542,14 @@ extern "C"
                 break;
             }
             if ((flags & MF_SOURCE_READERF_STREAMTICK) || !sample) { continue; }
+
+            UINT64 decode_timestamp = 0;
+            double dts_seconds = NAN;
+            HRESULT dts_hr = sample->GetUINT64(MFSampleExtension_DecodeTimestamp, &decode_timestamp);
+            if (SUCCEEDED(dts_hr))
+            {
+                dts_seconds = static_cast<double>(decode_timestamp) / 10000000.0;
+            }
 
             ComPtr<IMFMediaBuffer> buffer;
             hr = sample->ConvertToContiguousBuffer(&buffer);
@@ -345,23 +567,76 @@ extern "C"
                 return false;
             }
 
+            if (!lock.data)
+            {
+                set_error(out_error, "MFT buffer missing NV12 data");
+                return false;
+            }
+
             size_t stride = static_cast<size_t>(lock.stride >= 0 ? lock.stride : -lock.stride);
-            size_t expected = stride * static_cast<size_t>(height);
-            size_t available = lock.buffer2d ? expected : static_cast<size_t>(lock.contiguous_length);
-            size_t plane_bytes = expected <= available ? expected : available;
+            size_t y_rows = static_cast<size_t>(height);
+            size_t uv_rows = (y_rows + 1) / 2;
+            if (stride == 0 || y_rows == 0)
+            {
+                set_error(out_error, "invalid stride or height for NV12 frame");
+                return false;
+            }
+
+            if (stride > (std::numeric_limits<size_t>::max)() / (y_rows + uv_rows))
+            {
+                set_error(out_error, "NV12 plane length overflow");
+                return false;
+            }
+
+            size_t y_len = stride * y_rows;
+            size_t uv_len = stride * uv_rows;
+            size_t available = static_cast<size_t>(lock.contiguous_length);
+            if (available < y_len)
+            {
+                set_error(out_error, "MFT buffer missing NV12 UV plane data");
+                return false;
+            }
+            size_t total_rows = available / stride;
+            size_t buffer_height = (total_rows * 2) / 3;
+            if (buffer_height < y_rows)
+            {
+                buffer_height = y_rows;
+            }
+            size_t buffer_uv_rows = (buffer_height + 1) / 2;
+            if (uv_rows > buffer_uv_rows)
+            {
+                set_error(out_error, "MFT buffer missing NV12 UV plane data");
+                return false;
+            }
+            if (buffer_height > (std::numeric_limits<size_t>::max)() / stride)
+            {
+                set_error(out_error, "NV12 plane length overflow");
+                return false;
+            }
+            size_t uv_offset = stride * buffer_height;
+            if (uv_offset > available || uv_offset + uv_len > available)
+            {
+                set_error(out_error, "MFT buffer missing NV12 UV plane data");
+                return false;
+            }
 
             CMftFrame frame{};
-            frame.data = reinterpret_cast<const uint8_t *>(lock.data);
-            frame.data_len = plane_bytes;
+            frame.y_data = reinterpret_cast<const uint8_t *>(lock.data);
+            frame.y_len = y_len;
+            frame.y_stride = stride;
+            frame.uv_data = reinterpret_cast<const uint8_t *>(lock.data) + uv_offset;
+            frame.uv_len = uv_len;
+            frame.uv_stride = stride;
             frame.width = width;
             frame.height = height;
-            frame.stride = stride;
-            frame.timestamp_seconds = timestamp >= 0
-                                          ? static_cast<double>(timestamp) / 10000000.0
-                                          : -1.0;
-            frame.frame_index = frame_index;
+            frame.pts_seconds = timestamp >= 0
+                                    ? static_cast<double>(timestamp) / 10000000.0
+                                    : -1.0;
+            frame.dts_seconds = dts_seconds;
+            frame.index = frame_index;
 
             if (!callback(&frame, context)) { break; }
+            frame_index += 1;
         }
 
         return true;
