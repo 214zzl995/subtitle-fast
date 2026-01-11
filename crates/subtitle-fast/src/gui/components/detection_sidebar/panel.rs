@@ -162,7 +162,12 @@ impl Render for DetectionSidebar {
             .child(self.subtitles_header(cx))
             .child(self.subtitles_view.clone());
 
-        let divider = div().h(px(1.0)).w_full().bg(rgb(0x2b2b2b)).mt(px(12.0)).mb(px(16.0));
+        let divider = div()
+            .h(px(1.0))
+            .w_full()
+            .bg(rgb(0x2b2b2b))
+            .mt(px(12.0))
+            .mb(px(16.0));
 
         div()
             .id(("detection-sidebar-panel", cx.entity_id()))

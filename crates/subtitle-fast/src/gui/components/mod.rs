@@ -1,7 +1,7 @@
 pub mod color_picker;
-pub mod task_sidebar;
 pub mod detection_sidebar;
 pub mod sidebar;
+pub mod task_sidebar;
 pub mod titlebar;
 pub mod video_controls;
 pub mod video_luma_controls;
@@ -10,12 +10,12 @@ pub mod video_roi_overlay;
 pub mod video_toolbar;
 
 pub use color_picker::{ColorPicker, ColorPickerHandle};
-pub use task_sidebar::{TaskSidebar, TaskSidebarCallbacks};
 pub use detection_sidebar::{
     DetectedSubtitlesList, DetectionControls, DetectionHandle, DetectionMetrics, DetectionRunState,
     DetectionSidebar, DetectionSidebarHost,
 };
 pub use sidebar::{CollapseDirection, DragRange, DraggableEdge, Sidebar, SidebarHandle};
+pub use task_sidebar::{TaskSidebar, TaskSidebarCallbacks};
 pub use titlebar::Titlebar;
 pub use video_controls::VideoControls;
 pub use video_luma_controls::{VideoLumaControls, VideoLumaHandle, VideoLumaValues};

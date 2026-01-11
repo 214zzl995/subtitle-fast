@@ -294,11 +294,7 @@ impl Render for Titlebar {
                 .flex()
                 .items_center()
                 .gap(px(8.0))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .child(self.title.clone()),
-                )
+                .child(div().text_size(px(12.0)).child(self.title.clone()))
                 .children(children),
         );
 

@@ -249,11 +249,7 @@ impl Render for TaskSidebar {
                     .w(px(28.0))
                     .rounded(px(6.0))
                     .cursor_pointer()
-                    .child(
-                        icon_sm(Icon::Upload, header_text)
-                            .w(px(14.0))
-                            .h(px(14.0)),
-                    )
+                    .child(icon_sm(Icon::Upload, header_text).w(px(14.0)).h(px(14.0)))
                     .hover(move |style| style.bg(hsla(0.0, 0.0, 1.0, 0.12)))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -266,19 +262,17 @@ impl Render for TaskSidebar {
         let mut list = div().flex().flex_col().size_full().gap(px(8.0)).px(px(8.0));
 
         if sessions.is_empty() {
-            list = list
-                .justify_center()
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap(px(8.0))
-                        .text_size(px(13.0))
-                        .text_color(item_subtle)
-                        .child(icon_md(Icon::Inbox, item_subtle))
-                        .child("No tasks"),
-                );
+            list = list.justify_center().child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(8.0))
+                    .text_size(px(13.0))
+                    .text_color(item_subtle)
+                    .child(icon_md(Icon::Inbox, item_subtle))
+                    .child("No tasks"),
+            );
         } else {
             for session in &sessions {
                 let session_id = session.id;
@@ -307,33 +301,31 @@ impl Render for TaskSidebar {
                     item_subtle
                 };
 
-                let make_btn = |icon: Icon,
-                                action: TaskAction,
-                                is_stop: bool,
-                                cx: &mut Context<Self>| {
-                    let hover_bg = if is_stop {
-                        btn_stop_hover_bg
-                    } else {
-                        btn_hover_bg
+                let make_btn =
+                    |icon: Icon, action: TaskAction, is_stop: bool, cx: &mut Context<Self>| {
+                        let hover_bg = if is_stop {
+                            btn_stop_hover_bg
+                        } else {
+                            btn_hover_bg
+                        };
+                        let hover_color = hsla(0.0, 0.0, 1.0, 1.0);
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.0))
+                            .w(px(24.0))
+                            .h(px(24.0))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover_bg).text_color(hover_color))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.apply_action(session_id, action, cx);
+                                }),
+                            )
+                            .child(icon_sm(icon, btn_icon_color).w(px(12.0)).h(px(12.0)))
                     };
-                    let hover_color = hsla(0.0, 0.0, 1.0, 1.0);
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(6.0))
-                        .w(px(24.0))
-                        .h(px(24.0))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hover_bg).text_color(hover_color))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.apply_action(session_id, action, cx);
-                            }),
-                        )
-                        .child(icon_sm(icon, btn_icon_color).w(px(12.0)).h(px(12.0)))
-                };
 
                 let status_icon = if is_running {
                     icon_sm(Icon::Film, icon_color)
@@ -458,11 +450,7 @@ impl Render for TaskSidebar {
                     .relative()
                     .h(px(56.0))
                     .rounded(px(8.0))
-                    .bg(if is_active {
-                        rgb(0x323232)
-                    } else {
-                        item_bg
-                    })
+                    .bg(if is_active { rgb(0x323232) } else { item_bg })
                     .pl(px(8.0))
                     .pr(px(4.0))
                     .flex()
@@ -475,13 +463,7 @@ impl Render for TaskSidebar {
                             (this.callbacks.on_select)(session_id, window, cx);
                         }),
                     )
-                    .hover(move |s| {
-                        if !is_active {
-                            s.bg(item_hover_bg)
-                        } else {
-                            s
-                        }
-                    })
+                    .hover(move |s| if !is_active { s.bg(item_hover_bg) } else { s })
                     .child(progress_bg_layer)
                     .child(item_content.relative());
 
