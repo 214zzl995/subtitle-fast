@@ -660,6 +660,7 @@ impl From<PolychromeSprite> for Primitive {
 pub(crate) struct SurfaceId(pub(crate) u64);
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub(crate) struct Nv12Frame {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -669,6 +670,7 @@ pub(crate) struct Nv12Frame {
     pub(crate) uv_plane: Arc<[u8]>,
 }
 
+#[allow(dead_code)]
 impl Nv12Frame {
     pub(crate) fn uv_width(&self) -> u32 {
         self.width.div_ceil(2)
@@ -680,6 +682,7 @@ impl Nv12Frame {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub(crate) enum SurfaceSource {
     #[cfg(target_os = "macos")]
     CvPixelBuffer(CVPixelBuffer),
@@ -687,6 +690,7 @@ pub(crate) enum SurfaceSource {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub(crate) struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
