@@ -4,7 +4,7 @@ use crate::pipeline::PreprocessSettings;
 use crate::{BitsetCoverComparator, SparseChamferComparator, SubtitleComparator};
 
 fn frame_from_pixels(width: usize, height: usize, data: &[u8]) -> VideoFrame {
-    let uv_rows = (height + 1) / 2;
+    let uv_rows = height.div_ceil(2);
     let uv_plane = vec![128u8; width * uv_rows];
     VideoFrame::from_nv12_owned(
         width as u32,

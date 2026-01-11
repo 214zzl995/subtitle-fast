@@ -130,6 +130,7 @@ impl fmt::Debug for VideoFrame {
 }
 
 impl VideoFrame {
+    #[allow(clippy::too_many_arguments)]
     pub fn from_nv12_owned(
         width: u32,
         height: u32,
@@ -192,6 +193,7 @@ impl VideoFrame {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn from_native_handle(
         width: u32,
         height: u32,
@@ -332,7 +334,7 @@ impl VideoFrame {
 }
 
 fn nv12_uv_rows(height: u32) -> usize {
-    (height as usize + 1) / 2
+    (height as usize).div_ceil(2)
 }
 
 #[derive(Debug, Error)]

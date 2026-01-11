@@ -35,6 +35,12 @@ pub struct DecoderController {
     serial: Arc<AtomicU64>,
 }
 
+impl Default for DecoderController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DecoderController {
     pub fn new() -> Self {
         let (seek_tx, _seek_rx) = watch::channel(None);
@@ -65,25 +71,13 @@ impl DecoderController {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct VideoMetadata {
     pub duration: Option<Duration>,
     pub fps: Option<f64>,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub total_frames: Option<u64>,
-}
-
-impl Default for VideoMetadata {
-    fn default() -> Self {
-        Self {
-            duration: None,
-            fps: None,
-            width: None,
-            height: None,
-            total_frames: None,
-        }
-    }
 }
 
 impl VideoMetadata {

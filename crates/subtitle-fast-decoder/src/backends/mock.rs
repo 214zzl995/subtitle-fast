@@ -52,7 +52,7 @@ impl MockProvider {
                 let value = ((row + index) % 256) as u8;
                 chunk.fill(value);
             }
-            let uv_rows = (self.height as usize + 1) / 2;
+            let uv_rows = (self.height as usize).div_ceil(2);
             let uv_stride = self.stride;
             let uv_plane = vec![128u8; uv_stride * uv_rows];
             let pts = Some(Duration::from_millis((index * 16) as u64));

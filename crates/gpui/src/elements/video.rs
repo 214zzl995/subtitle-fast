@@ -276,6 +276,7 @@ impl Default for VideoHandle {
 
 impl VideoHandle {
     /// Create a new handle with a unique surface id.
+    #[allow(clippy::arc_with_non_send_sync)]
     pub fn new() -> Self {
         let id = SurfaceId(NEXT_SURFACE_ID.fetch_add(1, Ordering::Relaxed));
         Self {
@@ -467,7 +468,7 @@ impl Styled for Video {
 }
 
 fn nv12_uv_rows(height: u32) -> usize {
-    (height as usize + 1) / 2
+    (height as usize).div_ceil(2)
 }
 
 impl From<&Frame> for Nv12Frame {

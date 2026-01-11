@@ -12,7 +12,7 @@ fn load_nv12_frame(path: &Path) -> anyhow::Result<Frame> {
     let y_stride = FRAME_WIDTH as usize;
     let uv_stride = FRAME_WIDTH as usize;
     let y_len = y_stride * FRAME_HEIGHT as usize;
-    let uv_rows = (FRAME_HEIGHT as usize + 1) / 2;
+    let uv_rows = (FRAME_HEIGHT as usize).div_ceil(2);
     let uv_len = uv_stride * uv_rows;
 
     let mut file = File::open(path)?;

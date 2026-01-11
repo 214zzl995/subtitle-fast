@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 };
                 let y_len = width * height;
-                let uv_rows = (height + 1) / 2;
+                let uv_rows = height.div_ceil(2);
                 let uv_len = width * uv_rows;
                 let y_plane = data[..y_len].to_vec();
                 let uv_plane = if data.len() >= y_len + uv_len {
@@ -190,7 +190,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn resolution_from_len(len: usize) -> Option<(usize, usize)> {
     PRESETS.iter().copied().find(|(w, h)| {
         let y_len = w * h;
-        let uv_rows = (h + 1) / 2;
+        let uv_rows = h.div_ceil(2);
         let uv_len = w * uv_rows;
         len == y_len || len == y_len + uv_len
     })

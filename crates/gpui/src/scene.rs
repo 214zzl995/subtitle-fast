@@ -671,11 +671,11 @@ pub(crate) struct Nv12Frame {
 
 impl Nv12Frame {
     pub(crate) fn uv_width(&self) -> u32 {
-        (self.width + 1) / 2
+        self.width.div_ceil(2)
     }
 
     pub(crate) fn uv_height(&self) -> u32 {
-        (self.height + 1) / 2
+        self.height.div_ceil(2)
     }
 }
 

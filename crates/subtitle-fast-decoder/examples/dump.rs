@@ -76,7 +76,7 @@ async fn main() -> io::Result<()> {
 
     let (_controller, mut stream) = provider
         .open()
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        .map_err(io::Error::other)?;
     let mut processed = 0u64;
     let mut current_second: Option<u64> = None;
     let mut emitted_in_second = 0usize;
@@ -183,7 +183,7 @@ fn flatten_nv12(frame: &VideoFrame) -> Vec<u8> {
     let uv_stride = frame.uv_stride();
     let y_data = frame.y_plane();
     let uv_data = frame.uv_plane();
-    let uv_rows = (height + 1) / 2;
+    let uv_rows = height.div_ceil(2);
     let mut out = Vec::with_capacity(width * height + width * uv_rows);
     for row in 0..height {
         let start = row * y_stride;

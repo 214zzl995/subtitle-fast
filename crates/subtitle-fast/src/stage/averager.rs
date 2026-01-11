@@ -15,6 +15,12 @@ pub type AveragerResult = Result<PipelineUpdate, PipelineError>;
 
 pub struct Averager;
 
+impl Default for Averager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Averager {
     pub fn new() -> Self {
         Self

@@ -141,19 +141,19 @@ fn decode_ffmpeg(
         converted: ffmpeg::util::frame::Video::empty(),
     };
 
-    if let Some(start_frame) = start_frame {
-        if state.frame_rate.is_some() {
-            let _ = perform_seek(
-                SeekInfo::Frame {
-                    frame: start_frame,
-                    mode: SeekMode::Fast,
-                },
-                &mut ictx,
-                &mut decoder,
-                &mut state,
-            )?;
-            state.next_index = start_frame;
-        }
+    if let Some(start_frame) = start_frame
+        && state.frame_rate.is_some()
+    {
+        let _ = perform_seek(
+            SeekInfo::Frame {
+                frame: start_frame,
+                mode: SeekMode::Fast,
+            },
+            &mut ictx,
+            &mut decoder,
+            &mut state,
+        )?;
+        state.next_index = start_frame;
     }
 
     let mut decoded = ffmpeg::util::frame::Video::empty();
@@ -221,6 +221,7 @@ fn decode_ffmpeg(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn drain_decoder(
     decoder: &mut ffmpeg::decoder::Video,
     decoded: &mut ffmpeg::util::frame::Video,
@@ -266,11 +267,11 @@ fn drain_decoder(
                     }
                 }
 
-                if let (Some(start_frame), Some(index)) = (start_frame, frame_index) {
-                    if index < start_frame {
-                        unsafe { ffmpeg::ffi::av_frame_unref(decoded.as_mut_ptr()) };
-                        continue;
-                    }
+                if let (Some(start_frame), Some(index)) = (start_frame, frame_index)
+                    && index < start_frame
+                {
+                    unsafe { ffmpeg::ffi::av_frame_unref(decoded.as_mut_ptr()) };
+                    continue;
                 }
 
                 ensure_scaler(state, decoded)?;
@@ -342,7 +343,7 @@ fn build_frame(
     let y_stride = converted.stride(0);
     let uv_stride = converted.stride(1);
     let y_plane = copy_plane(converted.data(0), y_stride, height as usize, "Y")?;
-    let uv_rows = (height as usize + 1) / 2;
+    let uv_rows = (height as usize).div_ceil(2);
     let uv_plane = copy_plane(converted.data(1), uv_stride, uv_rows, "UV")?;
     VideoFrame::from_nv12_owned(
         width, height, y_stride, uv_stride, pts, dts, y_plane, uv_plane,
@@ -397,13 +398,14 @@ fn perform_seek(
 
     if let Some(frame) = target.frame {
         state.next_index = frame;
-    } else if let Some((num, den)) = state.frame_rate {
-        if num > 0 && den > 0 {
-            let fps = num as f64 / den as f64;
-            let estimate = (target.seconds * fps).round();
-            if estimate.is_finite() && estimate >= 0.0 {
-                state.next_index = estimate as u64;
-            }
+    } else if let Some((num, den)) = state.frame_rate
+        && num > 0
+        && den > 0
+    {
+        let fps = num as f64 / den as f64;
+        let estimate = (target.seconds * fps).round();
+        if estimate.is_finite() && estimate >= 0.0 {
+            state.next_index = estimate as u64;
         }
     }
 
@@ -480,18 +482,18 @@ fn frame_index_from_pts(
     next_index: &mut u64,
 ) -> Option<u64> {
     if let Some(value) = pts {
-        if let Some((num, den)) = frame_rate {
-            if num > 0 && den > 0 {
-                if let Some(time_base_seconds) = time_base_seconds(time_base) {
-                    let fps = num as f64 / den as f64;
-                    let seconds = value as f64 * time_base_seconds;
-                    let index = (seconds * fps).round();
-                    if index.is_finite() && index >= 0.0 {
-                        let value = index as u64;
-                        *next_index = value.saturating_add(1);
-                        return Some(value);
-                    }
-                }
+        if let Some((num, den)) = frame_rate
+            && num > 0
+            && den > 0
+            && let Some(time_base_seconds) = time_base_seconds(time_base)
+        {
+            let fps = num as f64 / den as f64;
+            let seconds = value as f64 * time_base_seconds;
+            let index = (seconds * fps).round();
+            if index.is_finite() && index >= 0.0 {
+                let value = index as u64;
+                *next_index = value.saturating_add(1);
+                return Some(value);
             }
         }
 

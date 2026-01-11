@@ -152,23 +152,23 @@ impl MergeWorker {
     fn apply_cue(&mut self, cue: SubtitleCue) -> Option<SubtitleUpdate> {
         self.prune(cue.start_time);
 
-        if let Some(last) = self.subtitles.last_mut() {
-            if should_merge(last, &cue) {
-                last.start_time = last.start_time.min(cue.start_time);
-                last.end_time = last.end_time.max(cue.end_time);
-                last.start_frame = last.start_frame.min(cue.start_frame);
-                if !last.lines.iter().any(|line| line.text == cue.text) {
-                    last.lines.push(SubtitleLine {
-                        center: cue.center,
-                        text: cue.text.clone(),
-                    });
-                }
-                self.stats.merged = self.stats.merged.saturating_add(1);
-                return Some(SubtitleUpdate {
-                    kind: SubtitleUpdateKind::Updated,
-                    subtitle: last.clone(),
+        if let Some(last) = self.subtitles.last_mut()
+            && should_merge(last, &cue)
+        {
+            last.start_time = last.start_time.min(cue.start_time);
+            last.end_time = last.end_time.max(cue.end_time);
+            last.start_frame = last.start_frame.min(cue.start_frame);
+            if !last.lines.iter().any(|line| line.text == cue.text) {
+                last.lines.push(SubtitleLine {
+                    center: cue.center,
+                    text: cue.text.clone(),
                 });
             }
+            self.stats.merged = self.stats.merged.saturating_add(1);
+            return Some(SubtitleUpdate {
+                kind: SubtitleUpdateKind::Updated,
+                subtitle: last.clone(),
+            });
         }
 
         let subtitle = MergedSubtitle {
