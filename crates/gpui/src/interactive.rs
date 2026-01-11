@@ -309,8 +309,6 @@ impl MouseButton {
     }
 }
 
-
-
 /// A navigation direction, such as back or forward.
 #[derive(Hash, PartialEq, Eq, Copy, Clone, Debug, Default)]
 pub enum NavigationDirection {
