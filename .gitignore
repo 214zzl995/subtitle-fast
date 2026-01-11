@@ -9,4 +9,5 @@ openspec
 AGENTS.md
 demo
 **/.DS_Store
+.venv
 
