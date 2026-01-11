@@ -74,9 +74,7 @@ async fn main() -> io::Result<()> {
         bar
     });
 
-    let (_controller, mut stream) = provider
-        .open()
-        .map_err(io::Error::other)?;
+    let (_controller, mut stream) = provider.open().map_err(io::Error::other)?;
     let mut processed = 0u64;
     let mut current_second: Option<u64> = None;
     let mut emitted_in_second = 0usize;
