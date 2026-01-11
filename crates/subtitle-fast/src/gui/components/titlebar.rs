@@ -5,7 +5,7 @@ use gpui::*;
 
 #[cfg(target_os = "windows")]
 const WINDOWS_TITLEBAR_HEIGHT: f32 = 32.0;
-const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 36.0;
+const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 46.0;
 const WINDOWS_CAPTION_FONT: &str = "Segoe MDL2 Assets";
 #[cfg(not(target_os = "windows"))]
 const TITLEBAR_MIN_HEIGHT: f32 = 34.0;
