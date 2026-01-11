@@ -25,6 +25,7 @@ const PROGRESS_THROTTLE: Duration = Duration::from_millis(500);
 pub struct TaskSidebarCallbacks {
     pub on_add: Arc<dyn Fn(&mut Window, &mut Context<TaskSidebar>) + Send + Sync>,
     pub on_select: Arc<dyn Fn(SessionId, &mut Window, &mut Context<TaskSidebar>) + Send + Sync>,
+    pub on_remove: Arc<dyn Fn(SessionId, &mut Window, &mut Context<TaskSidebar>) + Send + Sync>,
 }
 
 pub struct TaskSidebar {
@@ -374,6 +375,28 @@ impl Render for TaskSidebar {
                             controls_box.child(make_btn(Icon::Stop, TaskAction::Cancel, true, cx));
                     }
                 }
+
+                controls_box = controls_box.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.0))
+                        .w(px(24.0))
+                        .h(px(24.0))
+                        .cursor_pointer()
+                        .hover(move |s| {
+                            s.bg(hsla(0.0, 0.0, 1.0, 0.15))
+                                .text_color(hsla(0.0, 0.0, 1.0, 1.0))
+                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                (this.callbacks.on_remove)(session_id, window, cx);
+                            }),
+                        )
+                        .child(icon_sm(Icon::Trash, btn_icon_color).w(px(12.0)).h(px(12.0))),
+                );
 
                 let progress_bg_layer = div()
                     .absolute()

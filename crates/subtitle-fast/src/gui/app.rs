@@ -78,6 +78,7 @@ impl SubtitleFastApp {
                             TaskSidebarCallbacks {
                                 on_add: Arc::new(|_, _| {}),
                                 on_select: Arc::new(|_, _, _| {}),
+                                on_remove: Arc::new(|_, _, _| {}),
                             },
                         )
                     });
@@ -159,6 +160,7 @@ impl SubtitleFastApp {
                     let weak_main = main_window.downgrade();
                     let add_handle = weak_main.clone();
                     let select_handle = weak_main.clone();
+                    let remove_handle = weak_main.clone();
                     let _ = task_sidebar_view.update(cx, |sidebar, cx| {
                         sidebar.set_callbacks(
                             TaskSidebarCallbacks {
@@ -176,6 +178,14 @@ impl SubtitleFastApp {
                                     };
                                     let _ = main_window.update(cx, |this, cx| {
                                         this.activate_session(session_id, cx);
+                                    });
+                                }),
+                                on_remove: Arc::new(move |session_id, _window, cx| {
+                                    let Some(main_window) = remove_handle.upgrade() else {
+                                        return;
+                                    };
+                                    let _ = main_window.update(cx, |this, cx| {
+                                        this.remove_session(session_id, cx);
                                     });
                                 }),
                             },
@@ -388,6 +398,16 @@ impl MainWindow {
         };
         self.load_session(&session, cx);
         self.update_detection_sidebar(Some(session.detection.clone()), cx);
+    }
+
+    fn remove_session(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
+        if self.active_session == Some(session_id) {
+            self.active_session = None;
+            self.release_player(cx);
+            self.update_detection_sidebar(None, cx);
+        }
+        self.sessions.remove_session(session_id);
+        self.notify_task_sidebar(cx);
     }
 
     fn save_active_session_state(&mut self, cx: &App) {

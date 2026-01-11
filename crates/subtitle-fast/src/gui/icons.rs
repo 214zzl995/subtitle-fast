@@ -29,6 +29,7 @@ pub enum Icon {
     Sparkles,
     Stop,
     Sun,
+    Trash,
     Upload,
 }
 
@@ -61,6 +62,7 @@ impl Icon {
             Self::Sparkles => "icons/sparkles.svg",
             Self::Stop => "icons/square.svg",
             Self::Sun => "icons/sun.svg",
+            Self::Trash => "icons/trash.svg",
             Self::Upload => "icons/upload.svg",
         }
         .into()

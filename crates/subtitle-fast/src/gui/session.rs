@@ -84,6 +84,16 @@ impl SessionHandle {
         store.active_id
     }
 
+    pub fn remove_session(&self, id: SessionId) {
+        let mut store = self.inner.lock().expect("session store mutex poisoned");
+        if let Some(index) = store.sessions.iter().position(|s| s.id == id) {
+            store.sessions.remove(index);
+        }
+        if store.active_id == Some(id) {
+            store.active_id = None;
+        }
+    }
+
     pub fn update_playback(
         &self,
         id: SessionId,
