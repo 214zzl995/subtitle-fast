@@ -221,7 +221,7 @@ impl Render for TaskSidebar {
             .items_center()
             .justify_between()
             .pl(px(12.0))
-            .pr(px(4.0))
+            .pr(px(8.0))
             .pb(px(12.0))
             .pt(px(8.0))
             .child(
