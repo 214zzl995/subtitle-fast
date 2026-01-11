@@ -113,13 +113,13 @@ fn append_platform_backends(_backends: &mut Vec<Backend>) {
 
 #[cfg(not(target_os = "macos"))]
 fn append_platform_backends(backends: &mut Vec<Backend>) {
-    #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
-    {
-        backends.push(Backend::Dxva);
-    }
     #[cfg(all(feature = "backend-mft", target_os = "windows"))]
     {
         backends.push(Backend::Mft);
+    }
+    #[cfg(all(feature = "backend-dxva", target_os = "windows"))]
+    {
+        backends.push(Backend::Dxva);
     }
     #[cfg(feature = "backend-ffmpeg")]
     {
