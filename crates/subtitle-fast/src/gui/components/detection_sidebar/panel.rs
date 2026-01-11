@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{Context, Entity, FontWeight, Render, Window, div, hsla, px, relative};
+use gpui::{Context, Entity, FontWeight, Render, Window, div, hsla, px, relative, rgb};
 
 use crate::gui::icons::{Icon, icon_sm};
 
@@ -162,6 +162,8 @@ impl Render for DetectionSidebar {
             .child(self.subtitles_header(cx))
             .child(self.subtitles_view.clone());
 
+        let divider = div().h(px(1.0)).w_full().bg(rgb(0x2b2b2b)).my(px(8.0));
+
         div()
             .id(("detection-sidebar-panel", cx.entity_id()))
             .flex()
@@ -172,6 +174,7 @@ impl Render for DetectionSidebar {
             .pl(padding_x)
             .pr(padding_x)
             .child(upper)
+            .child(divider)
             .child(lower)
     }
 }
