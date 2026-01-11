@@ -22,8 +22,9 @@ pub enum Backend {
     Mft,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputFormat {
+    #[default]
     Nv12,
     CVPixelBuffer,
 }
@@ -34,12 +35,6 @@ impl OutputFormat {
             OutputFormat::Nv12 => "nv12",
             OutputFormat::CVPixelBuffer => "cvpixelbuffer",
         }
-    }
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        Self::Nv12
     }
 }
 
