@@ -11,7 +11,7 @@ use gpui::{
 };
 use tokio::time::MissedTickBehavior;
 
-use crate::gui::icons::{Icon, icon_sm};
+use crate::gui::icons::{Icon, icon_md, icon_sm};
 use crate::gui::runtime;
 use crate::gui::session::{SessionHandle, SessionId, VideoSession};
 use crate::stage::PipelineProgress;
@@ -248,12 +248,9 @@ impl Render for TaskSidebar {
                     .h(px(28.0))
                     .px(px(10.0))
                     .rounded(px(6.0))
-                    .bg(hsla(0.0, 0.0, 1.0, 0.06))
-                    .border_1()
-                    .border_color(hsla(0.0, 0.0, 1.0, 0.08))
                     .cursor_pointer()
                     .child(
-                        icon_sm(Icon::Upload, hsla(0.0, 0.0, 1.0, 0.9))
+                        icon_sm(Icon::Plus, hsla(0.0, 0.0, 1.0, 0.9))
                             .w(px(14.0))
                             .h(px(14.0)),
                     )
@@ -273,19 +270,22 @@ impl Render for TaskSidebar {
                     ),
             );
 
-        let mut list = div().flex().flex_col().w_full().gap(px(8.0)).px(px(8.0));
+        let mut list = div().flex().flex_col().size_full().gap(px(8.0)).px(px(8.0));
 
         if sessions.is_empty() {
-            list = list.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .h(px(60.0))
-                    .text_size(px(12.0))
-                    .text_color(item_subtle)
-                    .child("No tasks"),
-            );
+            list = list
+                .justify_center()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(8.0))
+                        .text_size(px(13.0))
+                        .text_color(item_subtle)
+                        .child(icon_md(Icon::Inbox, item_subtle))
+                        .child("No tasks"),
+                );
         } else {
             for session in &sessions {
                 let session_id = session.id;

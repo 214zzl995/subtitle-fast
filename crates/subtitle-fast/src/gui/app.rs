@@ -708,7 +708,7 @@ impl Render for MainWindow {
                                 .flex_col()
                                 .items_center()
                                 .gap(px(6.0))
-                                .child(icon_md(Icon::Upload, hsla(0.0, 0.0, 1.0, 0.7)))
+                                .child(icon_md(Icon::FileVideo, hsla(0.0, 0.0, 1.0, 0.7)))
                                 .child("Click to select a video"),
                         )
                         .id(("video-wrapper", cx.entity_id()))
