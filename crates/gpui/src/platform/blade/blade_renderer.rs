@@ -660,7 +660,8 @@ impl BladeRenderer {
         self.gpu.destroy_sampler(self.atlas_sampler);
         self.instance_belt.destroy(&self.gpu);
         self.surface_upload_belt.destroy(&self.gpu);
-        for (_, entry) in self.surface_cache.drain() {
+        let entries: Vec<_> = self.surface_cache.drain().map(|(_, entry)| entry).collect();
+        for entry in entries {
             self.destroy_surface_entry(entry);
         }
         self.gpu.destroy_command_encoder(&mut self.command_encoder);

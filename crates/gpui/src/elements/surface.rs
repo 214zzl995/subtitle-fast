@@ -14,6 +14,8 @@ pub enum SurfaceSource {
     /// A macOS image buffer from CoreVideo
     #[cfg(target_os = "macos")]
     Surface(CVPixelBuffer),
+    #[cfg(not(target_os = "macos"))]
+    Unimplemented,
 }
 
 #[cfg(target_os = "macos")]
