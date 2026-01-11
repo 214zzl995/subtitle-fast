@@ -610,7 +610,13 @@ impl Render for MainWindow {
             .w_full()
             .h_full()
             .bg(rgb(0x1b1b1b))
-            .child(self.titlebar.clone())
+            .child(
+                div()
+                    .flex_none()
+                    .border_b(px(SIDEBAR_BORDER_WIDTH))
+                    .border_color(rgb(SIDEBAR_BORDER_COLOR))
+                    .child(self.titlebar.clone()),
+            )
             .child({
                 let mut video_frame = div()
                     .flex()
