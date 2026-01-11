@@ -1899,12 +1899,12 @@ impl Interactivity {
     ) {
         use crate::{BorderStyle, TextAlign};
 
-        if global_id.is_some()
-            && (style.debug || style.debug_below || cx.has_global::<crate::DebugBelow>())
-            && hitbox.is_hovered(window)
-        {
-            const FONT_SIZE: crate::Pixels = crate::Pixels(10.);
-            let element_id = format!("{:?}", global_id.unwrap());
+        if let Some(global_id) = global_id {
+            if (style.debug || style.debug_below || cx.has_global::<crate::DebugBelow>())
+                && hitbox.is_hovered(window)
+            {
+                const FONT_SIZE: crate::Pixels = crate::Pixels(10.);
+                let element_id = format!("{:?}", global_id);
             let str_len = element_id.len();
 
             let render_debug_text = |window: &mut Window| {
@@ -2005,6 +2005,7 @@ impl Interactivity {
             )
         }
     }
+}
 
     fn paint_mouse_listeners(
         &mut self,
